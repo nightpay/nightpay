@@ -1,0 +1,55 @@
+pragma language_version >= 0.19;
+import CompactStandardLibrary;
+
+export ledger completedCount: Counter;
+export ledger activeCount: Counter;
+export ledger operatorFeeBps: Field;
+export ledger operatorAddress: Bytes<32>;
+export ledger gatewayAddress: Bytes<32>;
+export ledger initialized: Field;
+export ledger lastReceipt: Bytes<32>;
+
+witness payerNullifier(): Bytes<32>;
+witness amount(): Field;
+witness jobHash(): Bytes<32>;
+witness nonce(): Bytes<32>;
+
+witness bountyCommitment(): Bytes<32>;
+witness outputHash(): Bytes<32>;
+witness completionNonce(): Bytes<32>;
+
+witness receiptCommitment(): Bytes<32>;
+
+export circuit initialize(operatorAddr: Bytes<32>, gatewayAddr: Bytes<32>, feeBps: Field): [] {
+  operatorAddress = disclose(operatorAddr);
+  gatewayAddress = disclose(gatewayAddr);
+  operatorFeeBps = disclose(feeBps);
+  initialized = 1;
+}
+
+export circuit postBounty(): Bytes<32> {
+  const commitment = disclose(jobHash());
+  activeCount.increment(1);
+  return commitment;
+}
+
+export circuit completeAndReceipt(): Bytes<32> {
+  const receipt = disclose(outputHash());
+  lastReceipt = receipt;
+  completedCount.increment(1);
+  activeCount.decrement(1);
+  return receipt;
+}
+
+export circuit verifyReceipt(): Boolean {
+  return disclose(receiptCommitment() == lastReceipt);
+}
+
+export circuit withdrawFees(caller: Bytes<32>, withdrawAmount: Field): [] {
+  const _caller = disclose(caller);
+  const _withdrawAmount = disclose(withdrawAmount);
+}
+
+export circuit getStats(): [Field, Field, Field] {
+  return [completedCount, activeCount, operatorFeeBps];
+}

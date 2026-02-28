@@ -1,0 +1,350 @@
+{
+  "@context": [
+    "https://nightpay.dev/ontology/context",
+    {
+      "owl": "http://www.w3.org/2002/07/owl#",
+      "dcterms": "http://purl.org/dc/terms/"
+    }
+  ],
+  "id": "https://nightpay.dev/ontology",
+  "type": "owl:Ontology",
+  "name": "NightPay Ontology",
+  "description": "Public JSON-LD ontology for privacy-preserving bounty pools, delegation, disputes, and receipt credentials in NightPay.",
+  "version": "1.2.0",
+  "dcterms:issued": "2026-02-28",
+  "dcterms:modified": "2026-02-28",
+  "dcterms:license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "@graph": [
+    {
+      "id": "nightpay:ManagementAssistant",
+      "type": "rdfs:Class",
+      "rdfs:label": "Management Assistant",
+      "rdfs:comment": "An automated assistant offering knowledge graph and RAG-based site navigation and troubleshooting."
+    },
+    {
+      "id": "nightpay:ManagementAssistant",
+      "type": "rdfs:Class",
+      "rdfs:label": "Management Assistant",
+      "rdfs:comment": "An automated assistant offering knowledge graph and RAG-based site navigation and troubleshooting."
+    },
+    {
+      "id": "nightpay:Agent",
+      "type": "rdfs:Class",
+      "rdfs:label": "Agent",
+      "rdfs:comment": "An autonomous system that claims and performs NightPay work."
+    },
+    {
+      "id": "nightpay:Pool",
+      "type": "rdfs:Class",
+      "rdfs:label": "Pool",
+      "rdfs:comment": "A funding pool identified by a commitment hash."
+    },
+    {
+      "id": "nightpay:FundingCommitment",
+      "type": "rdfs:Class",
+      "rdfs:label": "Funding Commitment",
+      "rdfs:comment": "A private contribution commitment represented only by hashes."
+    },
+    {
+      "id": "nightpay:BountyJob",
+      "type": "rdfs:Class",
+      "rdfs:label": "Bounty Job",
+      "rdfs:comment": "A funded work item delegated to one or more agents."
+    },
+    {
+      "id": "nightpay:Delegation",
+      "type": "rdfs:Class",
+      "rdfs:label": "Delegation",
+      "rdfs:comment": "A delegation relationship between operator and assigned agent(s)."
+    },
+    {
+      "id": "nightpay:Submission",
+      "type": "rdfs:Class",
+      "rdfs:label": "Submission",
+      "rdfs:comment": "A job result submission linked to hashes and review state."
+    },
+    {
+      "id": "nightpay:Dispute",
+      "type": "rdfs:Class",
+      "rdfs:label": "Dispute",
+      "rdfs:comment": "A formal dispute raised against a running or pending-approval job."
+    },
+    {
+      "id": "nightpay:ReceiptCredential",
+      "type": "rdfs:Class",
+      "rdfs:label": "Receipt Credential",
+      "rdfs:comment": "A verifiable credential describing a NightPay completion receipt hash."
+    },
+    {
+      "id": "nightpay:Artifact",
+      "type": "rdfs:Class",
+      "rdfs:label": "Artifact",
+      "rdfs:comment": "A work deliverable (code, report, proof) stored against a BountyJob. Content is addressed by artifact_id and linked by URL."
+    },
+    {
+      "id": "nightpay:poolCommitmentHash",
+      "type": "rdf:Property",
+      "rdfs:label": "pool commitment hash",
+      "rdfs:domain": "nightpay:Pool",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:fundingGoalSpecks",
+      "type": "rdf:Property",
+      "rdfs:label": "funding goal specks",
+      "rdfs:domain": "nightpay:Pool",
+      "rdfs:range": "xsd:integer"
+    },
+    {
+      "id": "nightpay:contributionAmountSpecks",
+      "type": "rdf:Property",
+      "rdfs:label": "contribution amount specks",
+      "rdfs:domain": "nightpay:Pool",
+      "rdfs:range": "xsd:integer"
+    },
+    {
+      "id": "nightpay:poolStatus",
+      "type": "rdf:Property",
+      "rdfs:label": "pool status",
+      "rdfs:domain": "nightpay:Pool",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:hasFundingCommitment",
+      "type": "rdf:Property",
+      "rdfs:label": "has funding commitment",
+      "rdfs:domain": "nightpay:Pool",
+      "rdfs:range": "nightpay:FundingCommitment"
+    },
+    {
+      "id": "nightpay:hasJob",
+      "type": "rdf:Property",
+      "rdfs:label": "has job",
+      "rdfs:domain": "nightpay:Pool",
+      "rdfs:range": "nightpay:BountyJob"
+    },
+    {
+      "id": "nightpay:jobId",
+      "type": "rdf:Property",
+      "rdfs:label": "job id",
+      "rdfs:domain": "nightpay:BountyJob",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:hasArtifact",
+      "type": "rdf:Property",
+      "rdfs:label": "has artifact",
+      "rdfs:domain": "nightpay:BountyJob",
+      "rdfs:range": "nightpay:Artifact"
+    },
+    {
+      "id": "nightpay:artifactId",
+      "type": "rdf:Property",
+      "rdfs:label": "artifact id",
+      "rdfs:domain": "nightpay:Artifact",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:filename",
+      "type": "rdf:Property",
+      "rdfs:label": "filename",
+      "rdfs:domain": "nightpay:Artifact",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:contentType",
+      "type": "rdf:Property",
+      "rdfs:label": "content type",
+      "rdfs:domain": "nightpay:Artifact",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:sizeBytes",
+      "type": "rdf:Property",
+      "rdfs:label": "size bytes",
+      "rdfs:domain": "nightpay:Artifact",
+      "rdfs:range": "xsd:integer"
+    },
+    {
+      "id": "nightpay:jobStatus",
+      "type": "rdf:Property",
+      "rdfs:label": "job status",
+      "rdfs:domain": "nightpay:BountyJob",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:delegatedBy",
+      "type": "rdf:Property",
+      "rdfs:label": "delegated by",
+      "rdfs:domain": "nightpay:Delegation"
+    },
+    {
+      "id": "nightpay:delegatedTo",
+      "type": "rdf:Property",
+      "rdfs:label": "delegated to",
+      "rdfs:domain": "nightpay:Delegation"
+    },
+    {
+      "id": "nightpay:delegatedTask",
+      "type": "rdf:Property",
+      "rdfs:label": "delegated task",
+      "rdfs:domain": "nightpay:Delegation",
+      "rdfs:range": "nightpay:BountyJob"
+    },
+    {
+      "id": "nightpay:delegationStatus",
+      "type": "rdf:Property",
+      "rdfs:label": "delegation status",
+      "rdfs:domain": "nightpay:Delegation",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:receiptHash",
+      "type": "rdf:Property",
+      "rdfs:label": "receipt hash",
+      "rdfs:domain": "nightpay:ReceiptCredential",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:resultHash",
+      "type": "rdf:Property",
+      "rdfs:label": "result hash",
+      "rdfs:domain": "nightpay:ReceiptCredential",
+      "rdfs:range": "xsd:string"
+    },
+    {
+      "id": "nightpay:issuedForJob",
+      "type": "rdf:Property",
+      "rdfs:label": "issued for job",
+      "rdfs:domain": "nightpay:ReceiptCredential",
+      "rdfs:range": "nightpay:BountyJob"
+    },
+    {
+      "id": "nightpay:issuedFromPool",
+      "type": "rdf:Property",
+      "rdfs:label": "issued from pool",
+      "rdfs:domain": "nightpay:ReceiptCredential",
+      "rdfs:range": "nightpay:Pool"
+    },
+    {
+      "id": "nightpay:PoolStatusScheme",
+      "type": "skos:ConceptScheme",
+      "skos:prefLabel": "Pool Status Scheme"
+    },
+    {
+      "id": "nightpay:pool-status/funding",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:PoolStatusScheme"
+      },
+      "skos:prefLabel": "funding"
+    },
+    {
+      "id": "nightpay:pool-status/activated",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:PoolStatusScheme"
+      },
+      "skos:prefLabel": "activated"
+    },
+    {
+      "id": "nightpay:pool-status/completed",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:PoolStatusScheme"
+      },
+      "skos:prefLabel": "completed"
+    },
+    {
+      "id": "nightpay:pool-status/expired",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:PoolStatusScheme"
+      },
+      "skos:prefLabel": "expired"
+    },
+    {
+      "id": "nightpay:JobStatusScheme",
+      "type": "skos:ConceptScheme",
+      "skos:prefLabel": "Job Status Scheme"
+    },
+    {
+      "id": "nightpay:job-status/running",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:JobStatusScheme"
+      },
+      "skos:prefLabel": "running"
+    },
+    {
+      "id": "nightpay:job-status/awaiting_approval",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:JobStatusScheme"
+      },
+      "skos:prefLabel": "awaiting_approval"
+    },
+    {
+      "id": "nightpay:job-status/multisig_pending",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:JobStatusScheme"
+      },
+      "skos:prefLabel": "multisig_pending"
+    },
+    {
+      "id": "nightpay:job-status/disputed",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:JobStatusScheme"
+      },
+      "skos:prefLabel": "disputed"
+    },
+    {
+      "id": "nightpay:job-status/completed",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:JobStatusScheme"
+      },
+      "skos:prefLabel": "completed"
+    },
+    {
+      "id": "nightpay:job-status/refunded",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:JobStatusScheme"
+      },
+      "skos:prefLabel": "refunded",
+      "skos:definition": "Pool expired and all funder contributions were returned; no agent was hired."
+    },
+    {
+      "id": "nightpay:PrivacyClassScheme",
+      "type": "skos:ConceptScheme",
+      "skos:prefLabel": "Privacy Class Scheme"
+    },
+    {
+      "id": "nightpay:privacy/public",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:PrivacyClassScheme"
+      },
+      "skos:prefLabel": "public"
+    },
+    {
+      "id": "nightpay:privacy/hashed-only",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:PrivacyClassScheme"
+      },
+      "skos:prefLabel": "hashed-only"
+    },
+    {
+      "id": "nightpay:privacy/private-witness",
+      "type": "skos:Concept",
+      "skos:inScheme": {
+        "id": "nightpay:PrivacyClassScheme"
+      },
+      "skos:prefLabel": "private-witness"
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+node_modules/
+.env
+.env.*
+*.log
+/tmp/
+nightpay-board.json
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+Thumbs.db
+nul
+NUL
+
+# ── PRIVATE — never commit to the public repo ─────────────────────────────────
+# bridge/ is operator wallet wiring — lives in nightpay/nightpay-bridge (private repo)
+# Anyone can implement a compatible bridge from the HTTP spec in SKILL.md
+bridge/
+
+# Internal plans, launch kit, agent instructions, local clones (not for public repo)
+plans/
+LAUNCH.md
+AGENTS.md
+.tmp/
+masumi-services-dev-quickstart
+
+# UI build artifacts (source goes in, dist stays out)
+ui/dist/
+ui/node_modules/
+
+# VPS / operator runtime artifacts (if running services from this repo)
+runtime/
+state/
+logs/
+pids/
+*.pid
+*.pid.lock
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Stray files
+Tempcounter_contents.json
+
+# Auto Claude data directory
+.auto-claude/
+
+# Claude Code local-only settings (machine-specific permissions, not for sharing)
+.claude/settings.local.json
+# Cursor/Claude IDE local config and skills (never commit — may contain hosts, keys, paths)
+.cursor/
+.claude/
+
+# Auto Claude generated files
+.auto-claude-security.json
+.auto-claude-status
+.claude_settings.json
+.worktrees/
+.security-key
+logs/security/
+.playwright-mcp/
+
+# Agent-only playground runtime and secrets
+.agent-playground/
+.agent-playground.env
+.agent-playground.env.bak*
+.agent-playground.env.local
+sample-agent/.env
+sample-agent/.state/
+
+# Canonical agent env template stays tracked
+!.agent-playground.env.example
+
+# Local-only private automation/scripts (never publish)
+.private/
+/scripts/*
+!/scripts/agent-playground-setup.sh
+!/scripts/server-sync-start.sh
+!/scripts/load-sim.sh
+
+# Local SSH private key for Hetzner
+/hetzner_ed25519_martin
+/hetzner_ed25519_martin.pub
+
+# Generic local SSH / key material (never commit)
+/hetzner_*
+/id_rsa
+/id_rsa.pub
+/id_ed25519
+/id_ed25519.pub
+/*.pem
+/*.p12
+/*.pk8
+docs/HETZNER_X86_RUNBOOK.md
+test/smoke.sh
+test/chaos_stress_suite.py
