@@ -157,6 +157,7 @@ if AGENT_VERIFIED_TOKEN_TTL_SECONDS < 60:
     AGENT_VERIFIED_TOKEN_TTL_SECONDS = 60
 
 KNOWN_STATUSES = ('running', 'awaiting_approval', 'multisig_pending', 'disputed', 'completed')
+MAX_ATTACHMENT_BYTES = 256 * 1024  # .md or .txt attachment at start_job (authenticated only)
 MIP003_STATUSES = ('awaiting_payment', 'awaiting_input', 'running', 'completed', 'failed')
 
 ID_RE = re.compile(r'^[A-Za-z0-9._:@-]{2,128}$')
@@ -820,10 +821,17 @@ def normalize_showcase_entries(raw, max_items=8):
     return out
 
 def normalize_visibility(value, default='public'):
+    # API accepts public | private; internal storage is public | hidden (private -> hidden).
     raw = str(value if value is not None else default).strip().lower()
-    if raw not in ('public', 'hidden'):
+    if raw not in ('public', 'private', 'hidden'):
         return None
-    return raw
+    return 'hidden' if raw in ('private', 'hidden') else 'public'
+
+def visibility_for_api(internal):
+    """Return API-facing value: public | private (hidden -> private)."""
+    if internal == 'hidden':
+        return 'private'
+    return (internal or 'public')
 
 def _sigmoid(value):
     if value >= 60:
@@ -1813,7 +1821,15 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     },
                     'visibility': {
                         'type': 'string',
-                        'description': 'public (default) or hidden for private direct hire flows'
+                        'description': 'public or private (default: private). Private jobs are hidden from public listings; submissions only for bounty creator.'
+                    },
+                    'attachment_filename': {
+                        'type': 'string',
+                        'description': 'Optional .md or .txt filename; requires authentication (X-Agent-Token or operator Bearer). Max 255 chars.'
+                    },
+                    'attachment_content': {
+                        'type': 'string',
+                        'description': 'Optional attachment body (markdown or text); requires authentication. Max 256KB.'
                     },
                     'idempotency_key': {
                         'type': 'string',
@@ -1943,6 +1959,17 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'invalid job_id format'})
                 return
 
+            # Submissions are only available to the bounty creator (job_token) or operator.
+            auth_header = self.headers.get('Authorization', '')
+            if not auth_header or not auth_header.startswith('Bearer '):
+                self.respond(401, {'error': 'Authorization: Bearer <job_token> required to list submissions (bounty creator only)'})
+                return
+            provided_token = auth_header[len('Bearer '):].strip()
+            token_valid = verify_job_token(job_id, provided_token) if provided_token else False
+            if not token_valid and not self._operator_bearer_ok():
+                self.respond(403, {'error': 'invalid job_token or not authorized to view this job\'s submissions'})
+                return
+
             db = get_db()
             job = db.execute(
                 'SELECT contest_config, voting_started_at, voting_ends_at, voter_snapshot FROM jobs WHERE job_id = ?',
@@ -2011,6 +2038,8 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             approved_before = params.get('approved_before', [None])[0]
             search_term = params.get('search', [None])[0]
             visibility_filter = str(params.get('visibility', ['public'])[0]).strip().lower() or 'public'
+            if visibility_filter == 'private':
+                visibility_filter = 'hidden'
 
             # SECURITY: clamp pagination to bounded values
             try:
@@ -2026,7 +2055,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'offset must be between 0 and 1000000'})
                 return
             if visibility_filter not in ('all', 'public', 'hidden'):
-                self.respond(400, {'error': 'visibility must be one of: all, public, hidden'})
+                self.respond(400, {'error': 'visibility must be one of: all, public, private (or hidden)'})
                 return
             # Hidden jobs can contain private direct-hire details; only operator-authenticated
             # callers may query hidden/all visibility through this public route.
@@ -2129,7 +2158,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 internal_status = j.get('status')
                 j['status'] = external_status_from_internal(internal_status, j.get('amount_specks'))
                 j['internal_status'] = internal_status
-                j['visibility'] = normalize_visibility(j.get('visibility'), default='public') or 'public'
+                j['visibility'] = visibility_for_api(normalize_visibility(j.get('visibility'), default='public') or 'public')
                 jobs.append(j)
 
             if MIP003_MODE == 'strict' and status_filter and status_filter_internal is None:
@@ -2403,10 +2432,10 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 return
             input_data = body.get('input_data') if isinstance(body.get('input_data'), dict) else {}
             direct_agent_id = str(body.get('direct_agent_id') or '').strip()
-            visibility_default = 'hidden' if direct_agent_id else 'public'
+            visibility_default = 'hidden' if direct_agent_id else 'private'
             visibility = normalize_visibility(body.get('visibility'), default=visibility_default)
             if visibility is None:
-                self.respond(400, {'error': 'visibility must be public or hidden'})
+                self.respond(400, {'error': 'visibility must be public or private'})
                 return
             if direct_agent_id and not validate_actor_id(direct_agent_id):
                 self.respond(400, {'error': 'direct_agent_id must match [A-Za-z0-9._:@-] and be 2-128 chars'})
@@ -2433,6 +2462,32 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 except (ValueError, TypeError):
                     self.respond(400, {'error': 'amount_specks must be a non-negative integer'})
                     return
+
+            # Optional attachment (.md or .txt) — only for authenticated callers (operator or X-Agent-Token).
+            attachment_filename = str(body.get('attachment_filename') or '').strip()
+            attachment_content = body.get('attachment_content')
+            if attachment_content is not None and not isinstance(attachment_content, str):
+                attachment_content = None
+            if attachment_filename or (attachment_content is not None and attachment_content != ''):
+                db_auth = get_db()
+                agent_token = str(self.headers.get('X-Agent-Token', '')).strip()
+                identity, _ = self._verify_agent_identity_token(db_auth, agent_token, None) if agent_token else (None, 'missing')
+                if not self._operator_bearer_ok() and not identity:
+                    self.respond(403, {'error': 'attachment requires authentication (Authorization: Bearer <operator_secret> or valid X-Agent-Token)'})
+                    return
+                if attachment_filename:
+                    if not attachment_filename.lower().endswith(('.md', '.txt')):
+                        self.respond(400, {'error': 'attachment_filename must end with .md or .txt'})
+                        return
+                    if len(attachment_filename) > 255:
+                        self.respond(400, {'error': 'attachment_filename too long'})
+                        return
+                if attachment_content is not None and len(attachment_content.encode('utf-8', errors='replace')) > MAX_ATTACHMENT_BYTES:
+                    self.respond(400, {'error': f'attachment_content must be at most {MAX_ATTACHMENT_BYTES} bytes'})
+                    return
+            else:
+                attachment_filename = None
+                attachment_content = None
 
             # Optional idempotency key: header and body must match if both provided.
             idem_header = self.headers.get('X-Idempotency-Key', '').strip()
@@ -2463,6 +2518,10 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             input_payload['visibility'] = visibility
             if direct_agent_id:
                 input_payload['direct_agent_id'] = direct_agent_id
+            if attachment_filename:
+                input_payload['attachment_filename'] = attachment_filename
+            if attachment_content is not None:
+                input_payload['attachment_content'] = attachment_content
 
             if idempotency_key:
                 # BEGIN IMMEDIATE serializes writers and prevents duplicate inserts for same key.
@@ -2497,7 +2556,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                         if MIP003_MODE == 'strict':
                             strict_payload = strict_start_job_response(job_id, body, now_dt, row['amount_specks'])
                             strict_payload['idempotent_replay'] = True
-                            strict_payload['visibility'] = normalize_visibility(row['visibility'], default='public') or 'public'
+                            strict_payload['visibility'] = visibility_for_api(normalize_visibility(row['visibility'], default='public') or 'public')
                             strict_payload['assigned_agent_id'] = row['assigned_agent_id']
                             self.respond(200, strict_payload)
                         else:
@@ -2507,7 +2566,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                                 'status': external_status_from_internal(row['status'], row['amount_specks']),
                                 'internal_status': row['status'],
                                 'assigned_agent_id': row['assigned_agent_id'],
-                                'visibility': normalize_visibility(row['visibility'], default='public') or 'public',
+                                'visibility': visibility_for_api(normalize_visibility(row['visibility'], default='public') or 'public'),
                                 'idempotent_replay': True
                             })
                         return
@@ -2563,7 +2622,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             # SECURITY: job_token is ephemeral - derived on demand, never stored
             if MIP003_MODE == 'strict':
                 response = strict_start_job_response(job_id, body, now_dt, amount_specks)
-                response['visibility'] = visibility
+                response['visibility'] = visibility_for_api(visibility)
                 response['assigned_agent_id'] = direct_agent_id or None
             else:
                 response = {
@@ -2572,7 +2631,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     'status':    external_status_from_internal('running', amount_specks),
                     'internal_status': 'running',
                     'assigned_agent_id': direct_agent_id or None,
-                    'visibility': visibility,
+                    'visibility': visibility_for_api(visibility),
                 }
                 if contest_cfg:
                     response['contest'] = contest_cfg
@@ -2609,8 +2668,8 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if not row:
                 self.respond(404, {'error': 'job not found'})
                 return
-            job_visibility = normalize_visibility(row['visibility'], default='public') or 'public'
-            if job_visibility == 'hidden' and row['assigned_agent_id'] and row['assigned_agent_id'] != agent_id:
+            job_visibility = visibility_for_api(normalize_visibility(row['visibility'], default='public') or 'public')
+            if normalize_visibility(row['visibility'], default='public') == 'hidden' and row['assigned_agent_id'] and row['assigned_agent_id'] != agent_id:
                 self.respond(403, {'error': 'private job is reserved for another agent'})
                 return
             if row['status'] not in ('running', 'awaiting_approval', 'multisig_pending'):
@@ -2849,11 +2908,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 
             auth_header = self.headers.get('Authorization', '')
             if not auth_header.startswith('Bearer '):
-                self.respond(401, {'error': 'Authorization: Bearer <job_token> required'})
+                self.respond(401, {'error': 'Authorization: Bearer <job_token> or operator secret required'})
                 return
-            provided_token = auth_header[len('Bearer '):]
-            if not verify_job_token(job_id, provided_token):
-                self.respond(403, {'error': 'invalid job_token'})
+            provided_token = auth_header[len('Bearer '):].strip()
+            if not verify_job_token(job_id, provided_token) and not self._operator_bearer_ok():
+                self.respond(403, {'error': 'invalid job_token or not authorized (operator)'})
                 return
 
             selected_submission_id = str(body.get('submission_id', '')).strip() or None
@@ -3439,14 +3498,16 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 
             reason = str(body.get('reason', 'no reason given'))[:500]
 
-            # SECURITY: either the job_token holder OR the operator can dispute
+            # SECURITY: job_token holder, operator Bearer, or X-Operator-Sig can dispute
             auth_header   = self.headers.get('Authorization', '')
             op_sig_header = self.headers.get('X-Operator-Sig', '')
             authorized    = False
 
             if auth_header.startswith('Bearer '):
-                token = auth_header[len('Bearer '):]
+                token = auth_header[len('Bearer '):].strip()
                 if verify_job_token(job_id, token):
+                    authorized = True
+                if not authorized and self._operator_bearer_ok():
                     authorized = True
 
             if not authorized and op_sig_header:
@@ -3454,7 +3515,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     authorized = True
 
             if not authorized:
-                self.respond(403, {'error': 'dispute requires valid job_token or X-Operator-Sig'})
+                self.respond(403, {'error': 'dispute requires valid job_token, operator Bearer, or X-Operator-Sig'})
                 return
 
             db  = get_db()

@@ -16,6 +16,9 @@ export const runtimeConfig = {
   proofServer: PROOF_SERVER,
 };
 
+/** SessionStorage key for admin/God mode token (operator secret). Cleared when tab closes. */
+export const ADMIN_TOKEN_STORAGE_KEY = 'nightpay.admin_token';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface HealthResponse {
@@ -229,10 +232,28 @@ async function get<T>(base: string, path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function getWithAuth<T>(base: string, path: string, bearerToken: string): Promise<T> {
+  const res = await fetch(`${base}${path}`, {
+    headers: { Authorization: `Bearer ${bearerToken}` },
+  });
+  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
 async function post<T>(base: string, path: string, body: unknown): Promise<T> {
   const res = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+async function postWithAuth<T>(base: string, path: string, body: unknown, bearerToken: string): Promise<T> {
+  const res = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearerToken}` },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
@@ -290,15 +311,21 @@ export const api = {
     post<VerifyResponse>(BRIDGE_BASE, '/verifyReceipt', { receiptHash }),
 
   // MIP-003 server endpoints
-  jobs: (query: JobsQuery = {}) => {
+  /** If adminToken (operator secret) is provided, uses Bearer auth and defaults visibility to 'all' (God mode). */
+  jobs: (query: JobsQuery = {}, adminToken?: string) => {
     const params = new URLSearchParams();
     if (query.status) params.set('status', query.status);
     if (typeof query.limit === 'number') params.set('limit', String(query.limit));
     if (typeof query.offset === 'number') params.set('offset', String(query.offset));
     if (query.search && query.search.trim()) params.set('search', query.search.trim());
-    if (query.visibility) params.set('visibility', query.visibility);
+    const visibility = adminToken ? (query.visibility ?? 'all') : (query.visibility ?? 'public');
+    params.set('visibility', visibility);
     const qs = params.toString();
-    return get<JobsResponse>(MIP_BASE, qs ? `/jobs?${qs}` : '/jobs');
+    const path = qs ? `/jobs?${qs}` : '/jobs';
+    if (adminToken?.trim()) {
+      return getWithAuth<JobsResponse>(MIP_BASE, path, adminToken.trim());
+    }
+    return get<JobsResponse>(MIP_BASE, path);
   },
   createJob: (
     description: string,
@@ -336,8 +363,12 @@ export const api = {
     ),
   getVoteResult: (jobId: string) =>
     get<{ job_id: string; approve: number; reject: number; total: number }>(MIP_BASE, `/vote_result/${jobId}`),
-  submissions: (jobId: string) =>
-    get<{ job_id: string; contest: ContestConfig; submissions: Submission[]; count: number }>(MIP_BASE, `/submissions/${jobId}`),
+  /** Single job status (GET /status/:jobId). Public, no auth. */
+  jobStatus: (jobId: string) =>
+    get<Job & { voting?: { started_at?: string; ends_at?: string; eligible_voters_count?: number; agent_voting_only?: boolean }; voter_snapshot?: string[] }>(MIP_BASE, `/status/${jobId}`),
+  /** List submissions for a job. Requires job_token (bounty creator or operator). */
+  submissions: (jobId: string, jobToken: string) =>
+    getWithAuth<{ job_id: string; contest: ContestConfig; voting?: { started_at?: string; ends_at?: string; eligible_voters_count?: number }; voter_snapshot?: string[]; submissions: Submission[]; count: number }>(MIP_BASE, `/submissions/${jobId}`, jobToken),
   voteSubmission: (
     jobId: string,
     submissionId: string,
@@ -351,32 +382,25 @@ export const api = {
       { voter_id: voterId, vote, reason }
     ),
   selectWinner: (jobId: string, jobToken: string, submissionId?: string) =>
-    fetch(`${MIP_BASE}/select_winner/${jobId}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${jobToken}`,
-      },
-      body: JSON.stringify(submissionId ? { submission_id: submissionId } : {}),
-    }).then(async res => {
-      if (!res.ok) throw new Error(`POST /select_winner/${jobId} → ${res.status}`);
-      return (await res.json()) as {
-        job_id: string;
-        status: string;
-        winner_submission_id: string;
-        winner_agent_id: string;
-      };
-    }),
+    postWithAuth<{ job_id: string; status: string; winner_submission_id: string; winner_agent_id: string }>(
+      MIP_BASE,
+      `/select_winner/${jobId}`,
+      submissionId ? { submission_id: submissionId } : {},
+      jobToken
+    ),
+  /** Raise a dispute on a job. Requires job_token (bounty creator or operator). */
+  dispute: (jobId: string, jobToken: string, reason: string) =>
+    postWithAuth<{ status: string; reason?: string }>(MIP_BASE, `/dispute/${jobId}`, { reason }, jobToken),
 
-  // Convenience: paged jobs mapped to UI bounties
-  bounties: async (query: JobsQuery = {}): Promise<{
+  // Convenience: paged jobs mapped to UI bounties. Pass adminToken for God mode (see all jobs).
+  bounties: async (query: JobsQuery = {}, adminToken?: string): Promise<{
     bounties: Bounty[];
     limit: number;
     offset: number;
     count: number;
     hasMore: boolean;
   }> => {
-    const res = await api.jobs(query);
+    const res = await api.jobs(query, adminToken);
     return {
       bounties: res.jobs.map(jobToBounty),
       limit: res.limit,

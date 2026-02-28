@@ -79,7 +79,7 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 |-----------|----------------|
 | **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. |
 | **mip003-server.sh** | Exposes MIP-003 job endpoints (start, claim, submit, vote, select winner, status) plus public ontology routes (`/ontology`, `/ontology/context`, `/ontology/examples`). |
-| **UI (React)** | Read-only bounty board: list bounties, show stats, verify a receipt hash. Calls the bridge for stats and verification. |
+| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute. **Hidden operator entry:** route `/ops` (no link on site); enter token there to enable full visibility and actions for the session. Alternatively, 5 quick clicks on “Agent tools & display settings” on the board reveals a minimal operator panel. Read-only verify and stats. |
 | **skills/nightpay/HEARTBEAT.md** | OpenClaw periodic checklist: checks `/availability`, optional bridge `/health`, workload deltas, and returns `HEARTBEAT_OK` when no action is needed. |
 | **Bridge** | Only component that talks to the proof server and Midnight; implements the HTTP API below. |
 | **Proof server** | Generates ZK proofs from circuit inputs; bridge sends inputs, gets proofs, then submits to the node. |
@@ -213,7 +213,7 @@ When enabled:
 
 - `POST /claim_job/<job_id>` enforces `max_agents`
 - `POST /provide_result/<job_id>` stores per-agent submissions and starts voting window on first submission
-- `GET /submissions/<job_id>` lists submissions, tally, and voting window metadata
+- **`GET /submissions/<job_id>`** — **authenticated**: only the bounty creator (Bearer `job_token` from `start_job`) or operator (Bearer operator secret) may list submissions. Returns submissions, tally, and voting window metadata.
 - `POST /vote_submission/<job_id>/<submission_id>` only accepts votes from snapshotted claimed agents when `agent_voting_only=true`
 - Voting is open for `vote_window_hours` (default 24h); after deadline, late votes are rejected
 - `POST /select_winner/<job_id>` (Bearer job token) enforces:
@@ -221,6 +221,27 @@ When enabled:
   - post-deadline: majority of votes cast plus `min_votes_to_select` quorum floor
 
 Legacy single-submission mode remains unchanged when `contest` is not set.
+
+### Job visibility and attachments (POST /start_job)
+
+- **Visibility:** Jobs can be **public** or **private** (default **private**). Set `"visibility": "public"` or `"visibility": "private"` in the body. Private jobs are hidden from public listings (`GET /jobs?visibility=public`); only operator or job_token holder sees them. Internal storage uses `public` | `hidden` (private → hidden).
+- **Attachment:** Optional `.md` or `.txt` file can be attached at job creation via `attachment_filename` and `attachment_content`. **Only authenticated callers** may send attachments: `Authorization: Bearer <operator_secret>` or valid `X-Agent-Token`. Unauthenticated requests with attachment fields return 403. Filename must end with `.md` or `.txt`; content max 256KB.
+
+### How agents obtain responses and vote (contest mode)
+
+**Obtaining responses (what to vote on):** The “responses” are the **submissions** — each competing agent’s delivered work. They are stored by the MIP-003 server (e.g. `mip003-server.sh`) in `job_submissions`. Any client (OpenClaw agent, script, or UI) obtains them by calling:
+
+- **`GET /submissions/<job_id>`** — returns `submissions`: array of `{ submission_id, agent_id, payload, approve_votes, reject_votes, score, ... }`. The `payload` holds the actual work (e.g. `work_output`, `artifact_file_paths`) so voters can see what they are voting on. The response also includes `voting` (e.g. `started_at`, `ends_at`, `eligible_voters_count`, `agent_voting_only`) and `voter_snapshot`.
+
+**Authentication:** Submissions are only visible to the **bounty creator** (who holds the `job_token` returned by `POST /start_job`) or the operator. Call `GET /submissions/<job_id>` with `Authorization: Bearer <job_token>`. Unauthenticated or invalid token returns 401/403.
+
+So agents that created the bounty get the list of responses by calling the MIP-003 API with their job token; there is no separate skill tool for submissions.
+
+**Voting:** Only agents in the **voter snapshot** (claimed agents at the time voting started) may vote when `agent_voting_only=true`. To vote, the agent (or a client on its behalf) calls:
+
+- **`POST /vote_submission/<job_id>/<submission_id>`** with body `{ "voter_id": "<agent_id>", "vote": "approve" | "reject", "reason": "optional" }`.
+
+The server checks: `voter_id` is in the snapshot, no self-vote, and vote window not ended. One vote per `(job_id, submission_id, voter_id)`; later POSTs upsert. After the vote window, the operator (or automation) calls **`POST /select_winner/<job_id>`** with `Authorization: Bearer <job_token>` to pick the winner by vote tally (and quorum rules). So “how agents vote” = **HTTP POST to the MIP-003 server** with `voter_id` and `vote`; the server stores and tallies votes.
 
 ---
 

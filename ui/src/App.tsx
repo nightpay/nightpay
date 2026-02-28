@@ -11,6 +11,8 @@ import TermsPage from './pages/TermsPage.tsx';
 import CookiesPage from './pages/CookiesPage.tsx';
 import ToastContainer from './components/ToastContainer.tsx';
 import CeoPage from './pages/CeoPage.tsx';
+import JobDetailPage from './pages/JobDetailPage.tsx';
+import OpsPage from './pages/OpsPage.tsx';
 
 export default function App() {
   const hostname = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : '';
@@ -37,9 +39,11 @@ export default function App() {
             <Route path="/docs/skill" element={<SkillDocsPage />} />
             <Route path="/skill" element={<SkillDocsPage />} />
             <Route path="/post" element={<PostPage />} />
+            <Route path="/job/:jobId" element={<JobDetailPage />} />
             <Route path="/agents" element={<AgentShowcasePage />} />
             <Route path="/verify" element={<VerifyPage />} />
             <Route path="/stats" element={<StatsPage />} />
+            <Route path="/ops" element={<OpsPage />} />
             <Route path="/ceo" element={<CeoPage />} />
             <Route path="/terms" element={<TermsPage />} />
             <Route path="/cookies" element={<CookiesPage />} />

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import BountyCard from '../components/BountyCard.tsx';
-import { api, type Bounty } from '../api.ts';
+import { api, type Bounty, ADMIN_TOKEN_STORAGE_KEY } from '../api.ts';
 import { toast } from '../utils/toast.ts';
 
 type Filter = 'all' | Bounty['status'];
@@ -51,6 +51,18 @@ export default function BoardPage() {
   const [agentSaveStatus, setAgentSaveStatus] = useState<'idle' | 'saved'>('idle');
   const [myClaimsOnly, setMyClaimsOnly] = useState(() => params.get('mine') === '1');
   const [claimBusyById, setClaimBusyById] = useState<Record<string, boolean>>({});
+  const [adminToken, setAdminToken] = useState(() => {
+    try {
+      return sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const [adminTokenInput, setAdminTokenInput] = useState('');
+  const [godModeReveal, setGodModeReveal] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const adminClickCountRef = useRef(0);
+  const adminClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const qFilter = (params.get('filter') as Filter) || 'all';
@@ -91,13 +103,16 @@ export default function BoardPage() {
     async (showLoader: boolean) => {
       if (showLoader) setLoading(true);
       try {
-        const next = await api.bounties({
-          status: statusQuery,
-          limit: pageSize,
-          offset: page * pageSize,
-          search: searchQuery || undefined,
-          visibility: 'public',
-        });
+        const next = await api.bounties(
+          {
+            status: statusQuery,
+            limit: pageSize,
+            offset: page * pageSize,
+            search: searchQuery || undefined,
+            visibility: adminToken ? 'all' : 'public',
+          },
+          adminToken || undefined
+        );
         setBounties(next.bounties);
         setHasMore(next.hasMore);
         setPageCount(next.count);
@@ -111,7 +126,7 @@ export default function BoardPage() {
         if (showLoader) setLoading(false);
       }
     },
-    [page, pageSize, searchQuery, statusQuery],
+    [page, pageSize, searchQuery, statusQuery, adminToken],
   );
 
   useEffect(() => {
@@ -229,21 +244,41 @@ export default function BoardPage() {
     setTimeUntilRefresh(next);
   }
 
+  function enableGodMode() {
+    const token = adminTokenInput.trim();
+    if (!token) return;
+    try {
+      sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+      setAdminToken(token);
+      setAdminTokenInput('');
+      toast('Done', 'success');
+      void load(false);
+    } catch {
+      toast('Failed', 'error');
+    }
+  }
+
   return (
     <div className="space-y-4">
       <section className="card card-elevated py-6 sm:py-8 border-l-[6px] border-l-neon-cyan/80 relative overflow-hidden mt-6 mb-8 rounded-[20px] flex flex-col md:flex-row justify-between items-center gap-6">
         <div className="absolute top-0 right-0 -mr-20 -mt-20 w-64 h-64 rounded-full bg-neon-cyan/10 blur-3xl pointer-events-none"></div>
         <div className="flex-1 w-full">
           <p className="mb-2.5 text-xs uppercase tracking-[0.25em] text-neon-cyan/90 font-bold">Night Market Bounty Board</p>
-          <h1 className="mb-4 text-3xl font-extrabold text-white sm:text-4xl lg:text-5xl tracking-tight leading-tight">Anonymous funding,<br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-blue-400">verifiable completion.</span></h1>
-          <p className="max-w-2xl text-[15px] sm:text-base leading-relaxed text-gray-400 mb-7">
-            Post private-safe jobs, discover capable agents, and settle with Midnight receipts.
-          </p>
-          <div className="flex flex-wrap gap-4 relative z-10">
-            <Link to="/post" className="btn-primary py-3.5 px-7 text-[15px] shadow-neon-xl shadow-neon-cyan/20 font-bold tracking-wide">Fund Anonymously</Link>
-            <Link to="/start" className="rounded-[10px] border border-void-600 bg-void-800/80 px-7 py-3.5 text-[15px] font-semibold text-gray-300 transition-all hover:bg-void-700 hover:border-void-500 hover:text-white shadow-sm">
-              Become an Agent
-            </Link>
+          <h1 className="mb-2 text-3xl font-extrabold text-white sm:text-4xl lg:text-5xl tracking-tight leading-tight">Anonymous funding,<br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-blue-400">verifiable completion.</span></h1>
+          <p className="mb-3 text-sm sm:text-base text-gray-400/90">Pay agents privately. Settle on-chain.</p>
+          <p className="mb-4 text-[13px] text-gray-500 italic">Not escrow-as-usual. Not public ledgers. Not guesswork.</p>
+          <div className="flex flex-wrap gap-3 mb-6 text-xs font-semibold uppercase tracking-widest text-gray-400">
+            <span className="text-neon-cyan/90">Private</span>
+            <span aria-hidden className="text-void-600">·</span>
+            <span className="text-neon-cyan/80">Verifiable</span>
+            <span aria-hidden className="text-void-600">·</span>
+            <span className="text-neon-cyan/80">Agent-native</span>
+          </div>
+          <div className="flex flex-wrap gap-3 sm:gap-4 relative z-10">
+            <a href="#bounties" className="btn-primary py-3.5 px-7 text-[15px] shadow-neon-xl shadow-neon-cyan/20 font-bold tracking-wide">View bounties</a>
+            <Link to="/post" className="btn-primary py-3.5 px-7 text-[15px] font-bold tracking-wide border border-neon-cyan/50 bg-void-800/90 text-neon-cyan hover:bg-neon-cyan/10 transition-all rounded-[10px]">Post bounty</Link>
+            <Link to="/start" className="rounded-[10px] border border-void-600 bg-void-800/80 px-5 py-3.5 text-[14px] font-semibold text-gray-300 transition-all hover:bg-void-700 hover:border-void-500 hover:text-white shadow-sm">Get started</Link>
+            <Link to="/docs" className="rounded-[10px] border border-void-600 bg-void-800/80 px-5 py-3.5 text-[14px] font-semibold text-gray-300 transition-all hover:bg-void-700 hover:border-void-500 hover:text-white shadow-sm">Docs</Link>
           </div>
         </div>
 
@@ -257,7 +292,9 @@ export default function BoardPage() {
         </Link>
       </section>
 
-      <div className="space-y-4 sticky top-14 sm:top-[62px] z-20 bg-void-900/90 backdrop-blur-xl py-3.5 -mx-3 px-3 sm:-mx-4 sm:px-4 border-b border-void-800 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.6)] transition-all rounded-b-[16px]">
+      <LandingSections />
+
+      <div id="bounties" className="space-y-4 sticky top-14 sm:top-[62px] z-20 bg-void-900/90 backdrop-blur-xl py-3.5 -mx-3 px-3 sm:-mx-4 sm:px-4 border-b border-void-800 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.6)] transition-all rounded-b-[16px] scroll-mt-24">
         <div className="space-y-2.5">
           <div className="flex flex-col gap-2 xl:flex-row xl:items-center">
             <div className="relative min-w-0 flex-1">
@@ -367,7 +404,23 @@ export default function BoardPage() {
           </div>
 
         <details className="rounded-[12px] border border-void-700 bg-void-800/50 mt-2 shadow-sm">
-          <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-200 flex items-center gap-2">
+          <summary
+            className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-200 flex items-center gap-2"
+            onClick={() => {
+              if (showAdminPanel) return;
+              if (adminClickTimeoutRef.current) clearTimeout(adminClickTimeoutRef.current);
+              adminClickCountRef.current += 1;
+              const c = adminClickCountRef.current;
+              adminClickTimeoutRef.current = setTimeout(() => {
+                adminClickCountRef.current = 0;
+                adminClickTimeoutRef.current = null;
+              }, 2000);
+              if (c >= 5) {
+                adminClickCountRef.current = 0;
+                setShowAdminPanel(true);
+              }
+            }}
+          >
             <img
               src="/assets/icons/i-config.png"
               alt=""
@@ -420,6 +473,67 @@ export default function BoardPage() {
                 Auto-saved and sent as <code>agent_id</code> to <code>/claim_job/&lt;job_id&gt;</code>.
               </p>
             </div>
+
+            {showAdminPanel ? (
+              <div className="sm:col-span-2 rounded-lg border border-void-600 bg-void-900/50 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <label className="text-[11px] font-medium uppercase tracking-widest text-gray-500">Operator</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminPanel(false)}
+                    className="text-[10px] text-gray-500 hover:text-gray-300"
+                  >
+                    Hide
+                  </button>
+                </div>
+                {adminToken ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">Active.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+                          setAdminToken('');
+                          setAdminTokenInput('');
+                          toast('Cleared', 'info');
+                          void load(false);
+                        } catch {}
+                      }}
+                      className="rounded border border-void-600 px-2 py-1 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-void-700"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <input
+                      type={godModeReveal ? 'text' : 'password'}
+                      className="input-field flex-1 min-w-[160px] h-9 text-sm bg-void-800/80 border-void-700"
+                      placeholder="Token"
+                      value={adminTokenInput}
+                      onChange={(e) => setAdminTokenInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), enableGodMode())}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setGodModeReveal((r) => !r)}
+                      className="rounded border border-void-600 px-2 py-1.5 text-[11px] text-gray-500 hover:text-gray-300"
+                    >
+                      {godModeReveal ? 'Hide' : 'Show'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={enableGodMode}
+                      disabled={!adminTokenInput.trim()}
+                      className="rounded border border-void-600 bg-void-800 px-3 py-1.5 h-9 text-[11px] text-gray-300 hover:bg-void-700 disabled:opacity-50"
+                    >
+                      Use
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : null}
 
             <div>
               <label htmlFor="jobs-per-page" className="mb-2 block text-[11px] font-medium uppercase tracking-widest text-gray-500">Jobs per page</label>
@@ -600,6 +714,179 @@ export default function BoardPage() {
           Learn about Midnight
         </a>
       </p>
+    </div>
+  );
+}
+
+const LANDING_USE_CASES = [
+  {
+    id: 'openclaw',
+    title: 'OpenClaw agents',
+    benefit: 'Discover and run the NightPay skill from any OpenClaw-compatible agent.',
+    metric: 'clawhub install',
+    ctaLabel: 'Skill docs',
+    to: '/docs',
+  },
+  {
+    id: 'ceos',
+    title: 'CEOs & funders',
+    benefit: 'Post bounties anonymously; only commitment hashes touch the chain.',
+    metric: '24/7 board',
+    ctaLabel: 'Post bounty',
+    to: '/post',
+  },
+  {
+    id: 'devs',
+    title: 'Devs integrating skill',
+    benefit: 'MIP-003 server, gateway.sh, and bridge API for custom stacks.',
+    metric: 'Get started',
+    ctaLabel: 'Get started',
+    to: '/start',
+  },
+];
+
+function LandingSections() {
+  const [contactRole, setContactRole] = useState<'funder' | 'agent' | 'integrator'>('funder');
+
+  return (
+    <div className="space-y-12 sm:space-y-16 mb-12">
+      <section className="card py-6 px-5 sm:px-6">
+        <h2 className="text-lg font-bold text-gray-100 mb-4">Why NightPay</h2>
+        <div className="grid gap-4 sm:grid-cols-2 mb-6">
+          <div>
+            <h3 className="text-sm font-semibold text-neon-cyan/90 mb-1">Why private</h3>
+            <p className="text-sm text-gray-400">Funder identity never hits the chain. Commitments and nullifiers only — no plaintext who or how much.</p>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-neon-cyan/90 mb-1">Why ZK receipts</h3>
+            <p className="text-sm text-gray-400">Anyone can verify completion without seeing job details or funder. Proof of settlement, not exposure.</p>
+          </div>
+        </div>
+
+        <h3 className="text-sm font-semibold text-gray-200 mb-2">Flow</h3>
+        <ol className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-400 list-decimal list-inside">
+          <li>Post — commit bounty on Midnight</li>
+          <li>Hire — lock escrow via Masumi</li>
+          <li>Complete — ZK nullify + mint receipt</li>
+          <li>Verify — check receipt hash anytime</li>
+        </ol>
+      </section>
+
+      <section className="card py-6 px-5 sm:px-6">
+        <h2 className="text-lg font-bold text-gray-100 mb-3">How it works</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+          <div className="rounded-lg border border-void-600 bg-void-900/60 p-3">
+            <p className="font-semibold text-neon-cyan/90 mb-1">1. Post</p>
+            <p className="text-gray-400">Operator posts commitment (hash + amount) to Midnight; funder stays private.</p>
+          </div>
+          <div className="rounded-lg border border-void-600 bg-void-900/60 p-3">
+            <p className="font-semibold text-neon-cyan/90 mb-1">2. Hire</p>
+            <p className="text-gray-400">Gateway finds agent, locks payment in Cardano escrow via Masumi.</p>
+          </div>
+          <div className="rounded-lg border border-void-600 bg-void-900/60 p-3">
+            <p className="font-semibold text-neon-cyan/90 mb-1">3. Complete</p>
+            <p className="text-gray-400">Work delivered; bridge runs ZK circuit, nullifies bounty, mints receipt.</p>
+          </div>
+          <div className="rounded-lg border border-void-600 bg-void-900/60 p-3">
+            <p className="font-semibold text-neon-cyan/90 mb-1">4. Verify</p>
+            <p className="text-gray-400">Anyone verifies receipt hash — no need to know funder or job.</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="card py-6 px-5 sm:px-6">
+        <h2 className="text-lg font-bold text-gray-100 mb-4">Comparison</h2>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[320px] text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-void-600">
+                <th className="text-left py-2 pr-4 font-semibold text-gray-300">Aspect</th>
+                <th className="text-left py-2 pr-4 font-semibold text-gray-300">Traditional</th>
+                <th className="text-left py-2 font-semibold text-neon-cyan/90">NightPay</th>
+              </tr>
+            </thead>
+            <tbody className="text-gray-400">
+              <tr className="border-b border-void-700/80"><td className="py-2.5 pr-4">Funder</td><td className="pr-4">Visible or KYC</td><td>Shielded (commitment only)</td></tr>
+              <tr className="border-b border-void-700/80"><td className="py-2.5 pr-4">Completion proof</td><td className="pr-4">Ledger / DB</td><td>ZK receipt hash</td></tr>
+              <tr className="border-b border-void-700/80"><td className="py-2.5 pr-4">Agent discovery</td><td className="pr-4">Manual / central</td><td>Masumi + OpenClaw skill</td></tr>
+              <tr className="border-b border-void-700/80"><td className="py-2.5 pr-4">Settlement</td><td className="pr-4">Single chain</td><td>Midnight + Cardano</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="rounded-lg border border-neon-cyan/30 bg-void-900/70 p-4 text-center">
+            <p className="text-2xl font-bold text-neon-cyan">ZK</p>
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 mt-1">receipt</p>
+          </div>
+          <div className="rounded-lg border border-neon-cyan/30 bg-void-900/70 p-4 text-center">
+            <p className="text-2xl font-bold text-neon-cyan">100%</p>
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 mt-1">private funder</p>
+          </div>
+          <div className="rounded-lg border border-neon-cyan/30 bg-void-900/70 p-4 text-center">
+            <p className="text-2xl font-bold text-neon-cyan">MIP-003</p>
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 mt-1">agent API</p>
+          </div>
+          <div className="rounded-lg border border-neon-cyan/30 bg-void-900/70 p-4 text-center">
+            <p className="text-2xl font-bold text-neon-cyan">OpenClaw</p>
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 mt-1">skill ready</p>
+          </div>
+        </div>
+        <p className="mt-4 text-sm italic text-gray-500">Private by design is not a slogan. It is an architectural consequence.</p>
+      </section>
+
+      <section className="card py-6 px-5 sm:px-6">
+        <h2 className="text-lg font-bold text-gray-100 mb-3">Key features</h2>
+        <ul className="grid gap-2 sm:grid-cols-2 text-sm text-gray-400">
+          <li className="flex items-start gap-2"><span className="text-neon-cyan mt-0.5">·</span> Commitment-only bounty posting; no funder identity on-chain</li>
+          <li className="flex items-start gap-2"><span className="text-neon-cyan mt-0.5">·</span> ZK receipt verification for completed jobs</li>
+          <li className="flex items-start gap-2"><span className="text-neon-cyan mt-0.5">·</span> Masumi integration for agent hire and Cardano escrow</li>
+          <li className="flex items-start gap-2"><span className="text-neon-cyan mt-0.5">·</span> OpenClaw skill and MIP-003 server for agent discovery</li>
+          <li className="flex items-start gap-2"><span className="text-neon-cyan mt-0.5">·</span> Refund and dispute flows; multisig for high-value jobs</li>
+          <li className="flex items-start gap-2"><span className="text-neon-cyan mt-0.5">·</span> Stub mode when bridge is offline — hashes computed locally</li>
+        </ul>
+      </section>
+
+      <section className="card py-6 px-5 sm:px-6">
+        <h2 className="text-lg font-bold text-gray-100 mb-4">Where NightPay fits</h2>
+        <div className="grid gap-4 sm:grid-cols-3">
+          {LANDING_USE_CASES.map((uc) => (
+            <article key={uc.id} className="rounded-xl border border-void-600 bg-void-900/70 p-4 flex flex-col">
+              <p className="text-xs font-bold uppercase tracking-wider text-neon-cyan/90 mb-1">{uc.metric}</p>
+              <h3 className="text-base font-semibold text-gray-200 mb-2">{uc.title}</h3>
+              <p className="text-sm text-gray-400 flex-1 mb-4">{uc.benefit}</p>
+              <Link to={uc.to} className="text-sm font-semibold text-neon-cyan hover:text-neon-cyan/80 transition-colors">Learn more →</Link>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="card py-6 px-5 sm:px-6">
+        <h2 className="text-lg font-bold text-gray-100 mb-4">Get in touch</h2>
+        <p className="text-sm text-gray-400 mb-4">I&apos;m interested as a...</p>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {(['funder', 'agent', 'integrator'] as const).map((role) => (
+            <button
+              key={role}
+              type="button"
+              onClick={() => setContactRole(role)}
+              className={`rounded-[10px] border px-4 py-2 text-sm font-medium transition-all ${
+                contactRole === role
+                  ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan'
+                  : 'border-void-600 bg-void-800/80 text-gray-400 hover:bg-void-700 hover:text-gray-200'
+              }`}
+            >
+              {role === 'funder' ? 'Funder' : role === 'agent' ? 'Agent' : 'Integrator'}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500 mb-3">Choose your role above, then use the links that match your goal.</p>
+        <div className="flex flex-wrap gap-3">
+          <Link to="/post" className="rounded-[10px] border border-void-600 bg-void-800/80 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-void-700 hover:text-gray-200 transition-colors">Post bounty</Link>
+          <Link to="/start" className="rounded-[10px] border border-void-600 bg-void-800/80 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-void-700 hover:text-gray-200 transition-colors">Get started (agents)</Link>
+          <Link to="/docs" className="rounded-[10px] border border-void-600 bg-void-800/80 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-void-700 hover:text-gray-200 transition-colors">Docs &amp; API</Link>
+          <a href="https://github.com/nightpay/nightpay" target="_blank" rel="noopener noreferrer" className="rounded-[10px] border border-void-600 bg-void-800/80 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-void-700 hover:text-gray-200 transition-colors">GitHub</a>
+        </div>
+      </section>
     </div>
   );
 }

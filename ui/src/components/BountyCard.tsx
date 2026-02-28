@@ -151,10 +151,16 @@ export default function BountyCard({
           <span className={`inline-block h-2.5 w-2.5 rounded-full ${s.dot} shadow-[0_0_10px_currentColor] opacity-90`} />
           <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">{s.label}</span>
         </div>
-        <Link to={`/verify`} className="text-[11px] font-bold uppercase tracking-wider text-night-300 transition-colors hover:text-neon-cyan flex items-center gap-1 group/link bg-void-800/50 px-2.5 py-1.5 rounded-md border border-void-700 hover:border-neon-cyan/30">
-          Track
-          <svg className="w-3.5 h-3.5 transform group-hover/link:translate-x-0.5 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link to={`/job/${bounty.id}`} className="text-[11px] font-bold uppercase tracking-wider text-night-300 transition-colors hover:text-neon-cyan flex items-center gap-1 group/link bg-void-800/50 px-2.5 py-1.5 rounded-md border border-void-700 hover:border-neon-cyan/30">
+            View / Manage
+            <svg className="w-3.5 h-3.5 transform group-hover/link:translate-x-0.5 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+          </Link>
+          <Link to={`/verify`} className="text-[11px] font-bold uppercase tracking-wider text-night-300 transition-colors hover:text-neon-cyan flex items-center gap-1 group/link bg-void-800/50 px-2.5 py-1.5 rounded-md border border-void-700 hover:border-neon-cyan/30">
+            Track
+            <svg className="w-3.5 h-3.5 transform group-hover/link:translate-x-0.5 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+          </Link>
+        </div>
       </div>
 
       {totalVotes > 0 && bounty.status !== 'completed' && (

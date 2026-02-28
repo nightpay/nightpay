@@ -755,13 +755,16 @@ curl -s http://localhost:8090/input_schema
 ```
 
 Required fields: `description` (string), `amount_specks` (integer).
-Optional: `work_commit` (64-char hex sha256 for commit-reveal), `idempotency_key` (8–128 alphanumeric chars), `contest` object.
+Optional: `work_commit` (64-char hex sha256 for commit-reveal), `idempotency_key` (8–128 alphanumeric chars), `contest` object, **`visibility`** (see below), **`attachment_filename`** / **`attachment_content`** (authenticated only, see below).
 
 ---
 
 ### POST /start_job
 
 Starts a new job.
+
+- **Visibility:** `"visibility": "public"` or `"visibility": "private"` (default **private**). Private jobs are hidden from public job listings; only the creator (job_token) or operator can see them in listings and can list submissions.
+- **Attachment:** Optional `attachment_filename` (must end with `.md` or `.txt`) and `attachment_content` (string, max 256KB). **Only accepted when the request is authenticated:** `Authorization: Bearer <operator_secret>` or valid `X-Agent-Token`. Unauthenticated requests that include attachment fields receive 403.
 
 ```bash
 curl -sS -X POST http://localhost:8090/start_job \
@@ -774,6 +777,7 @@ curl -sS -X POST http://localhost:8090/start_job \
       "network": "preprod"
     },
     "amount_specks": 50000000,
+    "visibility": "private",
     "idempotency_key": "my-job-001"
   }'
 ```
@@ -997,10 +1001,11 @@ curl -sS -X POST "http://localhost:8090/vote_result/${JOB_ID}" \
 
 ### GET /submissions/\<job_id\>
 
-List contest submissions with vote tallies and voting-window metadata.
+List contest submissions with vote tallies and voting-window metadata. **Authenticated:** only the bounty creator (Bearer `job_token` from `start_job`) or operator (Bearer operator secret) may call this. Returns 401 without `Authorization`, 403 if token is invalid or not authorized.
 
 ```bash
-curl -s "http://localhost:8090/submissions/${JOB_ID}"
+curl -s "http://localhost:8090/submissions/${JOB_ID}" \
+  -H "Authorization: Bearer ${JOB_TOKEN}"
 ```
 
 ---
