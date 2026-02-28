@@ -48,3 +48,7 @@ Key status concepts:
 - Do not publish plaintext bounty descriptions or funder identity data.
 - Use hashes/commitments/nullifier hashes only.
 - Credential examples are illustrative and contain synthetic values.
+
+## Alignment with Midnight concepts
+
+Ontology terms map to [Midnight concepts](https://docs.midnight.network/concepts) as follows: **hashed-only** data (e.g. commitment hashes) corresponds to values stored on the **public ledger** as commitments; **private-witness** corresponds to circuit witnesses (Kachina private state) that never appear on-chain. Receipt and bounty identifiers are commitment-style hashes; disclosure is limited to what the contract exposes on the public ledger.

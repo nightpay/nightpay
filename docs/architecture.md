@@ -2,7 +2,7 @@
 
 **Purpose:** Single place for system components, data flow, and where external frameworks (e.g. Midnight.js) fit. Update when making integration or structural changes.
 
-**Public repo:** This repo is public. Do not commit `bridge/`, `.cursor/`, `.claude/`, `plans/`, `LAUNCH.md`, `AGENTS.md`, `.tmp/`, `masumi-services-dev-quickstart`, or any path listed in `.gitignore`.
+**Public repo:** This repo is public. What must stay private (and never be committed) is defined in `.gitignore`; the rationale for each category is in the section **"Public vs private (what goes in .gitignore)"** below.
 
 Last updated: 2026-02-28
 
@@ -29,6 +29,47 @@ Last updated: 2026-02-28
 - **Stub mode** — When the proof server or the chain is down, the bridge can still answer HTTP requests. It returns the same JSON shape but with `stub: true` and no real transaction ID. Callers (gateway, UI) can show “offline” or “simulated” instead of failing hard.
 - **Gateway** — A shell script that runs the bounty lifecycle: post bounty, hire agent, complete job, refund. It calls Masumi for payments and the bridge when it needs something to happen on Midnight.
 - **Compact / receipt.compact** — The smart contract language and our contract file. It defines the circuits (e.g. `postBounty`, `completeAndReceipt`, `verifyReceipt`) that run on Midnight. The bridge runs the JavaScript that was compiled from this contract.
+
+---
+
+## Alignment with Midnight concepts
+
+NightPay’s design follows the [Midnight concepts](https://docs.midnight.network/concepts) model. This section maps our components to the official terminology so code and docs stay aligned.
+
+| Midnight concept | What it means | How NightPay uses it |
+|------------------|---------------|----------------------|
+| **Accounts** | Who participates: keys, addresses, authorization. | Operator address (and gateway address) are set at init; funders and agents are not identified on-chain. |
+| **Ledgers** | Where state lives: **public ledger** (visible data) and **private ledger** (shielded data). | Our contract keeps public counters and config on the public ledger; bounty/receipt/pool/funding trees and nullifier set are **secret ledger** state (shielded). |
+| **UTXO model** | Discrete coins; spend = consume inputs, create outputs; **nullifier set** prevents double-spend. | NIGHT flows via Zswap; we use the **commitment/nullifier pattern** (Merkle trees + nullifier set) for bounties, pools, and receipts—same idea as [Zswap](https://docs.midnight.network/concepts/how-midnight-works/zswap). |
+| **Zero-knowledge proofs** | Prove correctness without revealing sensitive data (ZK Snarks). | Proof server produces proofs for our circuits; verification uses the circuit’s verifier key (entry point). |
+| **Kachina** | Private state (user/local) + public state (chain); ZK links them; **transcripts** encode effects. | Witnesses (jobHash, amounts, nonces, Merkle paths) are private inputs; public transcript updates contract state; bridge builds witnesses from requests. |
+| **Compact contracts** | **Entry points** = circuits = verifier keys; contract **state** = ledger state; value via receive/send. | `postBounty`, `completeAndReceipt`, `verifyReceipt`, etc. are entry points; we use `effects.retainInContract` / `releaseToAddress` for value. |
+| **Keeping data private** | Hashes/commitments on public ledger; Merkle trees for membership without revealing which item; domain-separated nullifiers. | We store only commitments in trees; nullifiers are domain-separated; no plaintext funder or job data on-chain. |
+
+References: [Concepts overview](https://docs.midnight.network/concepts), [Ledgers](https://docs.midnight.network/concepts/ledgers), [UTXO model](https://docs.midnight.network/concepts/utxo), [ZK proofs](https://docs.midnight.network/concepts/zero-knowledge-proofs), [Kachina](https://docs.midnight.network/concepts/kachina), [Building blocks](https://docs.midnight.network/concepts/how-midnight-works/building-blocks), [Smart contracts](https://docs.midnight.network/concepts/how-midnight-works/smart-contracts), [Keeping data private](https://docs.midnight.network/concepts/how-midnight-works/keeping-data-private).
+
+---
+
+## Public vs private (what goes in .gitignore)
+
+**Principle:** The public repo contains everything needed to use, integrate, and extend NightPay (skill, gateway, contract, UI, docs). Anything that would expose operator/funder secrets, internal plans, or machine-specific credentials stays out — it is listed in `.gitignore` and must never be committed.
+
+**Canonical list:** `.gitignore` is the single source of truth for what is ignored. The table below documents the *reason* for each category so we can decide consistently when adding new paths.
+
+| Category | Paths / patterns | Why private |
+|----------|------------------|-------------|
+| **Bridge & wallet** | `bridge/` | Operator wallet and bridge implementation live in a separate private repo; public repo only defines the bridge HTTP API contract. |
+| **Internal planning** | `plans/`, `LAUNCH.md`, `AGENTS.md` | Roadmap, launch kit, and agent coding instructions are for maintainers; public users get README, SKILL.md, and docs. |
+| **IDE & local config** | `.cursor/`, `.claude/` | May contain hostnames, API keys, local paths; machine-specific. |
+| **Local automation** | `.private/`, `scripts/*` (except allowlisted) | Custom deploy/ops scripts and secrets; only `agent-playground-setup.sh`, `server-sync-start.sh`, `load-sim.sh` are shared. |
+| **Agent playground** | `.agent-playground/`, `.agent-playground.env*`, `sample-agent/.env`, `sample-agent/.state/` | Runtime secrets (JOB_TOKEN_SECRET, OPERATOR_SECRET_KEY, MASUMI_API_KEY, etc.); template `.agent-playground.env.example` stays tracked. |
+| **Credentials & keys** | `.env`, `.env.*`, `*.pem`, `*.p12`, `*.pk8`, `hetzner_*`, `id_rsa`, `id_ed25519`, `credentials*.json`, `secrets.json` | Env vars and key material must never be committed. |
+| **VPS / deployment** | `docs/HETZNER_X86_RUNBOOK.md` | Contains deployment details and host references; operator-only. |
+| **Test suites** | `test/smoke.sh`, `test/chaos_stress_suite.py` | May reference internal endpoints or test credentials; keep private unless sanitized for public CI. |
+| **Runtime artifacts** | `runtime/`, `state/`, `logs/`, `pids/`, `*.sqlite*`, `*.pid` | Server/process state and DBs; not part of source. |
+| **Build & temp** | `ui/dist/`, `ui/node_modules/`, `node_modules/`, `.tmp/`, `masumi-services-dev-quickstart` | Build output, dependencies, and local clones. |
+
+**Before adding a new path:** If it contains hostnames, API keys, wallet/operator secrets, or internal runbooks, add it to `.gitignore` and to this table. If in doubt, keep it private.
 
 ---
 

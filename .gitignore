@@ -1,3 +1,6 @@
+# NightPay .gitignore — canonical list of what stays out of the public repo.
+# Rationale for each category: docs/architecture.md § "Public vs private (what goes in .gitignore)".
+
 node_modules/
 .env
 .env.*
@@ -12,9 +15,14 @@ Thumbs.db
 nul
 NUL
 
+# Credential / secret filenames (safety net — never commit)
+credentials.json
+credentials*.json
+secrets.json
+*-secrets.json
+
 # ── PRIVATE — never commit to the public repo ─────────────────────────────────
-# bridge/ is operator wallet wiring — lives in nightpay/nightpay-bridge (private repo)
-# Anyone can implement a compatible bridge from the HTTP spec in SKILL.md
+# bridge/ = operator wallet + bridge implementation (private repo); public repo defines API only
 bridge/
 
 # Internal plans, launch kit, agent instructions, local clones (not for public repo)
@@ -67,8 +75,6 @@ logs/security/
 .agent-playground.env.local
 sample-agent/.env
 sample-agent/.state/
-
-# Canonical agent env template stays tracked
 !.agent-playground.env.example
 
 # Local-only private automation/scripts (never publish)

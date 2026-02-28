@@ -1,6 +1,9 @@
 // NightPay — Midnight Compact contract (ledger-compatible)
 //
-// Built against: midnightntwrk/midnight-ledger spec
+// Built against: midnightntwrk/midnight-ledger spec.
+// Aligns with Midnight concepts: public/secret ledger state, UTXO-style nullifier set,
+// commitment/nullifier pattern (see docs.midnight.network/concepts and
+// docs.midnight.network/concepts/how-midnight-works/keeping-data-private).
 //
 // SECURITY MODEL:
 //   - initialize() can only be called once — locked forever after
