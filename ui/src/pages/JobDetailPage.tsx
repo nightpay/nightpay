@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, type Submission, formatNight, truncateHash, timeAgo, ADMIN_TOKEN_STORAGE_KEY } from '../api.ts';
+import { api, type Job, type Submission, formatNight, truncateHash, timeAgo, ADMIN_TOKEN_STORAGE_KEY } from '../api.ts';
 import { toast } from '../utils/toast.ts';
 
 const JOB_TOKEN_STORAGE_KEY = 'nightpay.job_token';
+
+/** Job plus optional voting fields from GET /status/:id */
+type JobDetail = Job & {
+  voting?: { started_at?: string; ends_at?: string; eligible_voters_count?: number; agent_voting_only?: boolean };
+  voter_snapshot?: string[];
+};
 
 function getAdminToken(): string {
   try {
@@ -15,7 +21,7 @@ function getAdminToken(): string {
 
 export default function JobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
-  const [job, setJob] = useState<Record<string, unknown> | null>(null);
+  const [job, setJob] = useState<JobDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,7 +58,7 @@ export default function JobDetailPage() {
     setError(null);
     try {
       const data = await api.jobStatus(jobId);
-      setJob(data as Record<string, unknown>);
+      setJob(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load job');
       setJob(null);
@@ -189,11 +195,10 @@ export default function JobDetailPage() {
     );
   }
 
-  const status = (job.status as string) ?? 'unknown';
-  const inputData = (job.input_data as Record<string, unknown>) ?? {};
-  const description = (inputData.description as string) ?? (inputData as { description?: string }).description ?? 'No description';
+  const status = job.status ?? 'unknown';
+  const description = job.input_data?.description ?? 'No description';
   const amountSpecks = Number(job.amount_specks ?? 0);
-  const contest = job.contest as { enabled?: boolean; min_agents?: number; max_agents?: number } | undefined;
+  const contest = job.contest;
   const isContest = contest?.enabled === true;
   const canDispute = ['running', 'awaiting_approval', 'multisig_pending'].includes(status);
 

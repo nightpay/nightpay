@@ -4,7 +4,7 @@ import { api, runtimeConfig } from '../api.ts';
 /** Bridge URL for copy-paste curl: use env if set, else nightpay.dev in prod, else localhost. */
 function bridgeUrlForCurl(): string {
   const base = runtimeConfig.bridgeBase;
-  if (base.startsWith('http')) return base;
+  if (base.startsWith('http')) return base.replace(/\/$/, '');
   if (typeof window !== 'undefined' && (window.location.hostname === 'nightpay.dev' || window.location.hostname.endsWith('.nightpay.dev')))
     return 'https://bridge.nightpay.dev';
   return 'http://localhost:4000';
