@@ -1,5 +1,14 @@
 import { useMemo, useState, type DragEvent, type FormEvent } from 'react';
-import { api } from '../api.ts';
+import { api, runtimeConfig } from '../api.ts';
+
+/** Bridge URL for copy-paste curl: use env if set, else nightpay.dev in prod, else localhost. */
+function bridgeUrlForCurl(): string {
+  const base = runtimeConfig.bridgeBase;
+  if (base.startsWith('http')) return base;
+  if (typeof window !== 'undefined' && (window.location.hostname === 'nightpay.dev' || window.location.hostname.endsWith('.nightpay.dev')))
+    return 'https://bridge.nightpay.dev';
+  return 'http://localhost:4000';
+}
 
 type State = 'idle' | 'loading' | 'valid' | 'invalid' | 'error';
 
@@ -94,7 +103,7 @@ export default function VerifyPage() {
 
   async function copyCurl() {
     if (!parsed?.hash) return;
-    const cmd = `curl -X POST http://localhost:4000/verifyReceipt -H "Content-Type: application/json" -d "{\\"receiptHash\\":\\"${parsed.hash}\\"}"`;
+    const cmd = `curl -X POST ${bridgeUrlForCurl()}/verifyReceipt -H "Content-Type: application/json" -d "{\\"receiptHash\\":\\"${parsed.hash}\\"}"`;
     try {
       await navigator.clipboard.writeText(cmd);
       setCopiedCurl(true);
