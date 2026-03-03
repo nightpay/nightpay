@@ -65,11 +65,43 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 | **Agent playground** | `.agent-playground/`, `.agent-playground.env*`, `sample-agent/.env`, `sample-agent/.state/` | Runtime secrets (JOB_TOKEN_SECRET, OPERATOR_SECRET_KEY, MASUMI_API_KEY, etc.); template `.agent-playground.env.example` stays tracked. |
 | **Credentials & keys** | `.env`, `.env.*`, `*.pem`, `*.p12`, `*.pk8`, `hetzner_*`, `id_rsa`, `id_ed25519`, `credentials*.json`, `secrets.json` | Env vars and key material must never be committed. |
 | **VPS / deployment** | `docs/HETZNER_X86_RUNBOOK.md` | Contains deployment details and host references; operator-only. |
+| **Operator session** | `docs/OPERATOR_SESSION.md` | Admin-only full visibility (token generation via SSH, sessionStorage, no UI); do not commit. |
 | **Test suites** | `test/smoke.sh`, `test/chaos_stress_suite.py` | May reference internal endpoints or test credentials; keep private unless sanitized for public CI. |
 | **Runtime artifacts** | `runtime/`, `state/`, `logs/`, `pids/`, `*.sqlite*`, `*.pid` | Server/process state and DBs; not part of source. |
 | **Build & temp** | `ui/dist/`, `ui/node_modules/`, `node_modules/`, `.tmp/`, `masumi-services-dev-quickstart` | Build output, dependencies, and local clones. |
 
 **Before adding a new path:** If it contains hostnames, API keys, wallet/operator secrets, or internal runbooks, add it to `.gitignore` and to this table. If in doubt, keep it private.
+
+### Scripts and docs audit (what goes to GitHub)
+
+**Scripts:** Only these are **public** (tracked); all other scripts under `scripts/` are gitignored.
+
+| Path | Status | Notes |
+|------|--------|--------|
+| `scripts/agent-playground-setup.sh` | **PUBLIC** | Allowlisted; bootstrap init/start/stop/doctor/ops-token. |
+| `scripts/server-sync-start.sh` | **PUBLIC** | Allowlisted. |
+| `scripts/load-sim.sh` | **PUBLIC** | Allowlisted. |
+| `scripts/server-sync-start.ps1` | **PRIVATE** | Under `/scripts/*`; not allowlisted. |
+| `scripts/swarm-nightpay-dev.sh` | **PRIVATE** | Under `/scripts/*`; not allowlisted. |
+| `skills/nightpay/scripts/gateway.sh` | **PUBLIC** | Not under `/scripts/`; core bounty lifecycle. |
+| `skills/nightpay/scripts/mip003-server.sh` | **PUBLIC** | MIP-003 HTTP server. |
+| `skills/nightpay/scripts/update-blocklist.sh` | **PUBLIC** | Skill script. |
+| `skills/nightpay/scripts/bounty-board.sh` | **PUBLIC** | Skill script. |
+| `sample-agent/agent.sh` | **PUBLIC** | Sample agent; `sample-agent/.env` and `.state/` are gitignored. |
+| `test/smoke.sh` | **PRIVATE** | Gitignored; may use test credentials. |
+| `test/chaos_stress_suite.py` | **PRIVATE** | Gitignored. |
+
+**Key docs:**
+
+| Path | Status | Notes |
+|------|--------|--------|
+| `docs/AGENT_PLAYGROUND.md` | **PUBLIC** | Full agent/operator runbook (init, env, doctor, API ref). No secret values; points to private `OPERATOR_SESSION.md` for admin token flow. Safe for GitHub so contributors can run the stack. |
+| `docs/architecture.md` | **PUBLIC** | Component and public-vs-private reference. |
+| `docs/OPERATOR_SESSION.md` | **PRIVATE** | Gitignored; admin-only token and sessionStorage flow. |
+| `docs/HETZNER_X86_RUNBOOK.md` | **PRIVATE** | Gitignored; VPS/deploy details. |
+| Other `docs/*.md` | **PUBLIC** | Unless listed above or in .gitignore. |
+
+**Agent playground (summary):** The *runbook* `docs/AGENT_PLAYGROUND.md` and the *script* `scripts/agent-playground-setup.sh` are **public** so that anyone who clones the repo can bootstrap and run. The *runtime* (`.agent-playground/`, `.agent-playground.env`, `sample-agent/.env`) is **private** and never committed. Keep this split: public how-to and scripts, private secrets and state.
 
 ---
 
@@ -79,7 +111,7 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 |-----------|----------------|
 | **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. |
 | **mip003-server.sh** | Exposes MIP-003 job endpoints (start, claim, submit, vote, select winner, status) plus public ontology routes (`/ontology`, `/ontology/context`, `/ontology/examples`). |
-| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute. **Hidden operator entry:** route `/ops` (no link on site); enter token there to enable full visibility and actions for the session. Alternatively, 5 quick clicks on “Agent tools & display settings” on the board reveals a minimal operator panel. Read-only verify and stats. |
+| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
 | **skills/nightpay/HEARTBEAT.md** | OpenClaw periodic checklist: checks `/availability`, optional bridge `/health`, workload deltas, and returns `HEARTBEAT_OK` when no action is needed. |
 | **Bridge** | Only component that talks to the proof server and Midnight; implements the HTTP API below. |
 | **Proof server** | Generates ZK proofs from circuit inputs; bridge sends inputs, gets proofs, then submits to the node. |

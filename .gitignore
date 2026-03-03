@@ -98,5 +98,6 @@ sample-agent/.state/
 /*.p12
 /*.pk8
 docs/HETZNER_X86_RUNBOOK.md
+docs/OPERATOR_SESSION.md
 test/smoke.sh
 test/chaos_stress_suite.py

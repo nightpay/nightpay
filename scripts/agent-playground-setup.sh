@@ -21,6 +21,7 @@ Usage:
   bash scripts/agent-playground-setup.sh stop
   bash scripts/agent-playground-setup.sh doctor
   bash scripts/agent-playground-setup.sh status
+  bash scripts/agent-playground-setup.sh ops-token [minutes]
 EOF
 }
 
@@ -292,6 +293,37 @@ doctor_cmd() {
   echo "doctor result: PASS (${warnings} warnings)"
 }
 
+ops_token_cmd() {
+  load_env
+  [[ -n "${OPERATOR_SECRET_KEY:-}" ]] || {
+    echo "ERROR: OPERATOR_SECRET_KEY not set in $ENV_FILE" >&2
+    exit 1
+  }
+  local minutes="${1:-15}"
+  if ! [[ "$minutes" =~ ^[0-9]+$ ]] || [[ "$minutes" -lt 1 ]] || [[ "$minutes" -gt 1440 ]]; then
+    echo "ERROR: minutes must be 1–1440 (default 15)" >&2
+    exit 1
+  fi
+  detect_python || {
+    echo "ERROR: python3/python required for ops-token" >&2
+    exit 1
+  }
+  local token
+  token="$("${PYTHON_CMD[@]}" - "$minutes" "$OPERATOR_SECRET_KEY" <<'PY'
+import hmac, hashlib, time, sys
+minutes = int(sys.argv[1])
+secret = sys.argv[2]
+expiry = int(time.time()) + 60 * minutes
+msg = f"ops:{expiry}"
+sig = hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+print(f"ops.{expiry}.{sig}")
+PY
+)"
+  echo "$token"
+  echo "" >&2
+  echo "Paste the line above into the site at /ops (valid ${minutes} min). Do not share." >&2
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -310,6 +342,10 @@ main() {
       ;;
     status)
       status_cmd
+      ;;
+    ops-token)
+      shift
+      ops_token_cmd "${1:-15}"
       ;;
     -h|--help|help|"")
       usage

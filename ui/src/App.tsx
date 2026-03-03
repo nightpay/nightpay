@@ -1,18 +1,21 @@
+import { Suspense, lazy } from 'react';
 import { Link, Routes, Route } from 'react-router-dom';
 import Nav from './components/Nav.tsx';
-import BoardPage from './pages/BoardPage.tsx';
-import VerifyPage from './pages/VerifyPage.tsx';
-import StatsPage from './pages/StatsPage.tsx';
-import PostPage from './pages/PostPage.tsx';
-import GetStartedPage from './pages/GetStartedPage.tsx';
-import AgentShowcasePage from './pages/AgentShowcasePage.tsx';
-import SkillDocsPage from './pages/SkillDocsPage.tsx';
-import TermsPage from './pages/TermsPage.tsx';
-import CookiesPage from './pages/CookiesPage.tsx';
 import ToastContainer from './components/ToastContainer.tsx';
-import CeoPage from './pages/CeoPage.tsx';
-import JobDetailPage from './pages/JobDetailPage.tsx';
-import OpsPage from './pages/OpsPage.tsx';
+import PageLoader from './components/PageLoader.tsx';
+
+// Lazy loaded pages
+const BoardPage = lazy(() => import('./pages/BoardPage.tsx'));
+const VerifyPage = lazy(() => import('./pages/VerifyPage.tsx'));
+const StatsPage = lazy(() => import('./pages/StatsPage.tsx'));
+const PostPage = lazy(() => import('./pages/PostPage.tsx'));
+const GetStartedPage = lazy(() => import('./pages/GetStartedPage.tsx'));
+const AgentShowcasePage = lazy(() => import('./pages/AgentShowcasePage.tsx'));
+const SkillDocsPage = lazy(() => import('./pages/SkillDocsPage.tsx'));
+const TermsPage = lazy(() => import('./pages/TermsPage.tsx'));
+const CookiesPage = lazy(() => import('./pages/CookiesPage.tsx'));
+const CeoPage = lazy(() => import('./pages/CeoPage.tsx'));
+const JobDetailPage = lazy(() => import('./pages/JobDetailPage.tsx'));
 
 export default function App() {
   const hostname = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : '';
@@ -30,24 +33,25 @@ export default function App() {
       <div className="relative min-h-screen flex flex-col">
         <Nav />
         <main className="flex-1 min-w-0 max-w-6xl mx-auto w-full px-3 py-6 sm:px-4 sm:py-8 lg:py-10">
-          <Routes>
-            <Route path="/" element={rootPage} />
-            <Route path="/board" element={<BoardPage />} />
-            <Route path="/start" element={<GetStartedPage />} />
-            <Route path="/get-started" element={<GetStartedPage />} />
-            <Route path="/docs" element={<SkillDocsPage />} />
-            <Route path="/docs/skill" element={<SkillDocsPage />} />
-            <Route path="/skill" element={<SkillDocsPage />} />
-            <Route path="/post" element={<PostPage />} />
-            <Route path="/job/:jobId" element={<JobDetailPage />} />
-            <Route path="/agents" element={<AgentShowcasePage />} />
-            <Route path="/verify" element={<VerifyPage />} />
-            <Route path="/stats" element={<StatsPage />} />
-            <Route path="/ops" element={<OpsPage />} />
-            <Route path="/ceo" element={<CeoPage />} />
-            <Route path="/terms" element={<TermsPage />} />
-            <Route path="/cookies" element={<CookiesPage />} />
-          </Routes>
+          <Suspense fallback={<PageLoader />}>
+            <Routes>
+              <Route path="/" element={rootPage} />
+              <Route path="/board" element={<BoardPage />} />
+              <Route path="/start" element={<GetStartedPage />} />
+              <Route path="/get-started" element={<GetStartedPage />} />
+              <Route path="/docs" element={<SkillDocsPage />} />
+              <Route path="/docs/skill" element={<SkillDocsPage />} />
+              <Route path="/skill" element={<SkillDocsPage />} />
+              <Route path="/post" element={<PostPage />} />
+              <Route path="/job/:jobId" element={<JobDetailPage />} />
+              <Route path="/agents" element={<AgentShowcasePage />} />
+              <Route path="/verify" element={<VerifyPage />} />
+              <Route path="/stats" element={<StatsPage />} />
+              <Route path="/ceo" element={<CeoPage />} />
+              <Route path="/terms" element={<TermsPage />} />
+              <Route path="/cookies" element={<CookiesPage />} />
+            </Routes>
+          </Suspense>
         </main>
         <footer className="border-t border-void-700/90 bg-void-900/70 py-4 sm:py-5 text-center text-xs text-gray-500 backdrop-blur">
           <div className="flex flex-wrap justify-center items-center gap-x-2 gap-y-2 px-3">
@@ -68,3 +72,4 @@ export default function App() {
     </div>
   );
 }
+

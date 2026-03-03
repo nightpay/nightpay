@@ -244,7 +244,7 @@ export default function JobDetailPage() {
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="job-token" className="mb-1.5 block text-[11px] font-medium uppercase tracking-widest text-gray-500">
-              Job token (optional if God mode on)
+              Job token
             </label>
             <input
               id="job-token"

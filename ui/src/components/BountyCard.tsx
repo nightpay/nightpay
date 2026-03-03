@@ -3,10 +3,10 @@ import { Link } from 'react-router-dom';
 import { type Bounty, formatNight, truncateHash, timeAgo } from '../api.ts';
 
 const STATUS: Record<Bounty['status'], { badge: string; label: string; dot: string }> = {
-  open:      { badge: 'badge-open',      label: 'Open',        dot: 'bg-blue-400'  },
-  funded:    { badge: 'badge-funded',    label: 'In Progress', dot: 'bg-yellow-400' },
-  completed: { badge: 'badge-completed', label: 'Completed',   dot: 'bg-green-400' },
-  disputed:  { badge: 'badge-disputed',  label: 'Disputed',    dot: 'bg-red-400'   },
+  open: { badge: 'badge-open', label: 'Open', dot: 'bg-blue-400' },
+  funded: { badge: 'badge-funded', label: 'In Progress', dot: 'bg-yellow-400' },
+  completed: { badge: 'badge-completed', label: 'Completed', dot: 'bg-green-400' },
+  disputed: { badge: 'badge-disputed', label: 'Disputed', dot: 'bg-red-400' },
 };
 
 interface Props {
@@ -28,14 +28,14 @@ export default function BountyCard({
   const [copyFailed, setCopyFailed] = useState(false);
   const s = STATUS[bounty.status];
   const totalVotes = Math.max(0, bounty.approveVotes + bounty.rejectVotes);
-  
+
   const timeline = [
     { id: 'open', label: 'posted', title: 'Funded and available for claim' },
     { id: 'funded', label: 'claimed', title: 'An agent is assigned and working on it' },
     { id: 'submitted', label: 'submitted', title: 'Result submitted to Masumi gateway' },
     { id: 'completed', label: 'settled', title: 'Payment finalized on Midnight network' },
   ] as const;
-  
+
   const currentStep = bounty.status === 'open' ? 0 : bounty.status === 'funded' ? 1 : bounty.status === 'completed' ? 3 : 2;
   const claimedLabel = bounty.claimsCount === 0
     ? 'unclaimed'
@@ -71,7 +71,7 @@ export default function BountyCard({
           My Claim
         </span>
       )}
-      
+
       <div className="mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 flex items-center gap-1.5">
@@ -87,7 +87,7 @@ export default function BountyCard({
         <span className={`${s.badge} shrink-0 shadow-sm mt-0.5`}>{s.label}</span>
       </div>
 
-      <p 
+      <p
         title={compact ? bounty.description : undefined}
         className={`${compact ? 'mb-4 min-h-0 text-[13px] cursor-help' : 'mb-5 min-h-24 text-[14px]'} whitespace-pre-wrap break-words leading-relaxed text-gray-400 group-hover:text-gray-300 transition-colors`}
       >
@@ -128,9 +128,8 @@ export default function BountyCard({
               return (
                 <div key={step.id} className="text-center group/step" title={step.title}>
                   <span
-                    className={`mb-2 inline-block h-2 w-full rounded-full cursor-help transition-all duration-300 ${
-                      active ? 'bg-neon-cyan/90 shadow-[0_0_8px_rgba(94,242,255,0.4)]' : 'bg-void-700'
-                    } ${isCurrent ? 'h-2.5 shadow-[0_0_12px_rgba(94,242,255,0.8)]' : 'group-hover/step:h-2.5'}`}
+                    className={`mb-2 inline-block h-2 w-full rounded-full cursor-help transition-all duration-300 ${active ? 'bg-neon-cyan/90 shadow-[0_0_8px_rgba(94,242,255,0.4)]' : 'bg-void-700'
+                      } ${isCurrent ? 'h-2.5 shadow-[0_0_12px_rgba(94,242,255,0.8)]' : 'group-hover/step:h-2.5'}`}
                   />
                   <p className={`text-[10px] uppercase tracking-wider font-medium transition-colors ${active ? 'text-neon-cyan' : 'text-gray-500'}`}>{step.label}</p>
                 </div>
@@ -152,11 +151,11 @@ export default function BountyCard({
           <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">{s.label}</span>
         </div>
         <div className="flex items-center gap-2">
-          <Link to={`/job/${bounty.id}`} className="text-[11px] font-bold uppercase tracking-wider text-night-300 transition-colors hover:text-neon-cyan flex items-center gap-1 group/link bg-void-800/50 px-2.5 py-1.5 rounded-md border border-void-700 hover:border-neon-cyan/30">
+          <Link to={`/job/${bounty.id}`} className="text-[11px] font-bold uppercase tracking-wider text-night-300 transition-colors hover:text-neon-cyan active:scale-95 flex items-center justify-center gap-1 group/link bg-void-800/50 min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-md border border-void-700 hover:border-neon-cyan/30">
             View / Manage
             <svg className="w-3.5 h-3.5 transform group-hover/link:translate-x-0.5 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
           </Link>
-          <Link to={`/verify`} className="text-[11px] font-bold uppercase tracking-wider text-night-300 transition-colors hover:text-neon-cyan flex items-center gap-1 group/link bg-void-800/50 px-2.5 py-1.5 rounded-md border border-void-700 hover:border-neon-cyan/30">
+          <Link to={`/verify`} className="text-[11px] font-bold uppercase tracking-wider text-night-300 transition-colors hover:text-neon-cyan active:scale-95 flex items-center justify-center gap-1 group/link bg-void-800/50 min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-md border border-void-700 hover:border-neon-cyan/30">
             Track
             <svg className="w-3.5 h-3.5 transform group-hover/link:translate-x-0.5 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
           </Link>
@@ -177,7 +176,7 @@ export default function BountyCard({
             type="button"
             onClick={() => onClaim(bounty.id)}
             disabled={claimBusy}
-            className="btn-primary w-full sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed text-sm h-[42px] px-6 font-bold tracking-wide"
+            className="btn-primary w-full sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed text-[15px] sm:text-sm h-[48px] sm:h-[42px] px-6 font-bold tracking-wide active:scale-95"
           >
             {claimBusy ? 'Claiming...' : bounty.status === 'open' ? 'Claim Job' : 'Join Claim'}
           </button>
@@ -197,14 +196,14 @@ export default function BountyCard({
             <button
               onClick={copyReceipt}
               title={copied ? "Copied!" : "Copy receipt hash"}
-              className={`p-2 rounded-md transition-all focus:outline-none shrink-0 ${copied ? 'text-green-400 bg-green-400/10 shadow-[inset_0_0_0_1px_rgba(74,222,128,0.2)]' : copyFailed ? 'text-red-400 bg-red-400/10 shadow-[inset_0_0_0_1px_rgba(248,113,113,0.2)]' : 'text-gray-400 hover:text-neon-cyan hover:bg-void-700 hover:shadow-[inset_0_0_0_1px_rgba(94,242,255,0.2)] bg-void-900'}`}
+              className={`p-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md transition-all focus:outline-none shrink-0 active:scale-95 ${copied ? 'text-green-400 bg-green-400/10 shadow-[inset_0_0_0_1px_rgba(74,222,128,0.2)]' : copyFailed ? 'text-red-400 bg-red-400/10 shadow-[inset_0_0_0_1px_rgba(248,113,113,0.2)]' : 'text-gray-400 hover:text-neon-cyan hover:bg-void-700 hover:shadow-[inset_0_0_0_1px_rgba(94,242,255,0.2)] bg-void-900'}`}
             >
               {copied ? (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
               ) : copyFailed ? (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
               ) : (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
               )}
             </button>
           </div>

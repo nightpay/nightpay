@@ -691,6 +691,21 @@ def verify_operator_sig(job_id, reason, sig):
     expected = hmac.new(OPERATOR_SECRET_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
 
+def verify_operator_session_token(token):
+    # Time-limited token from CLI (e.g. SSH): ops.<expiry_ts>.<hmac_hex>
+    if not token or not isinstance(token, str) or not token.startswith('ops.') or token.count('.') != 2:
+        return False
+    try:
+        _, expiry_str, sig = token.split('.', 2)
+        expiry_ts = int(expiry_str)
+    except (ValueError, AttributeError):
+        return False
+    if datetime.now(timezone.utc).timestamp() > expiry_ts:
+        return False
+    msg = f'ops:{expiry_str}'
+    expected = hmac.new(OPERATOR_SECRET_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
 def validate_actor_id(value):
     return bool(ID_RE.match(str(value or '').strip()))
 
@@ -1609,12 +1624,16 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         return payload
 
     def _operator_bearer_ok(self):
-        # Admin endpoints use Bearer token auth against OPERATOR_SECRET_KEY.
+        # Admin: raw OPERATOR_SECRET_KEY or time-limited session token (ops.<expiry>.<hmac> from CLI).
         auth = str(self.headers.get('Authorization', '')).strip()
         if not auth.startswith('Bearer '):
             return False
-        provided = auth[len('Bearer '):]
-        return bool(provided) and hmac.compare_digest(provided, OPERATOR_SECRET_KEY)
+        provided = auth[len('Bearer '):].strip()
+        if not provided:
+            return False
+        if hmac.compare_digest(provided, OPERATOR_SECRET_KEY):
+            return True
+        return verify_operator_session_token(provided)
 
     def _nightpay_agent_profile(self, row, db=None):
         if not row:

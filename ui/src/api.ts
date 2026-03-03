@@ -16,7 +16,7 @@ export const runtimeConfig = {
   proofServer: PROOF_SERVER,
 };
 
-/** SessionStorage key for admin/God mode token (operator secret). Cleared when tab closes. */
+/** SessionStorage key for operator session token. Cleared when tab closes. */
 export const ADMIN_TOKEN_STORAGE_KEY = 'nightpay.admin_token';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -311,7 +311,7 @@ export const api = {
     post<VerifyResponse>(BRIDGE_BASE, '/verifyReceipt', { receiptHash }),
 
   // MIP-003 server endpoints
-  /** If adminToken (operator secret) is provided, uses Bearer auth and defaults visibility to 'all' (God mode). */
+  /** If adminToken (operator session) is provided, uses Bearer auth and defaults visibility to 'all'. */
   jobs: (query: JobsQuery = {}, adminToken?: string) => {
     const params = new URLSearchParams();
     if (query.status) params.set('status', query.status);
@@ -392,7 +392,7 @@ export const api = {
   dispute: (jobId: string, jobToken: string, reason: string) =>
     postWithAuth<{ status: string; reason?: string }>(MIP_BASE, `/dispute/${jobId}`, { reason }, jobToken),
 
-  // Convenience: paged jobs mapped to UI bounties. Pass adminToken for God mode (see all jobs).
+  // Convenience: paged jobs mapped to UI bounties. Pass adminToken for operator visibility (all jobs).
   bounties: async (query: JobsQuery = {}, adminToken?: string): Promise<{
     bounties: Bounty[];
     limit: number;

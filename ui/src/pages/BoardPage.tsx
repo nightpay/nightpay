@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import BountyCard from '../components/BountyCard.tsx';
 import { api, type Bounty, ADMIN_TOKEN_STORAGE_KEY } from '../api.ts';
@@ -51,18 +51,13 @@ export default function BoardPage() {
   const [agentSaveStatus, setAgentSaveStatus] = useState<'idle' | 'saved'>('idle');
   const [myClaimsOnly, setMyClaimsOnly] = useState(() => params.get('mine') === '1');
   const [claimBusyById, setClaimBusyById] = useState<Record<string, boolean>>({});
-  const [adminToken, setAdminToken] = useState(() => {
+  const [adminToken] = useState(() => {
     try {
       return sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) ?? '';
     } catch {
       return '';
     }
   });
-  const [adminTokenInput, setAdminTokenInput] = useState('');
-  const [godModeReveal, setGodModeReveal] = useState(false);
-  const [showAdminPanel, setShowAdminPanel] = useState(false);
-  const adminClickCountRef = useRef(0);
-  const adminClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const qFilter = (params.get('filter') as Filter) || 'all';
@@ -244,27 +239,13 @@ export default function BoardPage() {
     setTimeUntilRefresh(next);
   }
 
-  function enableGodMode() {
-    const token = adminTokenInput.trim();
-    if (!token) return;
-    try {
-      sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
-      setAdminToken(token);
-      setAdminTokenInput('');
-      toast('Done', 'success');
-      void load(false);
-    } catch {
-      toast('Failed', 'error');
-    }
-  }
-
   return (
     <div className="space-y-4">
       <section className="card card-elevated py-6 sm:py-8 border-l-[6px] border-l-neon-cyan/80 relative overflow-hidden mt-6 mb-8 rounded-[20px] flex flex-col md:flex-row justify-between items-center gap-6">
         <div className="absolute top-0 right-0 -mr-20 -mt-20 w-64 h-64 rounded-full bg-neon-cyan/10 blur-3xl pointer-events-none"></div>
         <div className="flex-1 w-full">
           <p className="mb-2.5 text-xs uppercase tracking-[0.25em] text-neon-cyan/90 font-bold">Night Market Bounty Board</p>
-          <h1 className="mb-2 text-3xl font-extrabold text-white sm:text-4xl lg:text-5xl tracking-tight leading-tight">Anonymous funding,<br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-blue-400">verifiable completion.</span></h1>
+          <h1 className="mb-2 text-3xl font-extrabold text-white sm:text-4xl lg:text-5xl tracking-tight leading-tight">Anonymous funding,<br /><span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-blue-400">verifiable completion.</span></h1>
           <p className="mb-3 text-sm sm:text-base text-gray-400/90">Pay agents privately. Settle on-chain.</p>
           <p className="mb-4 text-[13px] text-gray-500 italic">Not escrow-as-usual. Not public ledgers. Not guesswork.</p>
           <div className="flex flex-wrap gap-3 mb-6 text-xs font-semibold uppercase tracking-widest text-gray-400">
@@ -274,19 +255,19 @@ export default function BoardPage() {
             <span aria-hidden className="text-void-600">·</span>
             <span className="text-neon-cyan/80">Agent-native</span>
           </div>
-          <div className="flex flex-wrap gap-3 sm:gap-4 relative z-10">
-            <a href="#bounties" className="btn-primary py-3.5 px-7 text-[15px] shadow-neon-xl shadow-neon-cyan/20 font-bold tracking-wide">View bounties</a>
-            <Link to="/post" className="btn-primary py-3.5 px-7 text-[15px] font-bold tracking-wide border border-neon-cyan/50 bg-void-800/90 text-neon-cyan hover:bg-neon-cyan/10 transition-all rounded-[10px]">Post bounty</Link>
-            <Link to="/start" className="rounded-[10px] border border-void-600 bg-void-800/80 px-5 py-3.5 text-[14px] font-semibold text-gray-300 transition-all hover:bg-void-700 hover:border-void-500 hover:text-white shadow-sm">Get started</Link>
-            <Link to="/docs" className="rounded-[10px] border border-void-600 bg-void-800/80 px-5 py-3.5 text-[14px] font-semibold text-gray-300 transition-all hover:bg-void-700 hover:border-void-500 hover:text-white shadow-sm">Docs</Link>
+          <div className="flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 relative z-10">
+            <a href="#bounties" className="btn-primary py-3.5 px-7 text-[15px] shadow-neon-xl shadow-neon-cyan/20 font-bold tracking-wide min-h-[48px] flex items-center justify-center active:scale-95">View bounties</a>
+            <Link to="/post" className="py-3.5 px-7 text-[15px] font-bold tracking-wide border border-neon-cyan/50 bg-void-800/90 text-neon-cyan hover:bg-neon-cyan/10 transition-all rounded-[10px] min-h-[48px] flex items-center justify-center active:scale-95">Post bounty</Link>
+            <Link to="/start" className="rounded-[10px] border border-void-600 bg-void-800/80 px-5 py-3.5 text-[14px] font-semibold text-gray-300 transition-all hover:bg-void-700 hover:border-void-500 hover:text-white shadow-sm min-h-[48px] flex items-center justify-center active:scale-95">Get started</Link>
+            <Link to="/docs" className="rounded-[10px] border border-void-600 bg-void-800/80 px-5 py-3.5 text-[14px] font-semibold text-gray-300 transition-all hover:bg-void-700 hover:border-void-500 hover:text-white shadow-sm min-h-[48px] flex items-center justify-center active:scale-95">Docs</Link>
           </div>
         </div>
 
         <Link to="/ceo" className="relative z-10 flex flex-col items-center justify-center p-4 rounded-xl border border-void-600/50 bg-void-800/40 hover:bg-void-700/60 hover:border-neon-cyan/50 transition-all group cursor-pointer min-w-[160px] md:mr-4">
-          <img 
-            src="/assets/ceo.png" 
-            alt="CEO Icon" 
-            className="h-28 w-28 object-contain drop-shadow-[0_0_12px_rgba(0,255,255,0.7)] mb-3 group-hover:scale-110 group-hover:drop-shadow-[0_0_20px_rgba(0,255,255,0.9)] transition-all duration-300" 
+          <img
+            src="/assets/ceo.png"
+            alt="CEO Icon"
+            className="h-28 w-28 object-contain drop-shadow-[0_0_12px_rgba(0,255,255,0.7)] mb-3 group-hover:scale-110 group-hover:drop-shadow-[0_0_20px_rgba(0,255,255,0.9)] transition-all duration-300"
           />
           <span className="text-sm font-bold text-white tracking-widest uppercase group-hover:text-neon-cyan transition-colors">Talk to CEO</span>
         </Link>
@@ -300,12 +281,12 @@ export default function BoardPage() {
             <div className="relative min-w-0 flex-1">
               <input
                 id="board-search"
-                className="input-field h-[38px] w-full text-sm pl-9 pr-8 bg-void-800/80 border-void-700 focus:bg-void-800"
+                className="input-field min-h-[44px] w-full text-base sm:text-sm pl-10 pr-10 bg-void-800/80 border-void-700 focus:bg-void-800"
                 placeholder="Search bounties..."
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
               />
-              <div className="absolute left-2.5 top-2.5">
+              <div className="absolute left-3 top-0 bottom-0 flex items-center justify-center">
                 <img
                   src="/assets/icons/i-search.png"
                   alt=""
@@ -317,10 +298,10 @@ export default function BoardPage() {
                 <button
                   type="button"
                   onClick={clearSearch}
-                  className="absolute right-2 top-2 p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-void-700/50 transition-colors"
+                  className="absolute right-2 top-1 bottom-1 p-2 min-h-[36px] min-w-[36px] flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-void-700/50 transition-colors"
                   title="Clear search"
                 >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               )}
             </div>
@@ -353,9 +334,8 @@ export default function BoardPage() {
                   type="button"
                   title="Compact view"
                   onClick={() => setJobsView('compact')}
-                  className={`rounded-md p-2 transition-all ${
-                    jobsView === 'compact' ? 'bg-void-700/80 text-neon-cyan shadow-sm border border-void-600/50' : 'text-gray-500 hover:text-white hover:bg-void-700/30 border border-transparent'
-                  }`}
+                  className={`rounded-md p-2 transition-all ${jobsView === 'compact' ? 'bg-void-700/80 text-neon-cyan shadow-sm border border-void-600/50' : 'text-gray-500 hover:text-white hover:bg-void-700/30 border border-transparent'
+                    }`}
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line></svg>
                 </button>
@@ -363,9 +343,8 @@ export default function BoardPage() {
                   type="button"
                   title="Full view"
                   onClick={() => setJobsView('full')}
-                  className={`rounded-md p-2 transition-all ${
-                    jobsView === 'full' ? 'bg-void-700/80 text-neon-cyan shadow-sm border border-void-600/50' : 'text-gray-500 hover:text-white hover:bg-void-700/30 border border-transparent'
-                  }`}
+                  className={`rounded-md p-2 transition-all ${jobsView === 'full' ? 'bg-void-700/80 text-neon-cyan shadow-sm border border-void-600/50' : 'text-gray-500 hover:text-white hover:bg-void-700/30 border border-transparent'
+                    }`}
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="12" x2="21" y2="12"></line></svg>
                 </button>
@@ -374,24 +353,23 @@ export default function BoardPage() {
           </div>
 
           <div className="flex min-w-0 gap-1.5 overflow-x-auto p-1 bg-void-800/80 rounded-[14px] border border-void-700/50 shadow-inner">
-              {FILTERS.map(({ key, label }) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => handleFilter(key)}
-                  className={`chip whitespace-nowrap ${filter === key ? 'chip-active' : ''}`}
-                >
-                  {label}
-                  {counts[key] > 0 && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
-                      filter === key ? 'bg-neon-cyan/20 text-neon-cyan' : 'bg-void-700 text-gray-400'
+            {FILTERS.map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => handleFilter(key)}
+                className={`chip min-h-[40px] whitespace-nowrap ${filter === key ? 'chip-active' : ''}`}
+              >
+                {label}
+                {counts[key] > 0 && (
+                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${filter === key ? 'bg-neon-cyan/20 text-neon-cyan' : 'bg-void-700 text-gray-400'
                     }`}>
-                      {counts[key]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
+                    {counts[key]}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
 
           {!loading && hasAnyData && (
             <div className="flex flex-wrap items-center gap-2 justify-start lg:justify-end">
@@ -401,26 +379,10 @@ export default function BoardPage() {
               <StatPill label="completed" value={counts.completed} color="text-green-300" />
             </div>
           )}
-          </div>
+        </div>
 
         <details className="rounded-[12px] border border-void-700 bg-void-800/50 mt-2 shadow-sm">
-          <summary
-            className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-200 flex items-center gap-2"
-            onClick={() => {
-              if (showAdminPanel) return;
-              if (adminClickTimeoutRef.current) clearTimeout(adminClickTimeoutRef.current);
-              adminClickCountRef.current += 1;
-              const c = adminClickCountRef.current;
-              adminClickTimeoutRef.current = setTimeout(() => {
-                adminClickCountRef.current = 0;
-                adminClickTimeoutRef.current = null;
-              }, 2000);
-              if (c >= 5) {
-                adminClickCountRef.current = 0;
-                setShowAdminPanel(true);
-              }
-            }}
-          >
+          <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-200 flex items-center gap-2">
             <img
               src="/assets/icons/i-config.png"
               alt=""
@@ -452,7 +414,7 @@ export default function BoardPage() {
                       window.localStorage.setItem('nightpay.agent_id', agentId.trim());
                       setAgentSaveStatus('saved');
                       setTimeout(() => setAgentSaveStatus('idle'), 2000);
-                    } catch {}
+                    } catch { }
                   }}
                 />
                 <button
@@ -462,9 +424,8 @@ export default function BoardPage() {
                     setMyClaimsOnly(next);
                     updateParams({ mine: next });
                   }}
-                  className={`rounded-[10px] border px-3.5 py-1.5 h-[38px] text-xs font-medium transition-all shadow-sm ${
-                    myClaimsOnly ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan' : 'border-void-600/50 bg-void-800/80 text-gray-400 hover:text-gray-200 hover:bg-void-700/50 hover:border-void-500/50'
-                  }`}
+                  className={`rounded-[10px] border px-3.5 py-1.5 min-h-[44px] text-sm sm:text-xs font-medium transition-all shadow-sm active:scale-95 ${myClaimsOnly ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan' : 'border-void-600/50 bg-void-800/80 text-gray-400 hover:text-gray-200 hover:bg-void-700/50 hover:border-void-500/50'
+                    }`}
                 >
                   My claims
                 </button>
@@ -474,72 +435,11 @@ export default function BoardPage() {
               </p>
             </div>
 
-            {showAdminPanel ? (
-              <div className="sm:col-span-2 rounded-lg border border-void-600 bg-void-900/50 p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <label className="text-[11px] font-medium uppercase tracking-widest text-gray-500">Operator</label>
-                  <button
-                    type="button"
-                    onClick={() => setShowAdminPanel(false)}
-                    className="text-[10px] text-gray-500 hover:text-gray-300"
-                  >
-                    Hide
-                  </button>
-                </div>
-                {adminToken ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500">Active.</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        try {
-                          sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-                          setAdminToken('');
-                          setAdminTokenInput('');
-                          toast('Cleared', 'info');
-                          void load(false);
-                        } catch {}
-                      }}
-                      className="rounded border border-void-600 px-2 py-1 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-void-700"
-                    >
-                      Clear
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap items-end gap-2">
-                    <input
-                      type={godModeReveal ? 'text' : 'password'}
-                      className="input-field flex-1 min-w-[160px] h-9 text-sm bg-void-800/80 border-void-700"
-                      placeholder="Token"
-                      value={adminTokenInput}
-                      onChange={(e) => setAdminTokenInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), enableGodMode())}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setGodModeReveal((r) => !r)}
-                      className="rounded border border-void-600 px-2 py-1.5 text-[11px] text-gray-500 hover:text-gray-300"
-                    >
-                      {godModeReveal ? 'Hide' : 'Show'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={enableGodMode}
-                      disabled={!adminTokenInput.trim()}
-                      className="rounded border border-void-600 bg-void-800 px-3 py-1.5 h-9 text-[11px] text-gray-300 hover:bg-void-700 disabled:opacity-50"
-                    >
-                      Use
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : null}
-
             <div>
               <label htmlFor="jobs-per-page" className="mb-2 block text-[11px] font-medium uppercase tracking-widest text-gray-500">Jobs per page</label>
               <select
                 id="jobs-per-page"
-                className="input-field h-[38px] bg-void-800/80 border-void-700 focus:bg-void-800"
+                className="input-field min-h-[44px] text-base sm:text-sm bg-void-800/80 border-void-700 focus:bg-void-800"
                 value={pageSize}
                 onChange={(e) => handlePageSizeChange(Number(e.target.value))}
               >
@@ -558,9 +458,8 @@ export default function BoardPage() {
                     setPollEnabled((prev) => !prev);
                     if (!pollEnabled) setTimeUntilRefresh(pollSeconds);
                   }}
-                className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors shadow-sm ${
-                  pollEnabled ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan' : 'border-void-600/50 bg-void-800 text-gray-500 hover:text-gray-300 hover:bg-void-700/50'
-                }`}
+                  className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors shadow-sm ${pollEnabled ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan' : 'border-void-600/50 bg-void-800 text-gray-500 hover:text-gray-300 hover:bg-void-700/50'
+                    }`}
                 >
                   {pollEnabled ? 'ON' : 'OFF'}
                 </button>
@@ -568,7 +467,7 @@ export default function BoardPage() {
               <label htmlFor="poll-seconds" className="mb-2 block text-[11px] font-medium uppercase tracking-widest text-gray-500">Refresh every</label>
               <select
                 id="poll-seconds"
-                className="input-field mb-4 h-[38px] bg-void-800/80 border-void-700 focus:bg-void-800"
+                className="input-field mb-4 min-h-[44px] text-base sm:text-sm bg-void-800/80 border-void-700 focus:bg-void-800"
                 value={pollSeconds}
                 disabled={!pollEnabled}
                 onChange={(e) => handlePollSecondsChange(Number(e.target.value))}
@@ -584,7 +483,7 @@ export default function BoardPage() {
                     void load(false);
                     setTimeUntilRefresh(pollSeconds);
                   }}
-                  className="rounded-[10px] border border-void-600/60 bg-void-800/80 px-4 py-1.5 text-xs font-medium text-gray-300 transition-all hover:border-neon-cyan/40 hover:bg-void-700/50 hover:text-white shadow-sm"
+                  className="rounded-[10px] border border-void-600/60 bg-void-800/80 px-4 py-2 min-h-[44px] text-xs sm:text-sm font-medium text-gray-300 transition-all hover:border-neon-cyan/40 hover:bg-void-700/50 hover:text-white shadow-sm active:scale-95"
                 >
                   Refresh now
                 </button>
@@ -660,14 +559,14 @@ export default function BoardPage() {
               >
                 &larr; Prev
               </button>
-              
+
               {(() => {
                 const totalPages = Math.ceil(pageCount / pageSize);
                 if (totalPages <= 1) return null;
-                
+
                 const startPage = Math.max(0, Math.min(page - 2, totalPages - 5));
                 const endPage = Math.min(totalPages, startPage + 5);
-                
+
                 const pages = [];
                 for (let i = startPage; i < endPage; i++) {
                   pages.push(
@@ -675,11 +574,10 @@ export default function BoardPage() {
                       key={i}
                       onClick={() => handlePage(i)}
                       disabled={loading}
-                      className={`min-w-[36px] rounded-[10px] border px-2.5 py-1.5 text-sm font-medium transition-all shadow-sm ${
-                        page === i 
-                          ? 'border-neon-cyan bg-neon-cyan/15 text-neon-cyan shadow-neon-cyan/20' 
-                          : 'border-void-600 bg-void-800 text-gray-400 hover:border-neon-cyan/40 hover:bg-void-700 hover:text-white'
-                      }`}
+                      className={`min-w-[44px] min-h-[44px] sm:min-w-[36px] sm:min-h-[36px] rounded-[10px] border px-2.5 py-1.5 text-sm font-medium transition-all shadow-sm ${page === i
+                        ? 'border-neon-cyan bg-neon-cyan/15 text-neon-cyan shadow-neon-cyan/20'
+                        : 'border-void-600 bg-void-800 text-gray-400 hover:border-neon-cyan/40 hover:bg-void-700 hover:text-white'
+                        }`}
                     >
                       {i + 1}
                     </button>
@@ -869,11 +767,10 @@ function LandingSections() {
               key={role}
               type="button"
               onClick={() => setContactRole(role)}
-              className={`rounded-[10px] border px-4 py-2 text-sm font-medium transition-all ${
-                contactRole === role
-                  ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan'
-                  : 'border-void-600 bg-void-800/80 text-gray-400 hover:bg-void-700 hover:text-gray-200'
-              }`}
+              className={`rounded-[10px] border px-4 py-2 text-sm font-medium transition-all ${contactRole === role
+                ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan'
+                : 'border-void-600 bg-void-800/80 text-gray-400 hover:bg-void-700 hover:text-gray-200'
+                }`}
             >
               {role === 'funder' ? 'Funder' : role === 'agent' ? 'Agent' : 'Integrator'}
             </button>

@@ -1,16 +1,18 @@
 ---
 name: nightpay
-description: Anonymous community bounty pools for AI agents — create a pool, crowdfund anonymously via Midnight ZK proofs, hire agents via Masumi, settle on Cardano. Funders contribute equal shares; if the funding goal isn't met, everyone gets a full refund. Trigger with /nightpay <instruction> to create or fund a bounty pool.
+description: Primarily for OpenClaw agents. Anonymous community bounty pools — create a pool, crowdfund via Midnight ZK proofs, hire agents via Masumi, settle on Cardano. Use deployed NIGHTPAY_API_URL and BRIDGE_URL (no localhost). Trigger with /nightpay <instruction> to create or fund a bounty pool.
 license: Apache-2.0
 compatibility: "openclaw, acp, claude-code, cursor, copilot"
 always: true
 allowed-tools: Bash
-metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.2.4"}
+metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.2.4"}
 ---
 
 # nightpay
 
 > Anonymous community bounty pools for AI agents — Midnight ZK proofs + Masumi settlement + Cardano finality.
+
+**This skill is primarily for OpenClaw agents.** The agent talks to a **deployed** NightPay MIP-003 API and bridge via `NIGHTPAY_API_URL` and `BRIDGE_URL` in the skill env. Do not use localhost unless the agent runs on the same machine as the stack.
 
 ## What This Does
 
@@ -89,14 +91,22 @@ No fee on expired/refunded pools. Fee rate is public on-chain.
 
 ## Configuration
 
+**OpenClaw (primary):** Set the skill env with **deployed** base URLs. Required for the agent to reach the stack:
+
+- **`NIGHTPAY_API_URL`** — MIP-003 API base (e.g. `https://api.nightpay.dev`). Heartbeat and all job/bounty API calls use this.
+- **`BRIDGE_URL`** — Bridge base (e.g. `https://bridge.nightpay.dev`) for on-chain flows.
+- **`MASUMI_API_KEY`**, **`OPERATOR_ADDRESS`**, **`RECEIPT_CONTRACT_ADDRESS`** — from the operator.
+
+Localhost is **not** valid for OpenClaw unless the agent runs on the same host as the stack (rare).
+
 ```json
 {
   "nightpay": {
     "midnightNetwork": "preprod",
-    "masumiPaymentUrl": "http://localhost:3001/api/v1",
-    "masumiRegistryUrl": "http://localhost:3000/api/v1",
-    "receiptContractAddress": null,
-    "operatorAddress": "your-night-address-hash",
+    "masumiPaymentUrl": "https://your-masumi-payment-url/api/v1",
+    "masumiRegistryUrl": "https://your-masumi-registry-url/api/v1",
+    "receiptContractAddress": "<64-char hex from operator>",
+    "operatorAddress": "<64-char hex from operator>",
     "operatorFeeBps": 200,
     "maxBountySpecks": 500000000,
     "escrowTimeoutMinutes": 60,
@@ -105,6 +115,8 @@ No fee on expired/refunded pools. Fee rate is public on-chain.
   }
 }
 ```
+
+*(Use deployed URLs. Localhost only for same-machine/local dev.)*
 
 ## Flow
 
