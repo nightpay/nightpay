@@ -119,17 +119,17 @@ run_ssh() {
   ssh "${SSH_OPTS[@]}" "root@${HOST}" "$remote_cmd"
 }
 
-echo "[1/8] Verify SSH connectivity..."
+echo "[1/9] Verify SSH connectivity..."
 run_ssh "echo connected: \$(hostname)"
 
-echo "[2/8] Verify server architecture..."
+echo "[2/9] Verify server architecture..."
 ARCH="$(run_ssh "uname -m")"
 if [[ "$ARCH" != "x86_64" ]]; then
   echo "ERROR: expected x86_64 server for Masumi compatibility; found: $ARCH" >&2
   exit 1
 fi
 
-echo "[3/8] Backup remote env files..."
+echo "[3/9] Backup remote env files..."
 run_ssh "\
   set -euo pipefail; \
   mkdir -p '${REMOTE_DIR}/.backups'; \
@@ -139,7 +139,21 @@ run_ssh "\
   done; \
   echo backup_timestamp=\$ts"
 
-echo "[4/8] Sync tracked commit to ${HOST}:${REMOTE_DIR}..."
+echo "[4/9] Stop NightPay services before sync..."
+run_ssh "\
+  set -euo pipefail; \
+  if [[ ! -d '${REMOTE_DIR}' ]]; then exit 0; fi; \
+  if id -u deploy >/dev/null 2>&1; then \
+    if [[ -f '${REMOTE_DIR}/scripts/agent-playground-setup.sh' ]]; then \
+      su - deploy -c \"cd '${REMOTE_DIR}' && bash scripts/agent-playground-setup.sh stop || true\"; \
+    fi; \
+    pkill -u deploy -f '${REMOTE_DIR}/skills/nightpay/scripts/mip003-server.sh' || true; \
+    pkill -u deploy -f '${REMOTE_DIR}/ui/node_modules/.bin/vite' || true; \
+  fi; \
+  rm -f '${REMOTE_DIR}/.agent-playground/run/'*.pid || true; \
+  rm -rf '${REMOTE_DIR}/ui/.vite' '${REMOTE_DIR}/ui/node_modules/.vite' || true"
+
+echo "[5/9] Sync tracked commit to ${HOST}:${REMOTE_DIR}..."
 TMP_SYNC_DIR="$(mktemp -d)"
 cleanup_tmp() { rm -rf "$TMP_SYNC_DIR"; }
 trap cleanup_tmp EXIT
@@ -168,7 +182,7 @@ tar -C "$TMP_SYNC_DIR" -cf - . \
 cleanup_tmp
 trap - EXIT
 
-echo "[5/8] Restart NightPay services..."
+echo "[6/9] Restart NightPay services..."
 ssh "${SSH_OPTS[@]}" "root@${HOST}" \
   "REMOTE_DIR='${REMOTE_DIR}' SKIP_NPM_INSTALL='${SKIP_NPM_INSTALL}' UI_PORT='${UI_PORT}' MIP_PORT='${MIP_PORT}' SKIP_MASUMI_RECREATE='${SKIP_MASUMI_RECREATE}' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -312,14 +326,17 @@ if command -v ss >/dev/null 2>&1; then
   done
 fi
 
+# Clear Vite caches to avoid stale file metadata and permission drift after sync.
+rm -rf "$REMOTE_DIR/ui/.vite" "$REMOTE_DIR/ui/node_modules/.vite" || true
+
 su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start"
 su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh doctor"
 REMOTE
 
 if [[ "$SKIP_PROOF_RECREATE" == "1" ]]; then
-  echo "[6/8] Skipping proof-server recreate (--skip-proof-recreate)."
+  echo "[7/9] Skipping proof-server recreate (--skip-proof-recreate)."
 else
-  echo "[6/8] Recreate proof-server Docker stack..."
+  echo "[7/9] Recreate proof-server Docker stack..."
   ssh "${SSH_OPTS[@]}" "root@${HOST}" \
     "BRIDGE_DIR='${BRIDGE_DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -343,9 +360,9 @@ REMOTE
 fi
 
 if [[ "$SKIP_MASUMI_RECREATE" == "1" ]]; then
-  echo "[7/8] Skipping Masumi recreate (--skip-masumi-recreate)."
+  echo "[8/9] Skipping Masumi recreate (--skip-masumi-recreate)."
 else
-  echo "[7/8] Recreate Masumi API containers..."
+  echo "[8/9] Recreate Masumi API containers..."
   ssh "${SSH_OPTS[@]}" "root@${HOST}" \
     "MASUMI_DIR='${MASUMI_DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -383,7 +400,7 @@ fi
 MIP_PORT_CHECK="${MIP_PORT:-8090}"
 UI_PORT_CHECK="${UI_PORT:-3333}"
 
-echo "[8/8] Final health checks..."
+echo "[9/9] Final health checks..."
 run_ssh "\
   set -euo pipefail; \
   ui_enabled='1'; \

@@ -41,6 +41,7 @@ nightpay/
 | `README.md` | Project overview and quick start |
 | `docs/OPENCLAW_ONBOARDING.md` | Full onboarding walkthrough (written from a real install session) |
 | `docs/INSTALL_TROUBLESHOOTING.md` | Decision tree, error table, and health check script |
+| `docs/SUBMODULE_WORKFLOW.md` | Required commit/push workflow for root + `ui/` + `bridge/` repos |
 
 ## Development Workflow
 
@@ -48,6 +49,13 @@ nightpay/
 2. Make your changes
 3. Test locally with OpenClaw (see onboarding guide)
 4. Submit a PR with a clear description of what changed and why
+
+## Multi-Repo Commit Rule (Required)
+
+NightPay uses Git submodules (`ui/` and `bridge/`).  
+If you change files in those directories, commit and push in that submodule repo first, then commit the updated submodule pointer in root.
+
+Use this guide every time: `docs/SUBMODULE_WORKFLOW.md`.
 
 ## Areas Where Help Is Needed
 

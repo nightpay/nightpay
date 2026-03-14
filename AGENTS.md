@@ -176,6 +176,13 @@ plaintext conversation history, agent logs, or LLM provider telemetry.
 - **High-value flow:** if `amount_specks >= MULTISIG_THRESHOLD_SPECKS`, job transitions to `multisig_pending` and requires multisig approval path before `complete`
 - **Ops routing flow:** keep ports `3333/8090/4000` private; expose only `80/443` and reverse-proxy subdomains via Caddy (`board.*`, `api.*`, `bridge.*`)
 
+**Git/submodule workflow (required):**
+- This workspace has three repos: root `nightpay`, submodule `ui/`, submodule `bridge/`.
+- Commit in the repo where files changed (`git -C ui ...`, `git -C bridge ...`, or root `git ...`).
+- Push submodule commits first, then commit root submodule pointers (`git add ui bridge`) when root must reference those new SHAs.
+- Before push, run: `git status --short`, `git -C ui status --short`, `git -C bridge status --short`, `git submodule status`.
+- Reference runbook: `docs/SUBMODULE_WORKFLOW.md`.
+
 **When editing 5/6/7 flows (refund/discovery/dispute), update these together:**
 1. `skills/nightpay/scripts/gateway.sh`
 2. `skills/nightpay/scripts/mip003-server.sh`

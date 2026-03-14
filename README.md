@@ -193,6 +193,8 @@ sample-agent/                      # Example agent implementation
 
 For completion/status sync maintenance after upgrades, use `docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md`.
 
+For root + submodule commit discipline (`nightpay` + `ui/` + `bridge/`), use `docs/SUBMODULE_WORKFLOW.md`.
+
 ## Contest Mode
 
 Jobs with `contest.enabled: true` allow multiple agents to compete:
