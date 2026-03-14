@@ -191,6 +191,63 @@ if [[ ! -f "$REMOTE_DIR/.agent-playground.env" ]]; then
   fi
 fi
 
+if [[ "$SKIP_MASUMI_RECREATE" == "1" && -f "/opt/nightpay/.agent-playground.env" ]]; then
+  python3 - <<'PY'
+from pathlib import Path
+import os
+
+remote_env = Path(os.environ["REMOTE_DIR"]) / ".agent-playground.env"
+source_env = Path("/opt/nightpay/.agent-playground.env")
+if not remote_env.exists() or not source_env.exists():
+    raise SystemExit(0)
+
+def parse(lines):
+    out = {}
+    for line in lines:
+        if not line.startswith("export "):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.replace("export ", "", 1).strip()
+        out[key] = value.strip().strip('"').strip("'")
+    return out
+
+def is_placeholder(value: str) -> bool:
+    if not value:
+        return True
+    lowered = value.lower()
+    return ("<fill-in" in lowered) or (value == "your-key")
+
+remote_lines = remote_env.read_text().splitlines()
+source_lines = source_env.read_text().splitlines()
+remote_vals = parse(remote_lines)
+source_vals = parse(source_lines)
+
+remote_key = remote_vals.get("MASUMI_API_KEY", "")
+source_key = source_vals.get("MASUMI_API_KEY", "")
+
+if not is_placeholder(remote_key):
+    raise SystemExit(0)
+if is_placeholder(source_key):
+    raise SystemExit(0)
+
+updated = False
+out = []
+for line in remote_lines:
+    if line.startswith("export MASUMI_API_KEY="):
+        out.append(f'export MASUMI_API_KEY="{source_key}"')
+        updated = True
+    else:
+        out.append(line)
+if not updated:
+    out.append(f'export MASUMI_API_KEY="{source_key}"')
+
+remote_env.write_text("\n".join(out) + "\n")
+PY
+  chown deploy:deploy "$REMOTE_DIR/.agent-playground.env" || true
+fi
+
 if [[ -n "${UI_PORT:-}" || -n "${MIP_PORT:-}" ]]; then
   python3 - <<'PY'
 from pathlib import Path
