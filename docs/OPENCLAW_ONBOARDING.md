@@ -314,8 +314,20 @@ a placeholder. If you merged without replacing, the skill gets the literal strin
 ### Via ClawHub (if installed that way)
 
 ```bash
+# Update the installed copy (latest published version)
 clawhub update nightpay
+
+# Inspect published history / files without installing
+clawhub inspect nightpay --versions
+clawhub inspect nightpay --version 0.3.3 --files
+clawhub inspect nightpay --tag latest --files
 ```
+
+Versioning notes:
+- Use semver publish (`clawhub publish ... --version X.Y.Z`) for every release.
+- `clawhub install` resolves latest; use `clawhub inspect` to audit exact versions/tags.
+- For emergency takedown, `clawhub delete <slug>` soft-hides the skill entry.
+- Keep `skills/nightpay/SKILL.md` `version` and `metadata.version` aligned with root `package.json` `version`.
 
 ### Via Git (if cloned manually)
 

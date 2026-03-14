@@ -117,6 +117,7 @@ bash test/smoke.sh
 npx skills-ref validate ./skills/nightpay
 # Keep versions aligned
 # - package.json version
+# - skills/nightpay/SKILL.md frontmatter version
 # - skills/nightpay/SKILL.md metadata version
 npm publish
 ```

@@ -28,7 +28,9 @@
     "nightpay": "bin/cli.js"
   },
   "scripts": {
-    "test": "node scripts/run-smoke-test.mjs"
+    "test": "node scripts/run-quality-gate.mjs",
+    "test:quality": "node scripts/run-quality-gate.mjs",
+    "test:smoke": "node scripts/run-smoke-test.mjs"
   },
   "files": [
     "bin/",

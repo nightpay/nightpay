@@ -2,6 +2,7 @@
 name: nightpay
 description: Primarily for OpenClaw agents. Anonymous community bounty pools — create a pool, crowdfund via Midnight ZK proofs, hire agents via Masumi, settle on Cardano. Use deployed NIGHTPAY_API_URL and BRIDGE_URL (no localhost). Trigger with /nightpay <instruction> to create or fund a bounty pool.
 license: Apache-2.0
+version: 0.3.3
 compatibility: "openclaw, acp, claude-code, cursor, copilot"
 allowed-tools: Bash
 metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.3.3"}

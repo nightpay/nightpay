@@ -113,6 +113,12 @@ tar \
 | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
     set -euo pipefail; \
     mkdir -p '${REMOTE_DIR}'; \
+    find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 \
+      ! -name '.backups' \
+      ! -name '.agent-playground' \
+      ! -name '.agent-playground.env' \
+      ! -name '.env' \
+      -exec rm -rf {} +; \
     tar -xzf - -C '${REMOTE_DIR}'; \
     if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi; \
     chown -R deploy:deploy '${REMOTE_DIR}'; \

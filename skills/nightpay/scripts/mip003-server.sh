@@ -1123,9 +1123,15 @@ def external_status_from_internal(internal_status, amount_specks):
         return 'running'
     return 'failed'
 
+def canonical_json_sha256(payload):
+    data = payload if isinstance(payload, dict) else {}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
 def canonical_input_hash(input_data):
-    payload = input_data if isinstance(input_data, dict) else {}
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return canonical_json_sha256(input_data)
+
+def is_sha256_hex(value):
+    return bool(re.fullmatch(r'[0-9a-f]{64}', str(value or '').strip().lower()))
 
 def resolve_input_data(body):
     if not isinstance(body, dict):
@@ -1623,7 +1629,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         external_status = self._job_external_status(job)
 
         if MIP003_MODE == 'strict':
-            return {
+            payload = {
                 'id': latest['status_id'],
                 'status_id': latest['status_id'],
                 'job_id': job['job_id'],
@@ -1632,6 +1638,9 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'result': result,
                 'created_at': latest['created_at']
             }
+            if input_schema is not None:
+                payload['input_schema_hash'] = canonical_json_sha256(input_schema)
+            return payload
 
         # compat mode: keep current rich payload + explicit external/internal statuses
         payload = dict(job)
@@ -3219,6 +3228,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             strict_semantics = (MIP003_MODE == 'strict' and not legacy_path)
             input_payload = body if isinstance(body, dict) else {}
             status_id = ''
+            input_schema_hash = ''
             submit_agent_id = str(body.get('agent_id', '')).strip() if isinstance(body, dict) else ''
             verified_identity = None
 
@@ -3253,16 +3263,20 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     self.respond(409, {'error': 'job_id in body must match job_id query parameter'})
                     return
                 status_id = str(body.get('status_id', '')).strip()
+                input_schema_hash = str(body.get('input_schema_hash', '')).strip().lower()
                 input_payload = body.get('input_data')
-                if not status_id:
-                    self.respond(400, {'error': 'status_id is required in strict mode'})
+                if not input_schema_hash:
+                    self.respond(400, {'error': 'input_schema_hash is required in strict mode'})
+                    return
+                if not is_sha256_hex(input_schema_hash):
+                    self.respond(400, {'error': 'input_schema_hash must be 64-char lowercase hex sha256'})
                     return
                 if not isinstance(input_payload, dict):
                     self.respond(400, {'error': 'input_data object is required in strict mode'})
                     return
 
                 expected = db.execute(
-                    '''SELECT status_id FROM job_status_events
+                    '''SELECT status_id, input_schema FROM job_status_events
                        WHERE job_id = ? AND status = 'awaiting_input'
                        ORDER BY created_at DESC, rowid DESC
                        LIMIT 1''',
@@ -3271,13 +3285,24 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 if not expected:
                     record_status_event(db, job_id, 'awaiting_input', input_schema={'required': ['input_data'], 'job_id': job_id})
                     expected = db.execute(
-                        '''SELECT status_id FROM job_status_events
+                        '''SELECT status_id, input_schema FROM job_status_events
                            WHERE job_id = ? AND status = 'awaiting_input'
                            ORDER BY created_at DESC, rowid DESC
                            LIMIT 1''',
                         (job_id,)
                     ).fetchone()
-                if not expected or expected['status_id'] != status_id:
+                expected_schema = {'required': ['input_data'], 'job_id': job_id}
+                if expected and expected['input_schema']:
+                    try:
+                        expected_schema = json.loads(expected['input_schema'])
+                    except Exception:
+                        expected_schema = {'required': ['input_data'], 'job_id': job_id}
+                expected_schema_hash = canonical_json_sha256(expected_schema)
+                if expected_schema_hash != input_schema_hash:
+                    self.respond(409, {'error': 'input_schema_hash does not match latest awaiting_input schema'})
+                    return
+                # Backward compatibility for older strict clients that still send status_id.
+                if status_id and (not expected or expected['status_id'] != status_id):
                     self.respond(409, {'error': 'status_id does not match latest awaiting_input status event'})
                     return
             else:
@@ -3337,7 +3362,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 db,
                 job_id,
                 event_status,
-                input_schema={'status_id': status_id or None, 'strict': strict_semantics},
+                input_schema={
+                    'status_id': status_id or None,
+                    'input_schema_hash': input_schema_hash or None,
+                    'strict': strict_semantics
+                },
                 result={'approved_at': approved_at, 'internal_status': next_status, 'agent_id': submit_agent_id if AGENT_IDENTITY_ENFORCE else None}
             )
             db.commit()
