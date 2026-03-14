@@ -239,6 +239,26 @@ bridge.nightpay.dev {
 }
 ```
 
+### Staging DNS + Caddy
+
+Run staging on separate local ports so it does not collide with production:
+
+- `staging.nightpay.dev` -> `127.0.0.1:3334`
+- `api.staging.nightpay.dev` -> `127.0.0.1:8091`
+- `bridge.staging.nightpay.dev` -> `127.0.0.1:4001` (optional, if staging bridge exists)
+
+```caddy
+staging.nightpay.dev {
+  reverse_proxy 127.0.0.1:3334
+}
+api.staging.nightpay.dev {
+  reverse_proxy 127.0.0.1:8091
+}
+bridge.staging.nightpay.dev {
+  reverse_proxy 127.0.0.1:4001
+}
+```
+
 ### Prerequisites
 
 - [Masumi services](https://github.com/masumi-network/masumi-services-dev-quickstart)

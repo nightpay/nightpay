@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bash bin/deploy-hetzner-ci.sh \
+    --host <hostname-or-ip> \
+    --ssh-key <path-to-private-key> \
+    [--ssh-port 22] \
+    [--remote-dir /opt/nightpay] \
+    [--bridge-dir /opt/nightpay-bridge] \
+    [--masumi-dir /opt/masumi-services-dev-quickstart] \
+    [--ui-port 3333] \
+    [--mip-port 8090] \
+    [--skip-npm-install] \
+    [--skip-proof-recreate] \
+    [--skip-masumi-recreate]
+
+This script is intended for CI/CD usage.
+It syncs the current committed HEAD to the server, restarts NightPay services,
+recreates Docker services, and fails fast on health-check failures.
+EOF
+}
+
+HOST=""
+SSH_KEY=""
+SSH_PORT="22"
+REMOTE_DIR="/opt/nightpay"
+BRIDGE_DIR="/opt/nightpay-bridge"
+MASUMI_DIR="/opt/masumi-services-dev-quickstart"
+SKIP_NPM_INSTALL=0
+SKIP_PROOF_RECREATE=0
+SKIP_MASUMI_RECREATE=0
+UI_PORT=""
+MIP_PORT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="${2:-}"
+      shift 2
+      ;;
+    --ssh-key)
+      SSH_KEY="${2:-}"
+      shift 2
+      ;;
+    --ssh-port)
+      SSH_PORT="${2:-}"
+      shift 2
+      ;;
+    --remote-dir)
+      REMOTE_DIR="${2:-}"
+      shift 2
+      ;;
+    --bridge-dir)
+      BRIDGE_DIR="${2:-}"
+      shift 2
+      ;;
+    --masumi-dir)
+      MASUMI_DIR="${2:-}"
+      shift 2
+      ;;
+    --skip-npm-install)
+      SKIP_NPM_INSTALL=1
+      shift
+      ;;
+    --skip-proof-recreate)
+      SKIP_PROOF_RECREATE=1
+      shift
+      ;;
+    --skip-masumi-recreate)
+      SKIP_MASUMI_RECREATE=1
+      shift
+      ;;
+    --ui-port)
+      UI_PORT="${2:-}"
+      shift 2
+      ;;
+    --mip-port)
+      MIP_PORT="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown arg '$1'" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" || -z "$SSH_KEY" ]]; then
+  usage
+  exit 1
+fi
+
+if [[ ! -f "$SSH_KEY" ]]; then
+  echo "ERROR: SSH key not found: $SSH_KEY" >&2
+  exit 1
+fi
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SSH_OPTS=(
+  -i "$SSH_KEY"
+  -p "$SSH_PORT"
+  -o BatchMode=yes
+  -o StrictHostKeyChecking=accept-new
+  -o ConnectTimeout=20
+  -o ServerAliveInterval=15
+  -o ServerAliveCountMax=4
+)
+
+run_ssh() {
+  local remote_cmd="$1"
+  ssh "${SSH_OPTS[@]}" "root@${HOST}" "$remote_cmd"
+}
+
+echo "[1/8] Verify SSH connectivity..."
+run_ssh "echo connected: \$(hostname)"
+
+echo "[2/8] Verify server architecture..."
+ARCH="$(run_ssh "uname -m")"
+if [[ "$ARCH" != "x86_64" ]]; then
+  echo "ERROR: expected x86_64 server for Masumi compatibility; found: $ARCH" >&2
+  exit 1
+fi
+
+echo "[3/8] Backup remote env files..."
+run_ssh "\
+  set -euo pipefail; \
+  mkdir -p '${REMOTE_DIR}/.backups'; \
+  ts=\$(date +%Y%m%d-%H%M%S); \
+  for f in '${REMOTE_DIR}/.agent-playground.env' '${REMOTE_DIR}/.env' '${BRIDGE_DIR}/.env' '${MASUMI_DIR}/.env'; do \
+    if [[ -f \"\$f\" ]]; then cp \"\$f\" '${REMOTE_DIR}/.backups/'\"\$(basename \"\$f\")\"'.'\"\$ts\"; fi; \
+  done; \
+  echo backup_timestamp=\$ts"
+
+echo "[4/8] Sync tracked commit to ${HOST}:${REMOTE_DIR}..."
+git -C "$ROOT_DIR" archive --format=tar HEAD \
+  | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
+      set -euo pipefail; \
+      mkdir -p '${REMOTE_DIR}'; \
+      tar -xf - -C '${REMOTE_DIR}'; \
+      if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi; \
+      chown -R deploy:deploy '${REMOTE_DIR}'; \
+      find '${REMOTE_DIR}' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
+
+echo "[5/8] Restart NightPay services..."
+ssh "${SSH_OPTS[@]}" "root@${HOST}" \
+  "REMOTE_DIR='${REMOTE_DIR}' SKIP_NPM_INSTALL='${SKIP_NPM_INSTALL}' UI_PORT='${UI_PORT}' MIP_PORT='${MIP_PORT}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+if [[ "$SKIP_NPM_INSTALL" != "1" ]]; then
+  su - deploy -c "cd '$REMOTE_DIR' && npm install --no-audit --no-fund"
+  su - deploy -c "cd '$REMOTE_DIR/ui' && npm install --no-audit --no-fund"
+fi
+
+if [[ ! -f "$REMOTE_DIR/.agent-playground.env" ]]; then
+  su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh init"
+fi
+
+if [[ -n "${UI_PORT:-}" || -n "${MIP_PORT:-}" ]]; then
+  python3 - <<'PY'
+from pathlib import Path
+import os
+
+env_path = Path(os.environ["REMOTE_DIR"]) / ".agent-playground.env"
+if not env_path.exists():
+    raise SystemExit(f"Missing env file: {env_path}")
+
+ui_port = os.environ.get("UI_PORT", "").strip()
+mip_port = os.environ.get("MIP_PORT", "").strip()
+updates = {}
+if ui_port:
+    updates["export UI_PORT"] = f"\"{ui_port}\""
+if mip_port:
+    updates["export MIP_PORT"] = f"\"{mip_port}\""
+
+if updates:
+    lines = env_path.read_text().splitlines()
+    out = []
+    seen = set()
+    for line in lines:
+        replaced = False
+        for key, value in updates.items():
+            if line.startswith(key + "="):
+                out.append(f"{key}={value}")
+                seen.add(key)
+                replaced = True
+                break
+        if not replaced:
+            out.append(line)
+    for key, value in updates.items():
+        if key not in seen:
+            out.append(f"{key}={value}")
+    env_path.write_text("\n".join(out) + "\n")
+PY
+  chown deploy:deploy "$REMOTE_DIR/.agent-playground.env" || true
+fi
+
+su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh stop || true"
+
+# Best-effort cleanup for stale processes that survived previous stop operations.
+pkill -u deploy -f "$REMOTE_DIR/skills/nightpay/scripts/mip003-server.sh" || true
+pkill -u deploy -f "$REMOTE_DIR/ui/node_modules/.bin/vite" || true
+rm -f "$REMOTE_DIR/.agent-playground/run/"*.pid || true
+
+su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start"
+su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh doctor"
+REMOTE
+
+if [[ "$SKIP_PROOF_RECREATE" == "1" ]]; then
+  echo "[6/8] Skipping proof-server recreate (--skip-proof-recreate)."
+else
+  echo "[6/8] Recreate proof-server Docker stack..."
+  ssh "${SSH_OPTS[@]}" "root@${HOST}" \
+    "BRIDGE_DIR='${BRIDGE_DIR}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+if [[ ! -f "$BRIDGE_DIR/docker-compose.yml" ]]; then
+  echo "bridge compose not found at $BRIDGE_DIR; skipping proof-server recreate"
+  exit 0
+fi
+
+cd "$BRIDGE_DIR"
+docker compose pull || true
+
+if ! docker compose up -d --force-recreate --pull never; then
+  if ! docker image inspect ghcr.io/midnight-ntwrk/proof-server:4.0.0 >/dev/null 2>&1 \
+    && docker image inspect midnightnetwork/proof-server:latest >/dev/null 2>&1; then
+    docker tag midnightnetwork/proof-server:latest ghcr.io/midnight-ntwrk/proof-server:4.0.0
+  fi
+  docker compose up -d --force-recreate --pull never
+fi
+REMOTE
+fi
+
+if [[ "$SKIP_MASUMI_RECREATE" == "1" ]]; then
+  echo "[7/8] Skipping Masumi recreate (--skip-masumi-recreate)."
+else
+  echo "[7/8] Recreate Masumi API containers..."
+  ssh "${SSH_OPTS[@]}" "root@${HOST}" \
+    "MASUMI_DIR='${MASUMI_DIR}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+if [[ ! -f "$MASUMI_DIR/docker-compose.yml" ]]; then
+  echo "masumi compose not found at $MASUMI_DIR; skipping Masumi recreate"
+  exit 0
+fi
+
+cd "$MASUMI_DIR"
+
+# Keep DB volumes stable; only recreate API containers unless DB services are down.
+docker compose up -d postgres-payment postgres-registry
+docker compose pull payment-service registry-service || true
+docker compose up -d --no-deps --force-recreate payment-service registry-service
+
+for i in $(seq 1 90); do
+  p="$(curl -fsS -m 2 http://localhost:3001/api/v1/health || true)"
+  r="$(curl -fsS -m 2 http://localhost:3000/api/v1/health || true)"
+  if [[ -n "$p" && -n "$r" ]]; then
+    echo "masumi_payment=$p"
+    echo "masumi_registry=$r"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "ERROR: Masumi health check failed after recreate." >&2
+docker compose ps >&2
+docker compose logs --tail 80 payment-service registry-service >&2
+exit 1
+REMOTE
+fi
+
+MIP_PORT_CHECK="${MIP_PORT:-8090}"
+UI_PORT_CHECK="${UI_PORT:-3333}"
+
+echo "[8/8] Final health checks..."
+run_ssh "\
+  set -euo pipefail; \
+  echo -n 'mip='; curl -fsS http://localhost:${MIP_PORT_CHECK}/availability; echo; \
+  ui_code=\$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:${UI_PORT_CHECK}/); \
+  echo ui_status=\$ui_code; \
+  if [[ \"\$ui_code\" != '200' ]]; then echo 'ERROR: UI health check failed' >&2; exit 1; fi; \
+  if [[ '${SKIP_MASUMI_RECREATE}' != '1' && -f '${MASUMI_DIR}/docker-compose.yml' ]]; then \
+    echo -n 'payment='; curl -fsS http://localhost:3001/api/v1/health; echo; \
+    echo -n 'registry='; curl -fsS http://localhost:3000/api/v1/health; echo; \
+  fi; \
+  docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'"
+
+echo "Deploy completed successfully."
