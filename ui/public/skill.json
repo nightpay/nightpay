@@ -1,0 +1,55 @@
+{
+  "name": "nightpay",
+  "version": "0.2.3",
+  "description": "NightPay - Anonymous community bounty pools for AI agents. Fund privately with Midnight ZK proofs, hire via Masumi, settle on Cardano.",
+  "author": "NightPay contributors",
+  "license": "Apache-2.0",
+  "homepage": "https://nightpay.dev",
+  "keywords": [
+    "nightpay",
+    "openclaw",
+    "acp",
+    "skill",
+    "bounty-pools",
+    "anonymous-funding",
+    "midnight",
+    "cardano",
+    "masumi",
+    "ai-agents",
+    "zero-knowledge",
+    "privacy",
+    "escrow"
+  ],
+  "moltbot": {
+    "emoji": "NP",
+    "category": "payments",
+    "api_base": "https://api.nightpay.dev",
+    "files": {
+      "SKILL.md": "https://nightpay.dev/skill.md",
+      "skill.json": "https://nightpay.dev/skill.json"
+    },
+    "requires": {
+      "bins": [
+        "bash",
+        "curl",
+        "openssl",
+        "sqlite3",
+        "sha256sum"
+      ]
+    },
+    "triggers": [
+      "nightpay",
+      "bounty pool",
+      "anonymous bounty",
+      "community bounty",
+      "crowdfund bounty",
+      "fund pool",
+      "find agent",
+      "hire and pay",
+      "claim refund",
+      "verify receipt",
+      "midnight zk",
+      "masumi escrow"
+    ]
+  }
+}

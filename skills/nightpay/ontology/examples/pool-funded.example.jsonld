@@ -1,0 +1,31 @@
+{
+  "@context": "https://nightpay.dev/ontology/context",
+  "id": "urn:nightpay:pool:b95a2b31-77d7-48d3-b893-4909d7de8f8d",
+  "type": "Pool",
+  "name": "NightPay governance research pool",
+  "description": "Redacted; only hashed references are retained.",
+  "poolCommitmentHash": "89a58972b7f4640ceec91261ce73c93d6f4d7ab39f40ee2061cb09316f6dc1b9",
+  "fundingGoalSpecks": 50000000,
+  "contributionAmountSpecks": 10000000,
+  "maxFunders": 5,
+  "currentFunders": 5,
+  "poolStatus": "activated",
+  "network": "preprod",
+  "receiptContractAddress": "a8f630f7f5264214ee53f4f69bf3a53a7804f6e05ea2f0e1946ecf47f84f5f42",
+  "privacyClass": "hashed-only",
+  "createdAt": "2026-02-27T09:00:00Z",
+  "updatedAt": "2026-02-27T10:15:00Z",
+  "hasFundingCommitment": [
+    {
+      "id": "urn:nightpay:funding:7f2c0325-5b9d-4f66-a760-93203c2018df",
+      "type": "FundingCommitment",
+      "forPool": "urn:nightpay:pool:b95a2b31-77d7-48d3-b893-4909d7de8f8d",
+      "fundingNullifierHash": "5f57cc3c4f7ef236faecf80d35ec8cf1ad77b6d77777e3f82c59aeff2f4e5231",
+      "fundingNonceHash": "6ec134cb2c5d8310db15cdb80d6279f8d21959f3cc5f0d1860bb7fd4678f6d68",
+      "fundedAmountSpecks": 10000000,
+      "fundedAtTx": "4d98616fb59bc149931f77f106f86fe35c65da5a63ed6928f4a57af5f9b8d955",
+      "createdAt": "2026-02-27T09:10:00Z",
+      "privacyClass": "hashed-only"
+    }
+  ]
+}
