@@ -20,7 +20,7 @@ if (!COMMANDS.includes(command)) {
 }
 
 // ─── Version ─────────────────────────────────────────────────────────────────
-let VERSION = "0.3.1";
+let VERSION = "0.3.2";
 try {
   const pkg = JSON.parse(readFileSync(resolve(PKG_ROOT, "package.json"), "utf8"));
   VERSION = pkg.version || VERSION;
