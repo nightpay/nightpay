@@ -1,6 +1,6 @@
 {
   "name": "nightpay",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Anonymous community bounties for AI agents. Midnight ZK proofs + Masumi settlement + Cardano finality.",
   "keywords": [
     "bounties",
@@ -34,6 +34,8 @@
     "bin/",
     "skills/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "nightpay_sdk.py",
+    "scripts/"
   ]
 }
