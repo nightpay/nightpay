@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readFileSync, chmodSync, readdirSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, chmodSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { resolve, dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SKILL_SRC = resolve(__dirname, "..", "skills", "nightpay");
+const PKG_ROOT = resolve(__dirname, "..");
+const SKILL_SRC = resolve(PKG_ROOT, "skills", "nightpay");
+const SDK_SRC = resolve(PKG_ROOT, "nightpay_sdk.py");
+const SETUP_SRC = resolve(PKG_ROOT, "scripts", "setup.sh");
 const COMMANDS = ["init", "add", "setup", "validate", "doctor", "list", "help"];
 
 const command = process.argv[2] || "help";
@@ -15,6 +18,13 @@ if (!COMMANDS.includes(command)) {
   console.error(`Unknown command: ${command}\nRun: npx nightpay help`);
   process.exit(1);
 }
+
+// ─── Version ─────────────────────────────────────────────────────────────────
+let VERSION = "0.3.1";
+try {
+  const pkg = JSON.parse(readFileSync(resolve(PKG_ROOT, "package.json"), "utf8"));
+  VERSION = pkg.version || VERSION;
+} catch {}
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
 const isTTY = process.stderr.isTTY;
@@ -30,14 +40,15 @@ const C = {
 const OK = `${C.green}✅${C.reset}`;
 const FAIL = `${C.red}❌${C.reset}`;
 const WARN = `${C.yellow}⚠️${C.reset}`;
+const INFO = `${C.cyan}ℹ${C.reset}`;
 
 // ─── Help ────────────────────────────────────────────────────────────────────
 if (command === "help") {
   console.log(`
-${C.bold}nightpay${C.reset} — anonymous community bounties for AI agents
+${C.bold}nightpay${C.reset} v${VERSION} — anonymous community bounties for AI agents
 
 ${C.bold}COMMANDS${C.reset}
-  npx nightpay ${C.cyan}init${C.reset}        Copy skill files into ./skills/nightpay
+  npx nightpay ${C.cyan}init${C.reset}        Install skill files, SDK, and setup script
   npx nightpay ${C.cyan}setup${C.reset}       Full onboarding: install + validate + platform config
   npx nightpay ${C.cyan}validate${C.reset}    Check env vars, prerequisites, and connectivity
   npx nightpay ${C.cyan}doctor${C.reset}      Diagnose and auto-fix common issues
@@ -55,6 +66,11 @@ ${C.bold}QUICK START${C.reset}
   export NIGHTPAY_API_URL="https://api.nightpay.dev"
   export BRIDGE_URL="https://bridge.nightpay.dev"
   npx nightpay validate
+
+${C.bold}WHAT INIT INSTALLS${C.reset}
+  ./skills/nightpay/          Skill files (SKILL.md, scripts, config)
+  ./skills/nightpay/sdk/      Python SDK (nightpay_sdk.py)
+  ./skills/nightpay/scripts/  Gateway + setup scripts
 `);
   process.exit(0);
 }
@@ -67,7 +83,7 @@ ${C.bold}Available skill:${C.reset}
               Many funders pool shielded NIGHT → AI agent completes work → ZK receipt
 
 ${C.bold}Platforms:${C.reset} OpenClaw, Claude Code, Cursor, GitHub Copilot, ACP, Raw API
-${C.bold}Version:${C.reset}   0.2.4
+${C.bold}Version:${C.reset}   ${VERSION}
 ${C.bold}License:${C.reset}   Apache-2.0
 `);
   process.exit(0);
@@ -82,38 +98,106 @@ function detectPlatform() {
   return "raw";
 }
 
-// ─── Init (copy files) ──────────────────────────────────────────────────────
+// ─── Copy one file safely ───────────────────────────────────────────────────
+function safeCopy(src, dest, label) {
+  if (!existsSync(src)) {
+    return { status: "skip", reason: "source not found in package" };
+  }
+  mkdirSync(dirname(dest), { recursive: true });
+  if (existsSync(dest)) {
+    // Compare sizes — if same, skip
+    try {
+      const srcStat = statSync(src);
+      const destStat = statSync(dest);
+      if (srcStat.size === destStat.size) {
+        return { status: "exists", reason: "already up to date" };
+      }
+    } catch {}
+  }
+  copyFileSync(src, dest);
+  return { status: "copied" };
+}
+
+// ─── Init (copy ALL files) ──────────────────────────────────────────────────
 function init() {
   const dest = resolve(process.cwd(), "skills", "nightpay");
+  const installed = [];
 
+  console.log(`\n${C.bold}Installing NightPay${C.reset} v${VERSION}\n`);
+
+  // 1. Core skill files (SKILL.md, scripts/gateway.sh, etc.)
+  mkdirSync(resolve(process.cwd(), "skills"), { recursive: true });
   if (existsSync(join(dest, "SKILL.md"))) {
-    console.log(`${OK} Skill already installed at ${dest}`);
-    return dest;
+    // Update existing — re-copy to catch any upstream changes
+    cpSync(SKILL_SRC, dest, { recursive: true });
+    console.log(`  ${OK} Skill files updated at ${C.dim}./skills/nightpay/${C.reset}`);
+    installed.push("skills/nightpay/ (updated)");
+  } else {
+    cpSync(SKILL_SRC, dest, { recursive: true });
+    console.log(`  ${OK} Skill files installed to ${C.dim}./skills/nightpay/${C.reset}`);
+    installed.push("skills/nightpay/");
   }
 
-  mkdirSync(resolve(process.cwd(), "skills"), { recursive: true });
-  cpSync(SKILL_SRC, dest, { recursive: true });
-  console.log(`${OK} Installed skill files to ${dest}`);
+  // 2. Python SDK → ./skills/nightpay/sdk/nightpay_sdk.py
+  const sdkDest = join(dest, "sdk", "nightpay_sdk.py");
+  const sdkResult = safeCopy(SDK_SRC, sdkDest, "Python SDK");
+  if (sdkResult.status === "copied") {
+    console.log(`  ${OK} Python SDK installed to ${C.dim}./skills/nightpay/sdk/nightpay_sdk.py${C.reset}`);
+    installed.push("sdk/nightpay_sdk.py");
+  } else if (sdkResult.status === "exists") {
+    console.log(`  ${OK} Python SDK ${C.dim}(already up to date)${C.reset}`);
+  } else {
+    console.log(`  ${INFO} Python SDK not bundled in this version ${C.dim}(download from GitHub)${C.reset}`);
+  }
 
-  // Fix permissions on scripts
+  // Also copy SDK to project root for direct import convenience
+  const sdkRootDest = resolve(process.cwd(), "nightpay_sdk.py");
+  const sdkRootResult = safeCopy(SDK_SRC, sdkRootDest, "Python SDK (root)");
+  if (sdkRootResult.status === "copied") {
+    console.log(`  ${OK} Python SDK also at ${C.dim}./nightpay_sdk.py${C.reset} ${C.dim}(for direct import)${C.reset}`);
+  }
+
+  // 3. Setup script → ./skills/nightpay/scripts/setup.sh
+  const setupDest = join(dest, "scripts", "setup.sh");
+  const setupResult = safeCopy(SETUP_SRC, setupDest, "setup.sh");
+  if (setupResult.status === "copied") {
+    console.log(`  ${OK} Setup script installed to ${C.dim}./skills/nightpay/scripts/setup.sh${C.reset}`);
+    installed.push("scripts/setup.sh");
+  } else if (setupResult.status === "exists") {
+    console.log(`  ${OK} Setup script ${C.dim}(already up to date)${C.reset}`);
+  } else {
+    console.log(`  ${INFO} Setup script not bundled in this version`);
+  }
+
+  // 4. Fix permissions on ALL scripts
   const scriptsDir = join(dest, "scripts");
   if (existsSync(scriptsDir)) {
+    let chmodCount = 0;
     try {
       for (const f of readdirSync(scriptsDir)) {
         if (f.endsWith(".sh")) {
           chmodSync(join(scriptsDir, f), 0o755);
+          chmodCount++;
         }
       }
-      console.log(`${OK} Script permissions fixed`);
+      if (chmodCount > 0) {
+        console.log(`  ${OK} Made ${chmodCount} script(s) executable`);
+      }
     } catch {}
   }
 
-  // Auto-flatten if needed
+  // 5. Auto-flatten nested skill directory (common misinstall)
   const nestedSkill = join(dest, "skills", "nightpay", "SKILL.md");
-  if (!existsSync(join(dest, "SKILL.md")) && existsSync(nestedSkill)) {
-    console.log(`${WARN} SKILL.md nested — flattening...`);
+  if (existsSync(nestedSkill)) {
+    console.log(`  ${WARN} Nested skill directory detected — flattening...`);
     cpSync(join(dest, "skills", "nightpay"), dest, { recursive: true });
-    console.log(`${OK} Flattened skill directory`);
+    console.log(`  ${OK} Flattened: ${C.dim}skills/nightpay/skills/nightpay/ → skills/nightpay/${C.reset}`);
+  }
+
+  // 6. Summary
+  console.log(`\n${C.bold}Installed ${installed.length} component(s):${C.reset}`);
+  for (const item of installed) {
+    console.log(`  ${C.dim}•${C.reset} ${item}`);
   }
 
   return dest;
@@ -135,12 +219,17 @@ function validate() {
     }
   }
 
-  // sha256sum or shasum
   let hasHash = false;
   try { execSync("which sha256sum", { stdio: "ignore" }); hasHash = true; } catch {}
   try { execSync("which shasum", { stdio: "ignore" }); hasHash = true; } catch {}
   if (hasHash) console.log(`  ${OK} sha256sum/shasum found`);
   else { console.log(`  ${FAIL} sha256sum/shasum not found`); errors++; }
+
+  // Python check (for SDK)
+  let hasPython = false;
+  try { execSync("which python3", { stdio: "ignore" }); hasPython = true; } catch {}
+  if (hasPython) console.log(`  ${OK} python3 found (SDK available)`);
+  else console.log(`  ${INFO} python3 not found ${C.dim}(optional — needed for Python SDK)${C.reset}`);
 
   console.log(`\n${C.bold}Environment variables${C.reset}`);
   const required = {
@@ -170,18 +259,30 @@ function validate() {
 
   console.log(`\n${C.bold}Skill files${C.reset}`);
   const dest = resolve(process.cwd(), "skills", "nightpay");
-  if (existsSync(join(dest, "SKILL.md"))) {
-    console.log(`  ${OK} SKILL.md found`);
-  } else {
-    console.log(`  ${FAIL} SKILL.md not found — run: npx nightpay init`);
-    errors++;
+
+  const fileChecks = [
+    { path: join(dest, "SKILL.md"), label: "SKILL.md", required: true },
+    { path: join(dest, "scripts", "gateway.sh"), label: "gateway.sh", required: true },
+    { path: join(dest, "scripts", "setup.sh"), label: "setup.sh", required: false },
+    { path: join(dest, "sdk", "nightpay_sdk.py"), label: "Python SDK (sdk/)", required: false },
+  ];
+
+  for (const check of fileChecks) {
+    if (existsSync(check.path)) {
+      console.log(`  ${OK} ${check.label} found`);
+    } else if (check.required) {
+      console.log(`  ${FAIL} ${check.label} not found — run: ${C.cyan}npx nightpay init${C.reset}`);
+      errors++;
+    } else {
+      console.log(`  ${WARN} ${check.label} not found — run: ${C.cyan}npx nightpay init${C.reset} to install`);
+      warnings++;
+    }
   }
 
-  if (existsSync(join(dest, "scripts", "gateway.sh"))) {
-    console.log(`  ${OK} gateway.sh found`);
-  } else {
-    console.log(`  ${FAIL} gateway.sh not found`);
-    errors++;
+  // Check for root-level SDK copy too
+  const rootSdk = resolve(process.cwd(), "nightpay_sdk.py");
+  if (existsSync(rootSdk)) {
+    console.log(`  ${OK} Python SDK also at ./nightpay_sdk.py`);
   }
 
   console.log(`\n${C.bold}Connectivity${C.reset}`);
@@ -223,21 +324,21 @@ function validate() {
 
 // ─── Doctor (diagnose + auto-fix) ────────────────────────────────────────────
 function doctor() {
-  console.log(`\n${C.bold}NightPay Doctor${C.reset} — diagnosing and fixing issues...\n`);
+  console.log(`\n${C.bold}NightPay Doctor${C.reset} v${VERSION} — diagnosing and fixing issues...\n`);
   let fixed = 0;
 
   const dest = resolve(process.cwd(), "skills", "nightpay");
 
-  // Fix 1: Missing skill files
+  // Fix 1: Missing skill files → full init
   if (!existsSync(join(dest, "SKILL.md"))) {
-    console.log(`  ${WARN} Skill not installed — installing now...`);
+    console.log(`  ${WARN} Skill not installed — running full init...`);
     init();
     fixed++;
   }
 
   // Fix 2: Nested SKILL.md
   const nestedSkill = join(dest, "skills", "nightpay", "SKILL.md");
-  if (existsSync(nestedSkill) && !existsSync(join(dest, "SKILL.md"))) {
+  if (existsSync(nestedSkill)) {
     console.log(`  ${WARN} SKILL.md nested — flattening...`);
     cpSync(join(dest, "skills", "nightpay"), dest, { recursive: true });
     console.log(`  ${OK} Fixed: flattened skill directory`);
@@ -245,16 +346,47 @@ function doctor() {
   }
 
   // Fix 3: Script permissions
-  const gateway = join(dest, "scripts", "gateway.sh");
-  if (existsSync(gateway)) {
-    try {
-      chmodSync(gateway, 0o755);
-      console.log(`  ${OK} Fixed: gateway.sh permissions`);
-      fixed++;
-    } catch {}
+  const scriptsDir = join(dest, "scripts");
+  if (existsSync(scriptsDir)) {
+    for (const f of readdirSync(scriptsDir)) {
+      if (f.endsWith(".sh")) {
+        try {
+          chmodSync(join(scriptsDir, f), 0o755);
+          fixed++;
+        } catch {}
+      }
+    }
+    console.log(`  ${OK} Fixed: script permissions`);
   }
 
-  // Fix 4: Warn about placeholder env vars
+  // Fix 4: Missing SDK
+  const sdkDest = join(dest, "sdk", "nightpay_sdk.py");
+  if (!existsSync(sdkDest) && existsSync(SDK_SRC)) {
+    mkdirSync(join(dest, "sdk"), { recursive: true });
+    copyFileSync(SDK_SRC, sdkDest);
+    console.log(`  ${OK} Fixed: installed Python SDK to ${C.dim}sdk/nightpay_sdk.py${C.reset}`);
+    fixed++;
+  }
+
+  // Fix 5: Missing setup.sh
+  const setupDest = join(dest, "scripts", "setup.sh");
+  if (!existsSync(setupDest) && existsSync(SETUP_SRC)) {
+    mkdirSync(join(dest, "scripts"), { recursive: true });
+    copyFileSync(SETUP_SRC, setupDest);
+    chmodSync(setupDest, 0o755);
+    console.log(`  ${OK} Fixed: installed setup.sh to ${C.dim}scripts/setup.sh${C.reset}`);
+    fixed++;
+  }
+
+  // Fix 6: Root SDK convenience copy
+  const rootSdk = resolve(process.cwd(), "nightpay_sdk.py");
+  if (!existsSync(rootSdk) && existsSync(SDK_SRC)) {
+    copyFileSync(SDK_SRC, rootSdk);
+    console.log(`  ${OK} Fixed: copied SDK to ${C.dim}./nightpay_sdk.py${C.reset} for direct import`);
+    fixed++;
+  }
+
+  // Fix 7: Warn about placeholder env vars
   const fragment = join(dest, "openclaw-fragment.json");
   if (existsSync(fragment)) {
     try {
@@ -278,36 +410,100 @@ function doctor() {
 // ─── Setup (full onboarding) ─────────────────────────────────────────────────
 function setup() {
   const platform = detectPlatform();
-  console.log(`\n${C.bold}NightPay Agent Onboarding${C.reset} v0.2.4`);
+  console.log(`\n${C.bold}NightPay Agent Onboarding${C.reset} v${VERSION}`);
   console.log(`${C.dim}Anonymous community bounties for AI agents${C.reset}`);
   console.log(`\n  Platform: ${C.bold}${platform}${C.reset}\n`);
 
-  // Step 1: Install
+  // Step 1: Smart install (all files)
   const dest = init();
 
   // Step 2: Platform-specific config
-  console.log(`\n${C.bold}Platform setup (${platform})${C.reset}`);
+  console.log(`\n${C.bold}Platform config (${platform})${C.reset}`);
 
-  // Check if bash setup.sh exists and delegate for platform-specific stuff
-  const setupSh = join(dest, "scripts", "setup.sh");
-  if (existsSync(setupSh)) {
-    const result = spawnSync("bash", [setupSh, "--platform", platform, "--validate-only"], {
-      stdio: "inherit",
-      env: { ...process.env, NIGHTPAY_WORKSPACE: dest }
-    });
-    if (result.status === 0) {
-      console.log(`\n${C.green}${C.bold}Setup complete!${C.reset}`);
+  if (platform === "claude-code") {
+    const cmdDir = resolve(process.cwd(), ".claude", "commands");
+    const cmdFile = join(cmdDir, "nightpay.md");
+    if (!existsSync(cmdFile)) {
+      mkdirSync(cmdDir, { recursive: true });
+      writeFileSync(cmdFile, [
+        "# NightPay",
+        "",
+        "Use the nightpay skill at ./skills/nightpay/ for bounty operations.",
+        "",
+        "## Quick commands",
+        "- `bash skills/nightpay/scripts/gateway.sh stats` — contract stats",
+        "- `bash skills/nightpay/scripts/gateway.sh post-bounty \"<desc>\" <amount>` — post bounty",
+        "- `python3 skills/nightpay/sdk/nightpay_sdk.py validate` — health check",
+        "- `python3 skills/nightpay/sdk/nightpay_sdk.py doctor --auto-fix` — self-heal",
+        "",
+      ].join("\n"));
+      console.log(`  ${OK} Created ${C.dim}.claude/commands/nightpay.md${C.reset}`);
+    } else {
+      console.log(`  ${OK} ${C.dim}.claude/commands/nightpay.md${C.reset} already exists`);
     }
+  } else if (platform === "cursor") {
+    const rulesDir = resolve(process.cwd(), ".cursor", "rules");
+    const rulesFile = join(rulesDir, "nightpay.md");
+    if (!existsSync(rulesFile)) {
+      mkdirSync(rulesDir, { recursive: true });
+      writeFileSync(rulesFile, [
+        "# NightPay Skill",
+        "",
+        "The nightpay skill is at ./skills/nightpay/. Read SKILL.md for capabilities.",
+        "Python SDK at ./skills/nightpay/sdk/nightpay_sdk.py or ./nightpay_sdk.py.",
+        "",
+        "Quick: `bash skills/nightpay/scripts/gateway.sh stats`",
+        "",
+      ].join("\n"));
+      console.log(`  ${OK} Created ${C.dim}.cursor/rules/nightpay.md${C.reset}`);
+    } else {
+      console.log(`  ${OK} ${C.dim}.cursor/rules/nightpay.md${C.reset} already exists`);
+    }
+  } else if (platform === "copilot") {
+    const instrFile = resolve(process.cwd(), ".github", "copilot-instructions.md");
+    if (existsSync(instrFile)) {
+      const content = readFileSync(instrFile, "utf8");
+      if (!content.includes("nightpay")) {
+        const addition = [
+          "",
+          "## NightPay",
+          "",
+          "Bounty skill at ./skills/nightpay/. Read SKILL.md for full capabilities.",
+          "Python SDK at ./skills/nightpay/sdk/nightpay_sdk.py.",
+          "Gateway: `bash skills/nightpay/scripts/gateway.sh`",
+          "",
+        ].join("\n");
+        writeFileSync(instrFile, content + addition);
+        console.log(`  ${OK} Appended NightPay section to ${C.dim}.github/copilot-instructions.md${C.reset}`);
+      } else {
+        console.log(`  ${OK} Copilot instructions already mention nightpay`);
+      }
+    } else {
+      console.log(`  ${INFO} No .github/copilot-instructions.md — skipping Copilot config`);
+    }
+  } else if (platform === "openclaw") {
+    console.log(`  ${OK} OpenClaw auto-discovers skills from ./skills/nightpay/`);
+    console.log(`  ${C.dim}  Tip: merge openclaw-fragment.json into your openclaw.json${C.reset}`);
   } else {
-    // Fallback: just validate
-    validate();
+    console.log(`  ${INFO} Raw platform — no config file needed`);
+    console.log(`  ${C.dim}  Use: bash skills/nightpay/scripts/gateway.sh <command>${C.reset}`);
   }
 
-  // Step 3: Next steps
+  // Step 3: Run validate
+  console.log("");
+  const { errors } = validate();
+
+  // Step 4: Next steps
   console.log(`\n${C.bold}Next steps${C.reset}`);
-  console.log(`  1. Set your environment variables (if not already set)`);
-  console.log(`  2. Run: ${C.cyan}bash skills/nightpay/scripts/gateway.sh stats${C.reset}`);
-  console.log(`  3. Post your first bounty: ${C.cyan}bash skills/nightpay/scripts/gateway.sh post-bounty "Review this PR" 5000${C.reset}`);
+  if (errors > 0) {
+    console.log(`  1. Fix the ${errors} error(s) above`);
+    console.log(`  2. Run: ${C.cyan}npx nightpay validate${C.reset}`);
+  } else {
+    console.log(`  1. ${C.cyan}bash skills/nightpay/scripts/gateway.sh stats${C.reset} — check contract`);
+    console.log(`  2. ${C.cyan}bash skills/nightpay/scripts/gateway.sh post-bounty "Review this PR" 5000${C.reset}`);
+  }
+  console.log(`\n  ${C.dim}Python SDK:${C.reset} from nightpay_sdk import NightPay; NightPay().stats()`);
+  console.log(`  ${C.dim}Self-heal:${C.reset}  npx nightpay doctor`);
   console.log("");
 }
 
