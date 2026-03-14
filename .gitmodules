@@ -1,3 +1,6 @@
 [submodule "ui"]
 	path = ui
 	url = https://github.com/nightpay/nightpay-ui.git
+[submodule "bridge"]
+	path = bridge
+	url = https://github.com/nightpay/nightpay-bridge.git

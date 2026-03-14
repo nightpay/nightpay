@@ -114,7 +114,7 @@ Before publish:
 
 ```bash
 bash test/smoke.sh
-npx @agentskills/skills-ref validate ./skills/nightpay
+npx skills-ref validate ./skills/nightpay
 # Keep versions aligned
 # - package.json version
 # - skills/nightpay/SKILL.md metadata version

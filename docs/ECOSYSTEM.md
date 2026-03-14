@@ -2,7 +2,7 @@
 
 **Purpose:** Stay current with every project we depend on or compete with. Check this before making architectural decisions. Update when you spot version bumps, breaking changes, or new entrants.
 
-Last researched: **2026-02-27** (refresh #6 — added Experiments section: Zama FHE, GitNexus; updated OpenClaw to v2026.2.26 with ACP runtime support)
+Last researched: **2026-03-14** (refresh #7 — synced Midnight preprod matrix to compiler 0.29.0, added OpenClaw v2026.3.13, and updated skills validation command)
 
 ---
 
@@ -34,19 +34,20 @@ Our `receipt.compact` runs here. Everything privacy-related depends on this.
 | [Olanetsoft/midnight-mcp](https://github.com/Olanetsoft/midnight-mcp) | 29-tool MCP server for Midnight (compile, analyze, deploy Compact via Claude, 19 ⭐) | Complementary to our skill; use when Claude Code needs to touch `receipt.compact` directly |
 | [OpenZeppelin/compact-security-detectors-sdk](https://github.com/OpenZeppelin/compact-security-detectors-sdk) | Static analysis / vulnerability scanner for Compact contracts (OpenZeppelin) | **Run on `receipt.compact` before every deployment** — AST-based, CLI, pre-built detectors |
 
-### Current Versions (updated 2026-02-19)
+### Current Versions (updated 2026-03-14)
 
 | Component | Version | Notes |
 |---|---|---|
-| Compact Compiler | 0.28.0 | Inside developer tools package |
+| Compact Compiler | 0.29.0 | Inside developer tools package (preprod compatibility matrix) |
 | **Compact Developer Tools** | **0.4.0** ⬆️ | Released Jan 21 2026 — `compact fixup --check` mode added |
-| Wallet SDK | 5.0.0 | |
-| Wallet API | 5.0.0 | |
+| Wallet SDK | 1.0.0 | Preprod compatibility matrix |
+| Wallet API | 1.0.0 | Preprod compatibility matrix |
 | DApp Connector API | 3.0.0 | Chrome-only (Lace), `window.midnight.mnLace` |
 | Midnight.js | 3.1.0 | [midnight-js](https://github.com/midnightntwrk/midnight-js); see [MIDNIGHT_JS_INTEGRATION.md](MIDNIGHT_JS_INTEGRATION.md) for bridge adoption options |
 | Midnight Node | 0.20.1 | GitHub release `node-0.20.1` (Feb 3, 2026) |
 | Midnight Indexer | 2.1.4 | |
-| Ledger | 4.0.0 | |
+| ledger-v7 | 7.0.1 | Preprod compatibility matrix |
+| compact-js | 2.4.0 | Preprod compatibility matrix |
 | Proof Server | 4.0.0 | |
 | Midnight Lace Wallet | 3.0.0 | |
 | VS Code Extension | 0.2.13 | |
@@ -213,6 +214,7 @@ Steinberger (OpenClaw creator) announced joining OpenAI — project moving to an
 
 ### Recent OpenClaw Releases
 
+- **v2026.3.13 (Mar 13, 2026):** latest stable release line (post-ACP hardening cycle)
 - **v2026.2.26 (Feb 27, 2026):** External Secrets Management (`audit/configure/apply/reload` workflow); **ACP/Thread-bound agents as first-class runtimes**; agent routing CLI (`bind`/`unbind`/`bindings`); Android device capability additions
 - **v2026.2.25 (Feb 26, 2026):** `agents.defaults.heartbeat.directPolicy` replaces heartbeat DM toggle — **DM delivery blocked by default**; gateway WebSocket auth hardening
 - **v2026.2.24 (Feb 25, 2026):** Heartbeat delivery blocks DM targets by default; Docker namespace-join blocked by default; routing/session isolation hardening
@@ -227,15 +229,14 @@ OpenClaw v2026.2.26 makes ACP (thread-bound agents) a first-class runtime alongs
 ### Skill Validation
 
 ```bash
-npm install -g @agentskills/skills-ref
-skills-ref validate ./skills/nightpay
+npx skills-ref validate ./skills/nightpay
 ```
 
 Run this before any ClawHub submission.
 
 ### Distribution Targets
 
-1. `clawhub install nightpay` → [clawhub.biz](https://clawhub.biz/) (3,286 skills listed)
+1. `clawhub install nightpay` → [clawhub.com](https://clawhub.com/)
 2. `npx nightpay init` → npm registry
 3. awesome-openclaw-skills → PR to VoltAgent list
 4. [openclaw/skills](https://github.com/openclaw/skills) → mirror submission
@@ -498,4 +499,4 @@ Run these checks periodically (suggest: before each release, or at minimum month
 
 ---
 
-*Updated: 2026-02-27 (refresh #6). Next review: mainnet launch (~2026-03-24).*
+*Updated: 2026-03-14 (refresh #7). Next review: mainnet launch (~2026-03-24).*

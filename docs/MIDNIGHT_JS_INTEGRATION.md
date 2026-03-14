@@ -78,7 +78,7 @@ Our bridge currently follows “example-bboard” patterns (witnesses, server-si
 **Steps (summary):**
 
 1. **Dependencies** (align with AGENTS.md and [midnight-js](https://github.com/midnightntwrk/midnight-js)):
-   - Use the same versions the ecosystem expects: e.g. `midnight-js-*@3.1.0`, `wallet-sdk-*@1.0.0`, `ledger-v7@7.0.1`, `compact-js@2.4.2`. Check [release notes](https://docs.midnight.network/relnotes/overview) when upgrading.
+   - Use the same versions the ecosystem expects: e.g. `midnight-js-*@3.1.0`, `wallet-sdk-*@1.0.0`, `ledger-v7@7.0.1`, `compact-js@2.4.0`. Check [release notes](https://docs.midnight.network/relnotes/overview) when upgrading.
 2. **Provider wiring:**
    - In the bridge, create a ProofProvider that points at your proof server (e.g. `localhost:6300`) and a ZKConfigProvider that fetches or reads ZK artifacts. Pass these into the Midnight.js contract utilities.
    - You only need a PrivateStateProvider if the bridge stores private state between requests. For NightPay, witnesses can be built from each request (jobHash, amount, nonce, etc.), so you may not need persistent private state on the server.

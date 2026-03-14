@@ -166,17 +166,45 @@ except socket.gaierror as e:
 
 # ─── SSRF error (colored) — used by _ssrf_safe_curl ───────────────────────────
 
+_masumi_request_with_auth_fallback() {
+  local method="$1"
+  local base_url="$2"
+  local endpoint="$3"
+  local payload="${4:-}"
+  local auth_headers=(
+    "Authorization: Bearer $MASUMI_API_KEY"
+    "token: $MASUMI_API_KEY"
+  )
+  local hdr out
+
+  for hdr in "${auth_headers[@]}"; do
+    if [[ "$method" == "GET" ]]; then
+      if out="$(_ssrf_safe_curl "${base_url}${endpoint}" -H "$hdr" 2>/dev/null)"; then
+        printf '%s\n' "$out"
+        return 0
+      fi
+    else
+      if out="$(_ssrf_safe_curl "${base_url}${endpoint}" \
+        -X POST \
+        -H "$hdr" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>/dev/null)"; then
+        printf '%s\n' "$out"
+        return 0
+      fi
+    fi
+  done
+
+  echo "ERROR: Masumi request failed after trying Authorization and token headers (${method} ${endpoint})" >&2
+  return 1
+}
+
 masumi_get() {
-  _ssrf_safe_curl "${MASUMI_REGISTRY_URL}${1}" \
-    -H "Authorization: Bearer $MASUMI_API_KEY"
+  _masumi_request_with_auth_fallback "GET" "$MASUMI_REGISTRY_URL" "$1"
 }
 
 masumi_post() {
-  _ssrf_safe_curl "${MASUMI_PAYMENT_URL}${1}" \
-    -X POST \
-    -H "Authorization: Bearer $MASUMI_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d "$2"
+  _masumi_request_with_auth_fallback "POST" "$MASUMI_PAYMENT_URL" "$1" "$2"
 }
 
 # Best-effort compatibility layer for registry endpoint changes.
@@ -684,12 +712,18 @@ print(json.dumps({
 
     validate_job_id "$JOB_ID"       # SECURITY: prevent path traversal
     validate_commitment "$COMMITMENT"
+    MIP003_BASE="${MIP003_URL%/}"
+
+    MIP_STATUS_AUTH_ARGS=()
+    if [[ -n "${OPERATOR_SECRET_KEY:-}" ]]; then
+      MIP_STATUS_AUTH_ARGS=(-H "Authorization: Bearer ${OPERATOR_SECRET_KEY}")
+    fi
 
     # ── Multisig verification (for high-value bounties) ────────────────────
     # Query the MIP-003 server for job amount to decide if multisig required
     JOB_AMOUNT=0
     if command -v curl >/dev/null 2>&1; then
-      _JOB_INFO=$(curl -sf --max-time 5 "http://localhost:${MIP003_PORT}/status/${JOB_ID}" 2>/dev/null || echo '{}')
+      _JOB_INFO=$(curl -sf --max-time 5 "${MIP_STATUS_AUTH_ARGS[@]}" "${MIP003_BASE}/status/${JOB_ID}" 2>/dev/null || echo '{}')
       JOB_AMOUNT=$(echo "$_JOB_INFO" | python3 -c "
 import sys, json
 try:
@@ -804,7 +838,7 @@ print(json.dumps({'bountyCommitment': sys.argv[1], 'outputHash': sys.argv[2]}))
     _ECON_FEE=0
     _ECON_NET=0
     if command -v curl >/dev/null 2>&1; then
-      _ECON_INFO=$(curl -sf --max-time 3 "http://localhost:${MIP003_PORT}/status/${JOB_ID}" 2>/dev/null || echo '{}')
+      _ECON_INFO=$(curl -sf --max-time 3 "${MIP_STATUS_AUTH_ARGS[@]}" "${MIP003_BASE}/status/${JOB_ID}" 2>/dev/null || echo '{}')
       read -r _ECON_AMOUNT _ECON_FEE _ECON_NET <<< "$(python3 -c "
 import sys, json
 try:
@@ -816,6 +850,46 @@ try:
     print(amount, fee, net)
 except: print(0, 0, 0)
 " <<< "$_ECON_INFO" 2>/dev/null || echo "0 0 0")"
+    fi
+
+    # Sync MIP status so agents polling /status see the final completed state.
+    MIP_SYNC_OK="false"
+    MIP_SYNC_STATE="not_attempted"
+    if [[ -n "$MIP003_BASE" ]]; then
+      if [[ -z "${OPERATOR_SECRET_KEY:-}" ]]; then
+        MIP_SYNC_STATE="skipped_no_operator_secret"
+        echo -e "  ${YELLOW}WARNING${RESET}: OPERATOR_SECRET_KEY missing — cannot sync ${CYAN}${MIP003_BASE}/complete_job${RESET}" >&2
+      else
+        MIP_SYNC_PAYLOAD=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'receiptHash': sys.argv[1],
+    'outputHash': sys.argv[2],
+    'midnightTxId': sys.argv[3] or None,
+    'onChain': sys.argv[4] == 'true'
+}))
+" "$RECEIPT_HASH" "$OUTPUT_HASH" "$BRIDGE_TX_ID" "$BRIDGE_ON_CHAIN")
+        MIP_SYNC_RESULT=$(curl -sf --max-time 15 \
+          -X POST \
+          -H "Authorization: Bearer ${OPERATOR_SECRET_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "$MIP_SYNC_PAYLOAD" \
+          "${MIP003_BASE}/complete_job/${JOB_ID}" 2>/dev/null) && {
+            MIP_SYNC_OK="true"
+            MIP_SYNC_STATE=$(echo "$MIP_SYNC_RESULT" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('internal_status') or d.get('status') or 'completed')
+except:
+    print('completed')
+")
+            echo -e "  ${GREEN}MIP Sync${RESET}: ${DIM}${MIP003_BASE}/complete_job/${JOB_ID}${RESET} ${CYAN}(state: ${MIP_SYNC_STATE})${RESET}" >&2
+          } || {
+            MIP_SYNC_STATE="sync_failed"
+            echo -e "  ${YELLOW}WARNING${RESET}: could not sync MIP completion state at ${CYAN}${MIP003_BASE}/complete_job/${JOB_ID}${RESET}" >&2
+          }
+      fi
     fi
 
     python3 -c "
@@ -837,8 +911,13 @@ print(json.dumps({
         'netToAgent':   int(sys.argv[11]),
         'feeBps':       int(sys.argv[12]),
     },
+    'mipStatusSync': {
+        'ok': sys.argv[13] == 'true',
+        'state': sys.argv[14],
+        'baseUrl': sys.argv[15],
+    },
 }, indent=2))
-" "$RECEIPT_HASH" "$OUTPUT_HASH" "$COMMITMENT" "$COMPLETION_NONCE" "$MIDNIGHT_NETWORK" "$RECEIPT_CONTRACT" "$BRIDGE_TX_ID" "$BRIDGE_ON_CHAIN" "$_ECON_AMOUNT" "$_ECON_FEE" "$_ECON_NET" "$OPERATOR_FEE_BPS"
+" "$RECEIPT_HASH" "$OUTPUT_HASH" "$COMMITMENT" "$COMPLETION_NONCE" "$MIDNIGHT_NETWORK" "$RECEIPT_CONTRACT" "$BRIDGE_TX_ID" "$BRIDGE_ON_CHAIN" "$_ECON_AMOUNT" "$_ECON_FEE" "$_ECON_NET" "$OPERATOR_FEE_BPS" "$MIP_SYNC_OK" "$MIP_SYNC_STATE" "$MIP003_BASE"
     ;;
 
   refund)
@@ -932,7 +1011,11 @@ print(json.dumps({
 from datetime import datetime, timezone
 print(datetime.now(timezone.utc).isoformat())
 ")
-    JOBS_JSON=$(curl -sf --max-time 10 "${MIP003_URL}/jobs?status=awaiting_approval&approved_before=${NOW_ISO}&limit=${OPTIMISTIC_SWEEP_PAGE_SIZE}&offset=0" 2>/dev/null || echo '{"jobs":[]}')
+    MIP_SWEEP_AUTH_ARGS=()
+    if [[ -n "${OPERATOR_SECRET_KEY:-}" ]]; then
+      MIP_SWEEP_AUTH_ARGS=(-H "Authorization: Bearer ${OPERATOR_SECRET_KEY}")
+    fi
+    JOBS_JSON=$(curl -sf --max-time 10 "${MIP_SWEEP_AUTH_ARGS[@]}" "${MIP003_URL}/jobs?status=awaiting_approval&visibility=all&approved_before=${NOW_ISO}&limit=${OPTIMISTIC_SWEEP_PAGE_SIZE}&offset=0" 2>/dev/null || echo '{"jobs":[]}')
 
     # Filter for expired windows and auto-complete each
     python3 -c "
@@ -1251,6 +1334,7 @@ gateway = sys.argv[2]
 dry_run = sys.argv[3] == '1'
 hours = float(sys.argv[4])
 page_size = int(sys.argv[5])
+operator_secret = sys.argv[6]
 
 if page_size < 1:
     page_size = 1
@@ -1273,9 +1357,13 @@ def parse_iso(v):
         return None
 
 while True:
-    url = f'{mip_url}/jobs?status=running&limit={page_size}&offset={offset}'
+    url = f'{mip_url}/jobs?status=running&visibility=all&limit={page_size}&offset={offset}'
+    headers = {}
+    if operator_secret:
+        headers['Authorization'] = f'Bearer {operator_secret}'
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read().decode())
     except Exception as e:
         print(f'ERROR: failed to query jobs page offset={offset}: {e}', file=sys.stderr)
@@ -1338,7 +1426,7 @@ while True:
     offset += page_size
 
 print(f'Unclaimed refund sweep: scanned={scanned}, candidates={candidates}, refunded={done}, errors={errors}.', file=sys.stderr)
-" "$MIP003_URL" "$0" "$DRY_RUN" "$UNCLAIMED_REFUND_HOURS" "$UNCLAIMED_SWEEP_PAGE_SIZE"
+" "$MIP003_URL" "$0" "$DRY_RUN" "$UNCLAIMED_REFUND_HOURS" "$UNCLAIMED_SWEEP_PAGE_SIZE" "${OPERATOR_SECRET_KEY:-}"
     ;;
 
   *)

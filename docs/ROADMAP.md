@@ -175,7 +175,7 @@ Analysis of where NightPay's current implementation stands relative to each upst
 - [ ] **Publish UI** — `cd ui && npm run build` → host `dist/` anywhere
   - Deadline: Midnight City simulation (Feb 26) for visibility window
 
-- [ ] **ClawHub submission** — `skills-ref validate ./skills/nightpay` → submit on [clawhub.biz](https://clawhub.biz/)
+- [ ] **ClawHub submission** — `skills-ref validate ./skills/nightpay` → submit on [clawhub.com](https://clawhub.com/)
   - Also: PR to [VoltAgent/awesome-openclaw-skills](https://github.com/VoltAgent/awesome-openclaw-skills)
 
 - [ ] **Masumi registry** — `POST http://registry.masumi.network/registry` (see AGENTS.md for payload)
@@ -332,7 +332,7 @@ Concrete items that would benefit the project, ordered by impact and dependency.
 | 10 | **ECOSYSTEM.md version alignment** — Ledger 7.x, proof-server version, [Compact tools](https://github.com/midnightntwrk/compact) in one table | Correct upgrade path; fewer integration surprises | docs/ECOSYSTEM.md |
 | 11 | **Health check contract** — Bridge `/health` returns contract address, network, stub; UI shows “connected / stub” | Operators and users see live vs offline | Bridge (may exist); UI status banner |
 | 12 | **Receipt export / verify page** — UI verify page + optional “export receipt proof” for agents | Better UX and credential portability | ui/ (verify page enhancement) |
-| 13 | **ClawHub publish** — validate skill, submit to [clawhub.biz](https://clawhub.biz/), get listed | Discovery; more agents and funders | One-time + refresh on SKILL changes |
+| 13 | **ClawHub publish** — validate skill, submit to [clawhub.com](https://clawhub.com/), get listed | Discovery; more agents and funders | One-time + refresh on SKILL changes |
 | 14 | **[Masumi](https://github.com/masumi-network) registry registration** — POST to registry with apiBaseUrl so bounties are discoverable | Agents find NightPay jobs | Script or doc in README |
 | 15 | **Mainnet flip checklist** — Single doc or section: config vars, SKILL.md default, bridge config | Safe cutover when Kūkolu launches | docs/ or ROADMAP |
 | 16 | **Cross-chain agent bridge ([ERC-8004](https://github.com/erc-8004/erc-8004-contracts))** — Adapter: NightPay job ↔ ERC-8004 postJob; expose bounties to EVM agents | Growth; differentiation | Phase 3, new service |

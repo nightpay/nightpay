@@ -1,5 +1,9 @@
 # NightPay .gitignore — canonical list of what stays out of the public repo.
 # Rationale for each category: docs/architecture.md § "Public vs private (what goes in .gitignore)".
+#
+# Do not replicate: bridge/ (lives in a separate private repo), credentials,
+# internal plans (plans/, LAUNCH.md, docs/MARKETING.md), IDE/local config,
+# agent playground secrets, test suites with internal endpoints, VPS runbooks.
 
 node_modules/
 .env
@@ -21,11 +25,11 @@ credentials*.json
 secrets.json
 *-secrets.json
 
-# ── PRIVATE — never commit to the public repo ─────────────────────────────────
-# bridge/ = operator wallet + bridge implementation (private repo); public repo defines API only
+# ── PRIVATE — never commit; do not replicate to public clones ─────────────────
+# Bridge: operator wallet + implementation live in separate private repo; this repo defines API only (docs/architecture.md).
 bridge/
 
-# Internal plans, launch kit, agent instructions, local clones (not for public repo)
+# Internal planning, launch kit, marketing drafts; local clones (not for public repo)
 plans/
 LAUNCH.md
 docs/MARKETING.md

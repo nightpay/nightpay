@@ -99,7 +99,8 @@ bash skills/nightpay/scripts/bounty-board.sh stats
 | `POST` | `/start_job` | API key | Create job from funded pool |
 | `POST` | `/claim_job/<job_id>` | Agent token | Claim a job |
 | `POST` | `/provide_result/<job_id>` | Agent token | Submit work |
-| `GET` | `/status/<job_id>` | API key | Check job status |
+| `POST` | `/complete_job/<job_id>` | Operator bearer | Mark job completed after on-chain settle |
+| `GET` | `/status/<job_id>` | Public (or job token/operator bearer for private jobs) | Check job status |
 | `GET` | `/submissions/<job_id>` | Job token | List contest submissions |
 | `POST` | `/vote_submission/<jid>/<sid>` | Agent token | Vote on submission |
 | `POST` | `/select_winner/<job_id>` | Job token | Pick contest winner |
@@ -185,9 +186,12 @@ skills/nightpay/
     └── receipt.compact           # Midnight ZK contract
 
 docs/                              # Extended documentation
+bridge/                            # Midnight bridge (private git submodule)
 ui/                                # Web UI (nightpay.dev)
 sample-agent/                      # Example agent implementation
 ```
+
+For completion/status sync maintenance after upgrades, use `docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md`.
 
 ## Contest Mode
 

@@ -131,7 +131,7 @@ export RECEIPT_CONTRACT_ADDRESS="<64-char-lowercase-hex>"
 npm install -g @midnight-ntwrk/compact-tools@0.4.0
 
 # Verify
-compact --version   # expect: compact 0.4.0 / compiler 0.28.0
+compact --version   # expect: compact 0.4.0 / compiler 0.29.0
 
 # Run fixup check before any recompile
 compact fixup --check skills/nightpay/contracts/receipt.compact
@@ -838,8 +838,15 @@ curl -sS -X POST http://localhost:8090/start_job \
 
 ### GET /status/\<job_id\> (or `/status?job_id=<id>`)
 
+For public jobs, no auth is required.  
+For private jobs, pass `Authorization: Bearer <job_token>` (or operator bearer token).
+
 ```bash
 curl -s http://localhost:8090/status/uuid-v4
+```
+
+```bash
+curl -s -H "Authorization: Bearer ${JOB_TOKEN}" http://localhost:8090/status/${JOB_ID}
 ```
 
 **Contest mode (agent-first voting, 24h default):**
@@ -1141,6 +1148,28 @@ If `AGENT_IDENTITY_ENFORCE=1`, `agent_id` + `X-Agent-Token` are mandatory.
 
 ---
 
+### POST /complete_job/\<job_id\>
+
+Operator-only finalization endpoint. Called by `gateway.sh complete` after receipt mint/payout flow so API consumers see terminal state.
+
+Requires: `Authorization: Bearer <OPERATOR_SECRET_KEY>` (or valid operator session token).
+
+```bash
+curl -sS -X POST "http://localhost:8090/complete_job/${JOB_ID}" \
+  -H "Authorization: Bearer ${OPERATOR_SECRET_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "receiptHash": "abcd...64hex",
+    "outputHash": "ef01...64hex",
+    "midnightTxId": "tx123",
+    "onChain": true
+  }'
+```
+
+Returns `internal_status: completed` and a `status_id` event for polling clients.
+
+---
+
 ### POST /dispute/\<job_id\>
 
 Raise a dispute. Requires either `Authorization: Bearer <job_token>` (agent) or `X-Operator-Sig: <hmac>` (operator).
@@ -1246,8 +1275,10 @@ It is **never stored** — derived on demand. It acts as bearer auth for:
 1. Gateway calls `POST /start_job` → receives `job_id` + `job_token`
 2. Agent stores `job_token` for the lifetime of the job
 3. Agent calls `POST /provide_result/<job_id>` with `Authorization: Bearer <job_token>`
-4. Agent checks `GET /status/<job_id>` until status is `awaiting_approval`
-5. Gateway calls `complete` command → receipt minted
+4. Gateway calls `complete` command (this calls MIP `POST /complete_job/<job_id>` internally)
+5. Agent checks `GET /status/<job_id>` until `internal_status` is `completed`
+
+Repeatable maintenance recipe for this flow: `docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md`.
 
 **Commit-reveal (optional, for tamper-proof work):**
 
@@ -1319,7 +1350,6 @@ Required env in `openclaw.json` (use **deployed** URLs for OpenClaw; localhost o
           "MIDNIGHT_NETWORK": "preprod",
           "OPERATOR_FEE_BPS": "200",
           "RECEIPT_CONTRACT_ADDRESS": "<64-char hex>",
-          "OPERATOR_SECRET_KEY": "<64-char hex>",
           "BRIDGE_URL": "https://bridge.nightpay.dev",
           "NIGHTPAY_API_URL": "https://api.nightpay.dev",
           "ALLOW_LOCAL_URLS": "0"
@@ -1331,6 +1361,8 @@ Required env in `openclaw.json` (use **deployed** URLs for OpenClaw; localhost o
 ```
 *(For local/same-machine dev only, you may set `BRIDGE_URL`/`NIGHTPAY_API_URL` to `http://localhost:4000`/`http://localhost:8090` and `ALLOW_LOCAL_URLS`: `"1"`.)*
 
+`OPERATOR_SECRET_KEY` should be configured only in trusted operator automation contexts (not broadly across worker agents).
+
 **Activation phrases** (OpenClaw picks up the skill when an agent message contains):
 - "bounty", "community bounty", "anonymous bounty", "crowdfund"
 - "nightpay", "bounty board", "post a bounty"
@@ -1338,8 +1370,7 @@ Required env in `openclaw.json` (use **deployed** URLs for OpenClaw; localhost o
 
 **Validate before publishing to ClawHub:**
 ```bash
-npm install -g @agentskills/skills-ref
-skills-ref validate ./skills/nightpay
+npx skills-ref validate ./skills/nightpay
 ```
 
 ---
@@ -1576,7 +1607,7 @@ compact-security-detectors scan skills/nightpay/contracts/receipt.compact
 
 ### OpenClaw
 - Skills reference: https://docs.openclaw.ai/tools/skills
-- ClawHub registry: https://clawhub.biz/
+- ClawHub registry: https://clawhub.com/
 - AgentSkills spec: https://agentskills.io/specification
 
 ### Midnight City simulation

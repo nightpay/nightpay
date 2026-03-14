@@ -1127,8 +1127,29 @@ def canonical_input_hash(input_data):
     payload = input_data if isinstance(input_data, dict) else {}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
+def resolve_input_data(body):
+    if not isinstance(body, dict):
+        return {}
+    if isinstance(body.get('input_data'), dict):
+        return body.get('input_data')
+    if isinstance(body.get('input'), dict):
+        return body.get('input')
+    return {}
+
+def resolve_identifier_from_purchaser(body):
+    if not isinstance(body, dict):
+        return None
+    value = body.get('identifier_from_purchaser')
+    if value in (None, ''):
+        value = body.get('identifierFromPurchaser')
+    if value in (None, ''):
+        return None
+    return str(value)
+
 def strict_start_job_response(job_id, body, now_dt, amount_specks):
-    input_data = body.get('input_data') if isinstance(body.get('input_data'), dict) else {}
+    input_data = resolve_input_data(body)
+    identifier_from_purchaser = resolve_identifier_from_purchaser(body)
+    input_data_hash = canonical_input_hash(input_data)
     pay_by = now_dt + timedelta(hours=1)
     submit_by = now_dt + timedelta(hours=OPTIMISTIC_WINDOW_HOURS)
     unlock_at = submit_by + timedelta(hours=24)
@@ -1142,8 +1163,10 @@ def strict_start_job_response(job_id, body, now_dt, amount_specks):
         'externalDisputeUnlockTime': dispute_unlock_at.isoformat(),
         'agentIdentifier': body.get('agentIdentifier'),
         'sellerVKey': body.get('sellerVKey'),
-        'identifierFromPurchaser': body.get('identifierFromPurchaser') or body.get('identifier_from_purchaser'),
-        'input_hash': canonical_input_hash(input_data),
+        'identifier_from_purchaser': identifier_from_purchaser,
+        'identifierFromPurchaser': identifier_from_purchaser,
+        'input_data_hash': input_data_hash,
+        'input_hash': input_data_hash,
         'status': external_status_from_internal('running', amount_specks),
         'internal_status': 'running',
         'legacy': {
@@ -1819,55 +1842,79 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             self.respond(200, copy.deepcopy(doc))
 
         elif path_only == '/input_schema':
+            properties = {
+                'description': {
+                    'type': 'string',
+                    'description': 'Bounty job description'
+                },
+                'amount_specks': {
+                    'type': 'integer',
+                    'description': 'Bounty amount in NIGHT specks'
+                },
+                'agentIdentifier': {
+                    'type': 'string',
+                    'description': 'MIP-003 agent identifier (required in strict mode)'
+                },
+                'identifier_from_purchaser': {
+                    'type': 'string',
+                    'description': 'MIP-003 purchaser-provided identifier (required in strict mode)'
+                },
+                'identifierFromPurchaser': {
+                    'type': 'string',
+                    'description': 'Compatibility alias for identifier_from_purchaser'
+                },
+                'input_data': {
+                    'type': 'object',
+                    'description': 'Canonical MIP-003 job payload (required in strict mode)'
+                },
+                'input': {
+                    'type': 'object',
+                    'description': 'Compatibility alias for input_data'
+                },
+                'work_commit': {
+                    'type': 'string',
+                    'description': 'sha256(nightpay-work-reveal-v1:{work}:{nonce}) — commit before reveal'
+                },
+                'direct_agent_id': {
+                    'type': 'string',
+                    'description': 'Optional direct assignment to a registered agent profile'
+                },
+                'visibility': {
+                    'type': 'string',
+                    'description': 'public or private (default: private). Private jobs are hidden from public listings; submissions only for bounty creator.'
+                },
+                'attachment_filename': {
+                    'type': 'string',
+                    'description': 'Optional .md or .txt filename; requires authentication (X-Agent-Token or operator Bearer). Max 255 chars.'
+                },
+                'attachment_content': {
+                    'type': 'string',
+                    'description': 'Optional attachment body (markdown or text); requires authentication. Max 256KB.'
+                },
+                'idempotency_key': {
+                    'type': 'string',
+                    'description': 'Optional replay-safe key; also accepted via X-Idempotency-Key header'
+                },
+                'contest': {
+                    'type': 'object',
+                    'description': 'Optional contest mode: 5-20 agent submissions with agent-majority voting',
+                    'properties': {
+                        'enabled': {'type': 'boolean'},
+                        'min_agents': {'type': 'integer'},
+                        'max_agents': {'type': 'integer'},
+                        'min_votes_to_select': {'type': 'integer'},
+                        'vote_window_hours': {'type': 'integer'},
+                        'agent_voting_only': {'type': 'boolean'}
+                    }
+                }
+            }
+            required = ['description', 'amount_specks']
+            if MIP003_MODE == 'strict':
+                required = ['agentIdentifier', 'identifier_from_purchaser', 'input_data']
             self.respond(200, {
                 'type': 'object',
-                'properties': {
-                    'description': {
-                        'type': 'string',
-                        'description': 'Bounty job description'
-                    },
-                    'amount_specks': {
-                        'type': 'integer',
-                        'description': 'Bounty amount in NIGHT specks'
-                    },
-                    'work_commit': {
-                        'type': 'string',
-                        'description': 'sha256(nightpay-work-reveal-v1:{work}:{nonce}) — commit before reveal'
-                    },
-                    'direct_agent_id': {
-                        'type': 'string',
-                        'description': 'Optional direct assignment to a registered agent profile'
-                    },
-                    'visibility': {
-                        'type': 'string',
-                        'description': 'public or private (default: private). Private jobs are hidden from public listings; submissions only for bounty creator.'
-                    },
-                    'attachment_filename': {
-                        'type': 'string',
-                        'description': 'Optional .md or .txt filename; requires authentication (X-Agent-Token or operator Bearer). Max 255 chars.'
-                    },
-                    'attachment_content': {
-                        'type': 'string',
-                        'description': 'Optional attachment body (markdown or text); requires authentication. Max 256KB.'
-                    },
-                    'idempotency_key': {
-                        'type': 'string',
-                        'description': 'Optional replay-safe key; also accepted via X-Idempotency-Key header'
-                    },
-                    'contest': {
-                        'type': 'object',
-                        'description': 'Optional contest mode: 5-20 agent submissions with agent-majority voting',
-                        'properties': {
-                            'enabled': {'type': 'boolean'},
-                            'min_agents': {'type': 'integer'},
-                            'max_agents': {'type': 'integer'},
-                            'min_votes_to_select': {'type': 'integer'},
-                            'vote_window_hours': {'type': 'integer'},
-                            'agent_voting_only': {'type': 'boolean'}
-                        }
-                    }
-                },
-                'required': ['description', 'amount_specks']
+                'properties': properties,
+                'required': required
             })
 
         elif path_only == '/demo':
@@ -1875,7 +1922,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'demo': True,
                 'message': 'nightpay mip003 demo endpoint',
                 'mode': MIP003_MODE,
-                'routes': ['/availability', '/use_cases', '/agents', '/ontology', '/ontology/context', '/ontology/examples', '/management/help', '/management/chat', '/input_schema', '/agent/challenge', '/agent/verify', '/start_job', '/status?job_id=...', '/provide_input?job_id=...'],
+                'routes': ['/availability', '/use_cases', '/agents', '/ontology', '/ontology/context', '/ontology/examples', '/management/help', '/management/chat', '/input_schema', '/agent/challenge', '/agent/verify', '/start_job', '/status?job_id=...', '/provide_input?job_id=...', '/complete_job/<id>'],
                 'potential_use_cases': POTENTIAL_USE_CASES,
             })
 
@@ -1893,6 +1940,16 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(404, {'error': 'job not found'})
             else:
                 job = dict(row)
+                internal_visibility = normalize_visibility(job.get('visibility'), default='public') or 'public'
+                if internal_visibility == 'hidden':
+                    auth_header = str(self.headers.get('Authorization', '')).strip()
+                    token_valid = False
+                    if auth_header.startswith('Bearer '):
+                        provided_token = auth_header[len('Bearer '):].strip()
+                        token_valid = verify_job_token(job_id, provided_token) if provided_token else False
+                    if not token_valid and not self._operator_bearer_ok():
+                        self.respond(403, {'error': 'private job status requires job_token or operator bearer auth'})
+                        return
                 contest_cfg = parse_contest_config(job.get('contest_config'))
                 claims_count = db.execute(
                     'SELECT COUNT(*) FROM job_claims WHERE job_id = ?',
@@ -1918,6 +1975,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     job['result'] = json.loads(job['result'])
                 voter_snapshot = parse_voter_snapshot(job.get('voter_snapshot'))
                 job.pop('contest_config', None)
+                job['visibility'] = visibility_for_api(internal_visibility)
                 job['claims_count'] = claims_count
                 job['submissions_count'] = submissions_count
                 job['contest'] = contest_cfg
@@ -2200,6 +2258,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path_only = parsed.path
+        params = parse_qs(parsed.query)
 
         if self._proxy_ollama(path_only):
             return
@@ -2445,11 +2504,25 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 self.respond(400, {'error': 'JSON object body required'})
                 return
+            strict_start = (MIP003_MODE == 'strict')
             contest_cfg, contest_err = validate_contest_config(body.get('contest'))
             if contest_err:
                 self.respond(400, {'error': contest_err})
                 return
-            input_data = body.get('input_data') if isinstance(body.get('input_data'), dict) else {}
+            input_data = resolve_input_data(body)
+            has_input_data = isinstance(body.get('input_data'), dict) or isinstance(body.get('input'), dict)
+            identifier_from_purchaser = resolve_identifier_from_purchaser(body)
+            agent_identifier = str(body.get('agentIdentifier') or '').strip()
+            if strict_start:
+                if not agent_identifier:
+                    self.respond(400, {'error': 'agentIdentifier is required in strict mode'})
+                    return
+                if not identifier_from_purchaser:
+                    self.respond(400, {'error': 'identifier_from_purchaser is required in strict mode'})
+                    return
+                if not has_input_data:
+                    self.respond(400, {'error': 'input_data object is required in strict mode'})
+                    return
             direct_agent_id = str(body.get('direct_agent_id') or '').strip()
             visibility_default = 'hidden' if direct_agent_id else 'private'
             visibility = normalize_visibility(body.get('visibility'), default=visibility_default)
@@ -2688,14 +2761,14 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(404, {'error': 'job not found'})
                 return
             job_visibility = visibility_for_api(normalize_visibility(row['visibility'], default='public') or 'public')
-            if normalize_visibility(row['visibility'], default='public') == 'hidden' and row['assigned_agent_id'] and row['assigned_agent_id'] != agent_id:
+            contest_cfg = parse_contest_config(row['contest_config'])
+            if normalize_visibility(row['visibility'], default='public') == 'hidden' and row['assigned_agent_id'] and row['assigned_agent_id'] != agent_id and not contest_cfg['enabled']:
                 self.respond(403, {'error': 'private job is reserved for another agent'})
                 return
             if row['status'] not in ('running', 'awaiting_approval', 'multisig_pending'):
                 self.respond(409, {'error': f'job cannot be claimed in current state (status: {row["status"]})'})
                 return
 
-            contest_cfg = parse_contest_config(row['contest_config'])
             claims_count_before = db.execute(
                 'SELECT COUNT(*) FROM job_claims WHERE job_id = ?',
                 (job_id,)
@@ -3505,6 +3578,96 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 ),
             })
 
+        elif path_only.startswith('/complete_job/') or path_only == '/complete_job':
+            # Operator-only finalization path: marks job as completed once gateway settle succeeds.
+            job_id = path_only.split('/')[-1] if path_only.startswith('/complete_job/') else params.get('job_id', [None])[0]
+            if not job_id:
+                self.respond(400, {'error': 'job_id query parameter required'})
+                return
+            if not self._validate_job_id(job_id):
+                self.respond(400, {'error': 'invalid job_id format'})
+                return
+            if not self._operator_bearer_ok():
+                self.respond(403, {'error': 'operator bearer auth required'})
+                return
+
+            db = get_db()
+            row = db.execute(
+                'SELECT status, result, amount_specks, approved_at FROM jobs WHERE job_id = ?',
+                (job_id,)
+            ).fetchone()
+            if not row:
+                self.respond(404, {'error': 'job not found'})
+                return
+
+            current_status = str(row['status'] or '').strip()
+            if current_status not in ('running', 'awaiting_approval', 'multisig_pending', 'completed'):
+                self.respond(409, {'error': f'job cannot be completed in current state (status: {current_status})'})
+                return
+
+            receipt_hash = str(body.get('receiptHash') or body.get('receipt_hash') or '').strip()
+            output_hash = str(body.get('outputHash') or body.get('output_hash') or '').strip()
+            midnight_tx_id = str(body.get('midnightTxId') or body.get('midnight_tx_id') or '').strip()
+            on_chain_raw = body.get('onChain', body.get('on_chain'))
+            on_chain = bool(on_chain_raw) if on_chain_raw is not None else None
+
+            existing_result = safe_json_loads(row['result'], {})
+            if not isinstance(existing_result, dict):
+                existing_result = {}
+            settlement = dict(existing_result.get('settlement') or {})
+            if receipt_hash:
+                settlement['receipt_hash'] = receipt_hash
+            if output_hash:
+                settlement['output_hash'] = output_hash
+            if midnight_tx_id:
+                settlement['midnight_tx_id'] = midnight_tx_id
+            if on_chain is not None:
+                settlement['on_chain'] = on_chain
+
+            now = datetime.now(timezone.utc).isoformat()
+            settlement['completed_at'] = now
+            settlement['source'] = 'gateway.complete'
+            existing_result['settlement'] = settlement
+
+            db.execute(
+                '''UPDATE jobs
+                   SET result = ?, status = 'completed', approved_at = COALESCE(approved_at, ?), updated_at = ?
+                   WHERE job_id = ?''',
+                (json.dumps(existing_result), now, now, job_id)
+            )
+            status_event_id = record_status_event(
+                db,
+                job_id,
+                'completed',
+                result={
+                    'internal_status': 'completed',
+                    'receipt_hash': receipt_hash or None,
+                    'on_chain': on_chain,
+                }
+            )
+            db.commit()
+
+            amount_specks = int(row['amount_specks'] or 0)
+            fee_bps = int(os.environ.get('OPERATOR_FEE_BPS', '200'))
+            fee = amount_specks * fee_bps // 10000
+            net_to_agent = amount_specks - fee
+            self.respond(200, {
+                'job_id': job_id,
+                'status': 'completed',
+                'internal_status': 'completed',
+                'status_id': status_event_id,
+                'receipt_hash': receipt_hash or None,
+                'output_hash': output_hash or None,
+                'midnight_tx_id': midnight_tx_id or None,
+                'on_chain': on_chain,
+                'economics': {
+                    'amount_specks': amount_specks,
+                    'fee': fee,
+                    'net_to_agent': net_to_agent,
+                    'fee_bps': fee_bps,
+                }
+            })
+
         elif path_only.startswith('/dispute/') or path_only == '/dispute':
             job_id = path_only.split('/')[-1] if path_only.startswith('/dispute/') else params.get('job_id', [None])[0]
             if not job_id:
@@ -3586,7 +3749,7 @@ print(f'[nightpay] MIP003 mode: {MIP003_MODE}')
 print(f'[nightpay] Idempotency TTL: {IDEMPOTENCY_TTL_SECONDS}s (X-Idempotency-Key)')
 print(f'[nightpay] Agent identity enforce: {AGENT_IDENTITY_ENFORCE} | challenge TTL: {AGENT_CHALLENGE_TTL_SECONDS}s | token TTL: {AGENT_VERIFIED_TOKEN_TTL_SECONDS}s')
 print(f'[nightpay] Management LLM: enabled={MANAGEMENT_LLM_ENABLED} | url={MANAGEMENT_LLM_URL} | model={MANAGEMENT_LLM_MODEL} | timeout={MANAGEMENT_LLM_TIMEOUT_SECONDS}s')
-endpoints = '/availability /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /dispute/<id> /jobs?status=&limit=&offset=&approved_before=&search=&visibility='
+endpoints = '/availability /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /complete_job/<id> /complete_job?job_id= /dispute/<id> /jobs?status=&limit=&offset=&approved_before=&search=&visibility='
 print(f'[nightpay] Endpoints: {endpoints}')
 httpd.serve_forever()
 PYCODE

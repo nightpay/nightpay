@@ -58,11 +58,11 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 
 | Category | Paths / patterns | Why private |
 |----------|------------------|-------------|
-| **Bridge & wallet** | `bridge/` | Operator wallet and bridge implementation live in a separate private repo; public repo only defines the bridge HTTP API contract. |
-| **Internal planning** | `plans/`, `LAUNCH.md`, `AGENTS.md` | Roadmap, launch kit, and agent coding instructions are for maintainers; public users get README, SKILL.md, and docs. |
-| **IDE & local config** | `.cursor/`, `.claude/` | May contain hostnames, API keys, local paths; machine-specific. |
+| **Bridge & wallet** | `bridge/` | Private git submodule pointer to a separate private repo; operator wallet and bridge implementation stay there. Public repo defines the bridge HTTP API contract (this doc). |
+| **Internal planning** | `plans/`, `LAUNCH.md`, `docs/MARKETING.md` | Roadmap, launch kit, marketing drafts; for maintainers. (AGENTS.md is **public** so agent coding instructions apply in every clone.) |
+| **IDE & local config** | `.cursor/`, `.claude/`, `.claude/settings.local.json`, `.claude_settings.json`, `.auto-claude/`, `.worktrees/`, `.security-key`, `logs/security/`, `.playwright-mcp` | May contain hostnames, API keys, local paths; machine-specific. |
 | **Local automation** | `.private/`, `scripts/*` (except allowlisted) | Custom deploy/ops scripts and secrets; only `agent-playground-setup.sh`, `server-sync-start.sh`, `load-sim.sh` are shared. |
-| **Agent playground** | `.agent-playground/`, `.agent-playground.env*`, `sample-agent/.env`, `sample-agent/.state/` | Runtime secrets (JOB_TOKEN_SECRET, OPERATOR_SECRET_KEY, MASUMI_API_KEY, etc.); template `.agent-playground.env.example` stays tracked. |
+| **Agent playground** | `.agent-playground/`, `.agent-playground.env`, `.agent-playground.env.bak*`, `.agent-playground.env.local`, `sample-agent/.env`, `sample-agent/.state/` | Runtime secrets (JOB_TOKEN_SECRET, OPERATOR_SECRET_KEY, MASUMI_API_KEY, etc.); template `.agent-playground.env.example` stays tracked. |
 | **Credentials & keys** | `.env`, `.env.*`, `*.pem`, `*.p12`, `*.pk8`, `hetzner_*`, `id_rsa`, `id_ed25519`, `credentials*.json`, `secrets.json` | Env vars and key material must never be committed. |
 | **VPS / deployment** | `docs/HETZNER_X86_RUNBOOK.md` | Contains deployment details and host references; operator-only. |
 | **Operator session** | `docs/OPERATOR_SESSION.md` | Admin-only full visibility (token generation via SSH, sessionStorage, no UI); do not commit. |
