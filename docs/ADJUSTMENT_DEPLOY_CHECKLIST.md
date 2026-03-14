@@ -25,7 +25,47 @@ git commit -m "Describe adjustment"
 git push origin master
 ```
 
-## 3) Deploy the pushed commit to SSH server
+## 2.1) One-time setup for auto-deploy on push to `master` (and `main`)
+
+This repo now includes workflow: `.github/workflows/deploy-hetzner.yml`.
+
+Configure these in GitHub before relying on auto-deploy:
+
+- **Repository secrets**
+  - `HETZNER_HOST` (for example `static.<ip>.clients.your-server.de`)
+  - `HETZNER_SSH_KEY` (private key content, e.g. `hetzner_ed25519_martin`)
+  - `HETZNER_KNOWN_HOSTS` (optional but recommended; `known_hosts` entry)
+  - `HETZNER_SSH_PORT` (optional, default `22`)
+- **Repository variables** (optional overrides)
+  - `HETZNER_REMOTE_DIR` (default `/opt/nightpay`)
+  - `HETZNER_BRIDGE_DIR` (default `/opt/nightpay-bridge`)
+  - `HETZNER_MASUMI_DIR` (default `/opt/masumi-services-dev-quickstart`)
+
+After these are set, every push to `master` (or `main`) triggers deploy + Docker recreate + health checks.
+
+## 2.2) Optional staging auto-deploy (`staging` branch)
+
+Workflow: `.github/workflows/deploy-hetzner-staging.yml`
+
+Behavior:
+- Push to `staging` deploys into an isolated app directory (default `/opt/nightpay-staging`)
+- Staging defaults to ports `3334` (UI) + `8091` (MIP)
+- Staging skips proof/Masumi container recreation by default so production services are not touched
+
+Optional staging-specific secrets (fallbacks to production secrets when omitted):
+
+- `HETZNER_STAGING_HOST`
+- `HETZNER_STAGING_SSH_KEY`
+- `HETZNER_STAGING_KNOWN_HOSTS`
+- `HETZNER_STAGING_SSH_PORT`
+
+Optional staging variables:
+
+- `HETZNER_STAGING_REMOTE_DIR` (default `/opt/nightpay-staging`)
+- `HETZNER_STAGING_UI_PORT` (default `3334`)
+- `HETZNER_STAGING_MIP_PORT` (default `8091`)
+
+## 3) Manual deploy fallback (SSH server)
 
 Fast path (existing server already bootstrapped):
 
@@ -42,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File scripts/deploy-nightpay-hetzner.ps1 `
 ```
 
 What this does:
-- pushes `master` to GitHub
+- pushes `main` to GitHub
 - syncs the latest tracked commit to `/opt/nightpay`
 - normalizes line endings for `.sh`/`.compact`
 - restarts services and runs `doctor`
