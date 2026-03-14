@@ -28,7 +28,6 @@ bridge/
 # Internal plans, launch kit, agent instructions, local clones (not for public repo)
 plans/
 LAUNCH.md
-AGENTS.md
 .tmp/
 masumi-services-dev-quickstart
 

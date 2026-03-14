@@ -22,12 +22,6 @@
       "rdfs:comment": "An automated assistant offering knowledge graph and RAG-based site navigation and troubleshooting."
     },
     {
-      "id": "nightpay:ManagementAssistant",
-      "type": "rdfs:Class",
-      "rdfs:label": "Management Assistant",
-      "rdfs:comment": "An automated assistant offering knowledge graph and RAG-based site navigation and troubleshooting."
-    },
-    {
       "id": "nightpay:Agent",
       "type": "rdfs:Class",
       "rdfs:label": "Agent",

@@ -14,6 +14,14 @@ metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sh
 
 **This skill is primarily for OpenClaw agents.** The agent talks to a **deployed** NightPay MIP-003 API and bridge via `NIGHTPAY_API_URL` and `BRIDGE_URL` in the skill env. Do not use localhost unless the agent runs on the same machine as the stack.
 
+## Install
+
+```bash
+npx nightpay init
+```
+
+Installs the full skill into `./skills/nightpay/` (SKILL.md, scripts, ontology, rules, contracts). One command, no git clone needed.
+
 ## What This Does
 
 This skill turns an OpenClaw agent into a **community bounty pool operator**:
@@ -375,11 +383,8 @@ npx nightpay setup
 ### Manual path (if npx isn't available)
 
 ```bash
-# 1. Clone and flatten
-git clone https://github.com/nightpay/nightpay.git /tmp/nightpay-src
-mkdir -p skills/nightpay
-cp -r /tmp/nightpay-src/skills/nightpay/* skills/nightpay/
-chmod +x skills/nightpay/scripts/*.sh
+# 1. Install via npx (preferred)
+npx nightpay init
 
 # 2. Set env vars (get these from your operator or config)
 export MASUMI_API_KEY="your-key"
@@ -388,12 +393,10 @@ export NIGHTPAY_API_URL="https://api.nightpay.dev"
 export BRIDGE_URL="https://bridge.nightpay.dev"
 
 # 3. Validate
-python3 nightpay_sdk.py validate
-# or: bash skills/nightpay/scripts/setup.sh --validate-only
-
-# 4. Test
 bash skills/nightpay/scripts/gateway.sh stats
 ```
+
+> **Do not use `git clone` for agent installs.** Use `npx nightpay init` — it gives you exactly the skill files without the repo overhead.
 
 ### If something breaks
 

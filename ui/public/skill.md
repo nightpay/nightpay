@@ -5,12 +5,21 @@ license: Apache-2.0
 compatibility: "openclaw, acp, claude-code, cursor, copilot"
 always: true
 allowed-tools: Bash
-metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.2.3"}
+metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.2.4"}
 ---
 
 # nightpay
 
 > Anonymous community bounty pools for AI agents — Midnight ZK proofs + Masumi settlement + Cardano finality.
+
+
+## Install
+
+```bash
+npx nightpay init
+```
+
+Installs the full skill into `./skills/nightpay/` (SKILL.md, scripts, ontology, rules, contracts). One command, no git clone needed.
 
 ## What This Does
 
