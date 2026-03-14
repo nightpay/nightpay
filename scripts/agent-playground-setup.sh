@@ -174,6 +174,7 @@ init_cmd() {
 export MIDNIGHT_NETWORK="preprod"
 export MIP_PORT="8090"
 export UI_PORT="3333"
+export ENABLE_UI="1"
 export JOB_TOKEN_SECRET="${job_token_secret}"
 export OPERATOR_SECRET_KEY="${operator_secret_key}"
 export MASUMI_API_KEY="<fill-in: your ADMIN_KEY from Masumi .env>"
@@ -199,6 +200,8 @@ start_cmd() {
 
   local mip_port="${MIP_PORT:-8090}"
   local ui_port="${UI_PORT:-3333}"
+  local ui_enabled="${ENABLE_UI:-1}"
+  local ui_package="${ROOT_DIR}/ui/package.json"
 
   start_process \
     "mip003-server" \
@@ -206,15 +209,27 @@ start_cmd() {
     "$MIP_LOG_FILE" \
     bash "$ROOT_DIR/skills/nightpay/scripts/mip003-server.sh" "$mip_port"
 
-  start_process \
-    "ui-dev-server" \
-    "$UI_PID_FILE" \
-    "$UI_LOG_FILE" \
-    npm run dev --prefix "$ROOT_DIR/ui" -- --host 0.0.0.0 --port "$ui_port"
+  if [[ "$ui_enabled" == "1" ]]; then
+    if [[ -f "$ui_package" ]]; then
+      start_process \
+        "ui-dev-server" \
+        "$UI_PID_FILE" \
+        "$UI_LOG_FILE" \
+        npm run dev --prefix "$ROOT_DIR/ui" -- --host 0.0.0.0 --port "$ui_port"
+    else
+      echo "WARN: ui/ missing at $ROOT_DIR/ui; skipping UI start (set ENABLE_UI=0 to silence)."
+      rm -f "$UI_PID_FILE"
+    fi
+  else
+    echo "UI start skipped (ENABLE_UI=$ui_enabled)."
+    rm -f "$UI_PID_FILE"
+  fi
 
   echo "logs:"
   echo "  $MIP_LOG_FILE"
-  echo "  $UI_LOG_FILE"
+  if [[ "$ui_enabled" == "1" && -f "$ui_package" ]]; then
+    echo "  $UI_LOG_FILE"
+  fi
 }
 
 stop_cmd() {
@@ -263,6 +278,8 @@ doctor_cmd() {
 
     local mip_port="${MIP_PORT:-8090}"
     local ui_port="${UI_PORT:-3333}"
+    local ui_enabled="${ENABLE_UI:-1}"
+    local ui_package="${ROOT_DIR}/ui/package.json"
     local code
 
     curl -fsS --max-time 5 "http://localhost:${mip_port}/availability" >/dev/null \
@@ -272,11 +289,17 @@ doctor_cmd() {
     curl -fsS --max-time 5 "http://localhost:${mip_port}/ontology" >/dev/null \
       && pass "MIP endpoint: /ontology" || fail "MIP endpoint: /ontology"
 
-    code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 "http://localhost:${ui_port}/" || echo "000")"
-    if [[ "$code" == "200" ]]; then
-      pass "UI endpoint: /"
+    if [[ "$ui_enabled" != "1" ]]; then
+      pass "UI endpoint: skipped (ENABLE_UI=$ui_enabled)"
+    elif [[ ! -f "$ui_package" ]]; then
+      warn "UI endpoint skipped (ui/ submodule missing)"
     else
-      fail "UI endpoint: /"
+      code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 "http://localhost:${ui_port}/" || echo "000")"
+      if [[ "$code" == "200" ]]; then
+        pass "UI endpoint: /"
+      else
+        fail "UI endpoint: /"
+      fi
     fi
 
     curl -fsS --max-time 5 "http://localhost:3001/docs" >/dev/null \

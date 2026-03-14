@@ -124,7 +124,11 @@ set -euo pipefail
 
 if [[ "$SKIP_INSTALL" != "1" ]]; then
   su - deploy -c "cd '$REMOTE_DIR' && npm install --no-audit --no-fund"
-  su - deploy -c "cd '$REMOTE_DIR/ui' && npm install --no-audit --no-fund"
+  if [[ -f "$REMOTE_DIR/ui/package.json" ]]; then
+    su - deploy -c "cd '$REMOTE_DIR/ui' && npm install --no-audit --no-fund"
+  else
+    echo "WARN: $REMOTE_DIR/ui/package.json missing; skipping UI npm install."
+  fi
 fi
 
 if [[ ! -f "$REMOTE_DIR/.agent-playground.env" ]]; then

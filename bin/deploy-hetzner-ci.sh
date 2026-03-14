@@ -140,7 +140,23 @@ run_ssh "\
   echo backup_timestamp=\$ts"
 
 echo "[4/8] Sync tracked commit to ${HOST}:${REMOTE_DIR}..."
-git -C "$ROOT_DIR" archive --format=tar HEAD \
+TMP_SYNC_DIR="$(mktemp -d)"
+cleanup_tmp() { rm -rf "$TMP_SYNC_DIR"; }
+trap cleanup_tmp EXIT
+
+git -C "$ROOT_DIR" archive --format=tar HEAD | tar -xf - -C "$TMP_SYNC_DIR"
+
+# If ui/ exists locally (for example checked-out private submodule), include it in deploy payload.
+if [[ -f "$ROOT_DIR/ui/package.json" ]]; then
+  mkdir -p "$TMP_SYNC_DIR/ui"
+  tar -C "$ROOT_DIR/ui" \
+    --exclude=.git \
+    --exclude=node_modules \
+    --exclude=dist \
+    -cf - . | tar -xf - -C "$TMP_SYNC_DIR/ui"
+fi
+
+tar -C "$TMP_SYNC_DIR" -cf - . \
   | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
       set -euo pipefail; \
       mkdir -p '${REMOTE_DIR}'; \
@@ -149,18 +165,30 @@ git -C "$ROOT_DIR" archive --format=tar HEAD \
       chown -R deploy:deploy '${REMOTE_DIR}'; \
       find '${REMOTE_DIR}' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
 
+cleanup_tmp
+trap - EXIT
+
 echo "[5/8] Restart NightPay services..."
 ssh "${SSH_OPTS[@]}" "root@${HOST}" \
-  "REMOTE_DIR='${REMOTE_DIR}' SKIP_NPM_INSTALL='${SKIP_NPM_INSTALL}' UI_PORT='${UI_PORT}' MIP_PORT='${MIP_PORT}' bash -s" <<'REMOTE'
+  "REMOTE_DIR='${REMOTE_DIR}' SKIP_NPM_INSTALL='${SKIP_NPM_INSTALL}' UI_PORT='${UI_PORT}' MIP_PORT='${MIP_PORT}' SKIP_MASUMI_RECREATE='${SKIP_MASUMI_RECREATE}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 if [[ "$SKIP_NPM_INSTALL" != "1" ]]; then
   su - deploy -c "cd '$REMOTE_DIR' && npm install --no-audit --no-fund"
-  su - deploy -c "cd '$REMOTE_DIR/ui' && npm install --no-audit --no-fund"
+  if [[ -f "$REMOTE_DIR/ui/package.json" ]]; then
+    su - deploy -c "cd '$REMOTE_DIR/ui' && npm install --no-audit --no-fund"
+  else
+    echo "WARN: $REMOTE_DIR/ui/package.json missing; skipping UI npm install."
+  fi
 fi
 
 if [[ ! -f "$REMOTE_DIR/.agent-playground.env" ]]; then
-  su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh init"
+  if [[ "$SKIP_MASUMI_RECREATE" == "1" && "$REMOTE_DIR" != "/opt/nightpay" && -f "/opt/nightpay/.agent-playground.env" ]]; then
+    cp /opt/nightpay/.agent-playground.env "$REMOTE_DIR/.agent-playground.env"
+    chown deploy:deploy "$REMOTE_DIR/.agent-playground.env" || true
+  else
+    su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh init"
+  fi
 fi
 
 if [[ -n "${UI_PORT:-}" || -n "${MIP_PORT:-}" ]]; then
@@ -208,6 +236,24 @@ su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh stop 
 pkill -u deploy -f "$REMOTE_DIR/skills/nightpay/scripts/mip003-server.sh" || true
 pkill -u deploy -f "$REMOTE_DIR/ui/node_modules/.bin/vite" || true
 rm -f "$REMOTE_DIR/.agent-playground/run/"*.pid || true
+
+mip_port="${MIP_PORT:-8090}"
+ui_port="${UI_PORT:-3333}"
+
+# Kill stale listeners by port to avoid bind conflicts on restart.
+if command -v ss >/dev/null 2>&1; then
+  for port in "$mip_port" "$ui_port"; do
+    pids="$(ss -ltnp "( sport = :$port )" 2>/dev/null | awk -F'pid=' 'NR>1 {split($2,a,","); print a[1]}' | sort -u)"
+    if [[ -n "$pids" ]]; then
+      kill $pids || true
+      sleep 1
+      pids_after="$(ss -ltnp "( sport = :$port )" 2>/dev/null | awk -F'pid=' 'NR>1 {split($2,a,","); print a[1]}' | sort -u)"
+      if [[ -n "$pids_after" ]]; then
+        kill -9 $pids_after || true
+      fi
+    fi
+  done
+fi
 
 su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start"
 su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh doctor"
@@ -283,10 +329,16 @@ UI_PORT_CHECK="${UI_PORT:-3333}"
 echo "[8/8] Final health checks..."
 run_ssh "\
   set -euo pipefail; \
+  ui_enabled='1'; \
+  if [[ -f '${REMOTE_DIR}/.agent-playground.env' ]]; then source '${REMOTE_DIR}/.agent-playground.env'; ui_enabled=\${ENABLE_UI:-1}; fi; \
   echo -n 'mip='; curl -fsS http://localhost:${MIP_PORT_CHECK}/availability; echo; \
-  ui_code=\$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:${UI_PORT_CHECK}/); \
-  echo ui_status=\$ui_code; \
-  if [[ \"\$ui_code\" != '200' ]]; then echo 'ERROR: UI health check failed' >&2; exit 1; fi; \
+  if [[ \"\$ui_enabled\" == '1' && -f '${REMOTE_DIR}/ui/package.json' ]]; then \
+    ui_code=\$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:${UI_PORT_CHECK}/); \
+    echo ui_status=\$ui_code; \
+    if [[ \"\$ui_code\" != '200' ]]; then echo 'ERROR: UI health check failed' >&2; exit 1; fi; \
+  else \
+    echo 'ui_status=skipped'; \
+  fi; \
   if [[ '${SKIP_MASUMI_RECREATE}' != '1' && -f '${MASUMI_DIR}/docker-compose.yml' ]]; then \
     echo -n 'payment='; curl -fsS http://localhost:3001/api/v1/health; echo; \
     echo -n 'registry='; curl -fsS http://localhost:3000/api/v1/health; echo; \
