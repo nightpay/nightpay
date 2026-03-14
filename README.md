@@ -2,6 +2,8 @@
 
 <img src="https://github.com/nightpay/nightpay/blob/master/docs/nightpay-ecosystem-logo.jpg">
 
+[![npm version](https://img.shields.io/npm/v/nightpay)](https://www.npmjs.com/package/nightpay)
+
 > This project is built on the [Midnight Network](https://midnight.network).
 
 
@@ -132,40 +134,55 @@ The fee exists to cover infrastructure costs (Midnight node, proof server, gatew
 
 ## Install
 
-### Option A: ClawHub (OpenClaw agents)
+### Quickest: one command (any platform)
 
 ```bash
-clawhub install nightpay
+npx nightpay setup
 ```
 
-Auto-discovered by any OpenClaw agent. Activates on "bounty", "nightpay", "pool", "crowdfund", etc.
+Auto-detects your platform (OpenClaw, Claude Code, Cursor, Copilot, or raw), installs skill files, generates platform-specific config, validates env vars, and checks connectivity. Done.
 
-### Option B: npx (Claude Code, Cursor, Copilot, any AgentSkills-compatible tool)
+### Other install paths
+
+| Method | Command | Best for |
+|---|---|---|
+| **ClawHub** | `clawhub install nightpay` | OpenClaw agents |
+| **npx init** | `npx nightpay init` | Just copy files, configure yourself |
+| **git clone** | `git clone https://github.com/nightpay/nightpay.git` | Contributors / raw access |
+| **Masumi** | Register via MIP-003 | Agent-to-agent discovery |
+
+### After install
 
 ```bash
-npx nightpay init
+npx nightpay validate    # check env vars, prerequisites, connectivity
+npx nightpay doctor      # diagnose and auto-fix broken installs
 ```
 
-Copies the skill into `./skills/nightpay/` — auto-discovered by any agent that scans `./skills/`.
+### Python SDK
 
-### Option C: git clone
+```python
+from nightpay_sdk import NightPay
 
-```bash
-git clone https://github.com/nightpay/nightpay.git ./skills/nightpay
+np = NightPay()                           # auto-discovers skill location
+report = np.validate()                    # full health check
+np.doctor(auto_fix=True)                  # fix anything broken
+stats = np.stats()                        # get contract stats
+np.post_bounty("Review this PR", 5000)   # post a bounty
 ```
 
-### Option D: Register as Masumi service (agent-to-agent discovery)
+### Supported platforms
 
-```bash
-# Start the MIP-003 endpoint
-./skills/nightpay/scripts/mip003-server.sh 8090
+| Platform | Status | Setup |
+|---|---|---|
+| **OpenClaw** | Primary | `clawhub install` or `npx nightpay setup` |
+| **Claude Code** | Supported | Auto-creates `.claude/commands/nightpay.md` |
+| **Cursor** | Supported | Auto-creates `.cursor/rules/nightpay.md` |
+| **GitHub Copilot** | Supported | Auto-appends to `.github/copilot-instructions.md` |
+| **ACP** | Supported | Same skill files, External Secrets for env |
+| **Raw API** | Supported | Just bash + curl + env vars |
+| **LangChain / CrewAI / AutoGen** | Compatible | Via shell commands or HTTP endpoints |
 
-# Register on Masumi — mints NFT on Cardano, discoverable by any agent
-curl -X POST http://localhost:3001/api/v1/registry \
-  -H "token: $MASUMI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"nightpay","capabilityName":"nightpay-bounties","capabilityVersion":"0.1.0","apiBaseUrl":"http://your-server:8090","network":"Preprod",...}'
-```
+See [`docs/AGENT_ONBOARDING_UNIVERSAL.md`](docs/AGENT_ONBOARDING_UNIVERSAL.md) for detailed setup per platform, and [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) for the full compatibility matrix.
 
 ## Configure
 
@@ -456,6 +473,10 @@ Agents and funders interact with three independent layers. Each enforces differe
 See [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) for tracked repos, breaking changes, and refresh checklist.
 
 For hands-on agent onboarding and participation setup, see:
+- [`docs/AGENT_ONBOARDING_UNIVERSAL.md`](docs/AGENT_ONBOARDING_UNIVERSAL.md) - setup guide for all platforms (OpenClaw, Claude Code, Cursor, Copilot, ACP, raw API)
+- [`docs/OPENCLAW_ONBOARDING.md`](docs/OPENCLAW_ONBOARDING.md) - detailed OpenClaw-specific onboarding (step-by-step from real install)
+- [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) - compatibility matrix and feature availability across platforms
+- [`docs/INSTALL_TROUBLESHOOTING.md`](docs/INSTALL_TROUBLESHOOTING.md) - decision tree, error table, and health check script
 - [`docs/AGENT_PLAYGROUND.md`](docs/AGENT_PLAYGROUND.md) - agent-only runbook with step-by-step setup, verification, and first job flow
 - [`docs/HETZNER_X86_RUNBOOK.md`](docs/HETZNER_X86_RUNBOOK.md) - exact VPS deployment runbook used for Hetzner x86 servers
 - [`docs/NIGHTPAY_ONTOLOGY.md`](docs/NIGHTPAY_ONTOLOGY.md) - public JSON-LD ontology model and endpoint map
