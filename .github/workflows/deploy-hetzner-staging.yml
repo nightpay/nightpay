@@ -1,0 +1,84 @@
+name: Deploy Hetzner Staging
+
+'on':
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hetzner-staging
+  cancel-in-progress: true
+
+jobs:
+  deploy-staging:
+    if: github.ref_name == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Prepare SSH
+        env:
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_STAGING_SSH_KEY: ${{ secrets.HETZNER_STAGING_SSH_KEY }}
+          HETZNER_KNOWN_HOSTS: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+          HETZNER_STAGING_KNOWN_HOSTS: ${{ secrets.HETZNER_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          KEY_CONTENT="${HETZNER_STAGING_SSH_KEY:-${HETZNER_SSH_KEY:-}}"
+          KNOWN_HOSTS_CONTENT="${HETZNER_STAGING_KNOWN_HOSTS:-${HETZNER_KNOWN_HOSTS:-}}"
+          test -n "${KEY_CONTENT:-}" || { echo "Missing HETZNER_STAGING_SSH_KEY or HETZNER_SSH_KEY"; exit 1; }
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$KEY_CONTENT" > "$HOME/.ssh/hetzner_deploy_key"
+          chmod 600 "$HOME/.ssh/hetzner_deploy_key"
+          if [ -n "${KNOWN_HOSTS_CONTENT:-}" ]; then
+            printf '%s\n' "$KNOWN_HOSTS_CONTENT" > "$HOME/.ssh/known_hosts"
+            chmod 644 "$HOME/.ssh/known_hosts"
+          fi
+
+      - name: Checkout UI Submodule (Optional)
+        env:
+          NIGHTPAY_UI_REPO_TOKEN: ${{ secrets.NIGHTPAY_UI_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NIGHTPAY_UI_REPO_TOKEN:-}" ]; then
+            echo "NIGHTPAY_UI_REPO_TOKEN not set; skipping UI submodule checkout."
+            exit 0
+          fi
+          auth="$(printf 'x-access-token:%s' "$NIGHTPAY_UI_REPO_TOKEN" | base64 | tr -d '\n')"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync --recursive
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --recursive --depth 1
+
+      - name: Deploy To Hetzner (Staging)
+        env:
+          HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
+          HETZNER_STAGING_HOST: ${{ secrets.HETZNER_STAGING_HOST }}
+          HETZNER_SSH_PORT: ${{ secrets.HETZNER_SSH_PORT }}
+          HETZNER_STAGING_SSH_PORT: ${{ secrets.HETZNER_STAGING_SSH_PORT }}
+          HETZNER_STAGING_REMOTE_DIR: ${{ vars.HETZNER_STAGING_REMOTE_DIR }}
+          HETZNER_STAGING_UI_PORT: ${{ vars.HETZNER_STAGING_UI_PORT }}
+          HETZNER_STAGING_MIP_PORT: ${{ vars.HETZNER_STAGING_MIP_PORT }}
+        run: |
+          set -euo pipefail
+          DEPLOY_HOST="${HETZNER_STAGING_HOST:-${HETZNER_HOST:-}}"
+          DEPLOY_PORT="${HETZNER_STAGING_SSH_PORT:-${HETZNER_SSH_PORT:-22}}"
+          REMOTE_DIR="${HETZNER_STAGING_REMOTE_DIR:-/opt/nightpay-staging}"
+          UI_PORT="${HETZNER_STAGING_UI_PORT:-3334}"
+          MIP_PORT="${HETZNER_STAGING_MIP_PORT:-8091}"
+          test -n "${DEPLOY_HOST:-}" || { echo "Missing HETZNER_STAGING_HOST or HETZNER_HOST"; exit 1; }
+          chmod +x bin/deploy-hetzner-ci.sh
+          bash bin/deploy-hetzner-ci.sh \
+            --host "$DEPLOY_HOST" \
+            --ssh-key "$HOME/.ssh/hetzner_deploy_key" \
+            --ssh-port "$DEPLOY_PORT" \
+            --remote-dir "$REMOTE_DIR" \
+            --ui-port "$UI_PORT" \
+            --mip-port "$MIP_PORT" \
+            --skip-proof-recreate \
+            --skip-masumi-recreate

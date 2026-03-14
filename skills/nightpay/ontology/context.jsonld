@@ -1,0 +1,179 @@
+{
+  "@context": {
+    "@version": 1.1,
+    "@protected": true,
+    "id": "@id",
+    "type": "@type",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "schema": "https://schema.org/",
+    "vc": "https://www.w3.org/ns/credentials/v2",
+    "nightpay": "https://nightpay.dev/ontology#",
+    "Person": "schema:Person",
+    "Organization": "schema:Organization",
+    "Agent": "nightpay:Agent",
+    "ManagementAssistant": "nightpay:ManagementAssistant",
+    "Pool": "nightpay:Pool",
+    "FundingCommitment": "nightpay:FundingCommitment",
+    "BountyJob": "nightpay:BountyJob",
+    "Delegation": "nightpay:Delegation",
+    "Submission": "nightpay:Submission",
+    "Dispute": "nightpay:Dispute",
+    "ReceiptCredential": "nightpay:ReceiptCredential",
+    "name": "schema:name",
+    "title": "schema:name",
+    "description": "schema:description",
+    "createdAt": {
+      "@id": "schema:dateCreated",
+      "@type": "xsd:dateTime"
+    },
+    "updatedAt": {
+      "@id": "schema:dateModified",
+      "@type": "xsd:dateTime"
+    },
+    "network": "nightpay:network",
+    "privacyClass": "nightpay:privacyClass",
+    "poolCommitmentHash": "nightpay:poolCommitmentHash",
+    "fundingGoalSpecks": {
+      "@id": "nightpay:fundingGoalSpecks",
+      "@type": "xsd:integer"
+    },
+    "contributionAmountSpecks": {
+      "@id": "nightpay:contributionAmountSpecks",
+      "@type": "xsd:integer"
+    },
+    "maxFunders": {
+      "@id": "nightpay:maxFunders",
+      "@type": "xsd:integer"
+    },
+    "currentFunders": {
+      "@id": "nightpay:currentFunders",
+      "@type": "xsd:integer"
+    },
+    "poolStatus": "nightpay:poolStatus",
+    "expiresAt": {
+      "@id": "nightpay:expiresAt",
+      "@type": "xsd:dateTime"
+    },
+    "receiptContractAddress": "nightpay:receiptContractAddress",
+    "hasFundingCommitment": {
+      "@id": "nightpay:hasFundingCommitment",
+      "@type": "@id",
+      "@container": "@set"
+    },
+    "hasJob": {
+      "@id": "nightpay:hasJob",
+      "@type": "@id",
+      "@container": "@set"
+    },
+    "fundingNullifierHash": "nightpay:fundingNullifierHash",
+    "fundingNonceHash": "nightpay:fundingNonceHash",
+    "fundedAmountSpecks": {
+      "@id": "nightpay:fundedAmountSpecks",
+      "@type": "xsd:integer"
+    },
+    "fundedAtTx": "nightpay:fundedAtTx",
+    "forPool": {
+      "@id": "nightpay:forPool",
+      "@type": "@id"
+    },
+    "jobId": "nightpay:jobId",
+    "jobCommitmentHash": "nightpay:jobCommitmentHash",
+    "jobStatus": "nightpay:jobStatus",
+    "amountSpecks": {
+      "@id": "nightpay:amountSpecks",
+      "@type": "xsd:integer"
+    },
+    "operatorFeeBps": {
+      "@id": "nightpay:operatorFeeBps",
+      "@type": "xsd:integer"
+    },
+    "netToAgentSpecks": {
+      "@id": "nightpay:netToAgentSpecks",
+      "@type": "xsd:integer"
+    },
+    "assignedAgentId": "nightpay:assignedAgentId",
+    "claimsCount": {
+      "@id": "nightpay:claimsCount",
+      "@type": "xsd:integer"
+    },
+    "approvedAt": {
+      "@id": "nightpay:approvedAt",
+      "@type": "xsd:dateTime"
+    },
+    "disputeReason": "nightpay:disputeReason",
+    "forJob": {
+      "@id": "nightpay:forJob",
+      "@type": "@id"
+    },
+    "resultHash": "nightpay:resultHash",
+    "receiptHash": "nightpay:receiptHash",
+    "onChain": {
+      "@id": "nightpay:onChain",
+      "@type": "xsd:boolean"
+    },
+    "delegationType": "nightpay:delegationType",
+    "delegationStatus": "nightpay:delegationStatus",
+    "delegatedBy": {
+      "@id": "nightpay:delegatedBy",
+      "@type": "@id"
+    },
+    "delegatedTo": {
+      "@id": "nightpay:delegatedTo",
+      "@type": "@id"
+    },
+    "delegatedTask": {
+      "@id": "nightpay:delegatedTask",
+      "@type": "@id"
+    },
+    "submissionHash": "nightpay:submissionHash",
+    "submittedBy": {
+      "@id": "nightpay:submittedBy",
+      "@type": "@id"
+    },
+    "submittedAt": {
+      "@id": "nightpay:submittedAt",
+      "@type": "xsd:dateTime"
+    },
+    "hasSubmission": {
+      "@id": "nightpay:hasSubmission",
+      "@type": "@id",
+      "@container": "@set"
+    },
+    "disputeStatus": "nightpay:disputeStatus",
+    "raisedBy": {
+      "@id": "nightpay:raisedBy",
+      "@type": "@id"
+    },
+    "evidenceHash": "nightpay:evidenceHash",
+    "credentialSubject": "vc:credentialSubject",
+    "issuer": {
+      "@id": "vc:issuer",
+      "@type": "@id"
+    },
+    "proof": "vc:proof",
+    "issuedForJob": {
+      "@id": "nightpay:issuedForJob",
+      "@type": "@id"
+    },
+    "issuedFromPool": {
+      "@id": "nightpay:issuedFromPool",
+      "@type": "@id"
+    },
+    "Artifact": "nightpay:Artifact",
+    "artifactId": "nightpay:artifactId",
+    "filename": "nightpay:filename",
+    "contentType": "nightpay:contentType",
+    "sizeBytes": {
+      "@id": "nightpay:sizeBytes",
+      "@type": "xsd:integer"
+    },
+    "hasArtifact": {
+      "@id": "nightpay:hasArtifact",
+      "@type": "@id",
+      "@container": "@set"
+    }
+  }
+}

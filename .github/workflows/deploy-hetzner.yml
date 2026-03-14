@@ -1,0 +1,83 @@
+name: Deploy Hetzner
+
+'on':
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hetzner-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.ref_name == 'main' || github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Prepare SSH
+        env:
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_KNOWN_HOSTS: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "${HETZNER_SSH_KEY:-}" || { echo "Missing secret HETZNER_SSH_KEY"; exit 1; }
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$HETZNER_SSH_KEY" > "$HOME/.ssh/hetzner_deploy_key"
+          chmod 600 "$HOME/.ssh/hetzner_deploy_key"
+          if [ -n "${HETZNER_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$HETZNER_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+            chmod 644 "$HOME/.ssh/known_hosts"
+          fi
+
+      - name: Checkout UI Submodule (Optional)
+        env:
+          NIGHTPAY_UI_REPO_TOKEN: ${{ secrets.NIGHTPAY_UI_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NIGHTPAY_UI_REPO_TOKEN:-}" ]; then
+            echo "NIGHTPAY_UI_REPO_TOKEN not set; skipping UI submodule checkout."
+            exit 0
+          fi
+          auth="$(printf 'x-access-token:%s' "$NIGHTPAY_UI_REPO_TOKEN" | base64 | tr -d '\n')"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync --recursive
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --recursive --depth 1
+
+      - name: Deploy To Hetzner
+        env:
+          HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
+          HETZNER_SSH_PORT: ${{ secrets.HETZNER_SSH_PORT }}
+          HETZNER_REMOTE_DIR: ${{ vars.HETZNER_REMOTE_DIR }}
+          HETZNER_BRIDGE_DIR: ${{ vars.HETZNER_BRIDGE_DIR }}
+          HETZNER_MASUMI_DIR: ${{ vars.HETZNER_MASUMI_DIR }}
+        run: |
+          set -euo pipefail
+          test -n "${HETZNER_HOST:-}" || { echo "Missing secret HETZNER_HOST"; exit 1; }
+          chmod +x bin/deploy-hetzner-ci.sh
+          args=(
+            --host "$HETZNER_HOST"
+            --ssh-key "$HOME/.ssh/hetzner_deploy_key"
+          )
+          if [ -n "${HETZNER_SSH_PORT:-}" ]; then
+            args+=(--ssh-port "$HETZNER_SSH_PORT")
+          fi
+          if [ -n "${HETZNER_REMOTE_DIR:-}" ]; then
+            args+=(--remote-dir "$HETZNER_REMOTE_DIR")
+          fi
+          if [ -n "${HETZNER_BRIDGE_DIR:-}" ]; then
+            args+=(--bridge-dir "$HETZNER_BRIDGE_DIR")
+          fi
+          if [ -n "${HETZNER_MASUMI_DIR:-}" ]; then
+            args+=(--masumi-dir "$HETZNER_MASUMI_DIR")
+          fi
+          args+=(--skip-masumi-recreate)
+          bash bin/deploy-hetzner-ci.sh "${args[@]}"
