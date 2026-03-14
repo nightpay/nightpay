@@ -71,6 +71,7 @@ Tempcounter_contents.json
 .security-key
 logs/security/
 .playwright-mcp/
+MEMORY.md
 
 # Agent-only playground runtime and secrets
 .agent-playground/

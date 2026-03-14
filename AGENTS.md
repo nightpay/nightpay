@@ -120,7 +120,7 @@ supports `npx nightpay init` which installs the skill into Claude Code projects.
 | MCP reference servers | https://github.com/modelcontextprotocol/servers | Implementation templates |
 
 **Key rules:**
-- Project memory lives in `MEMORY.md` (this project) and `~/.claude/projects/.../MEMORY.md`
+- Project memory is local-only (`MEMORY.md`, gitignored) plus `~/.claude/projects/.../MEMORY.md`
 - The `docs/ECOSYSTEM.md` tracks all external repos — check it before architectural decisions
 - **Agent onboarding runbook (complete): `docs/AGENT_PLAYGROUND.md`** — covers Masumi install, contract deployment, all env vars, full lifecycle, all endpoints, recovery matrix
 - Preferred bootstrap command for agents: `bash scripts/agent-playground-setup.sh init`
