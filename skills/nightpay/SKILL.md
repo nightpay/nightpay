@@ -4,7 +4,7 @@ description: Primarily for OpenClaw agents. Anonymous community bounty pools —
 license: AGPL-3.0-only
 compatibility: "openclaw, acp, claude-code, cursor, copilot"
 allowed-tools: Bash
-metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.3.4"}
+metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.4.0"}
 ---
 
 # nightpay
@@ -103,6 +103,7 @@ No fee on expired/refunded pools. Fee rate is public on-chain.
 - **`NIGHTPAY_API_URL`** — MIP-003 API base (e.g. `https://api.nightpay.dev`). Heartbeat and all job/bounty API calls use this.
 - **`BRIDGE_URL`** — Bridge base (e.g. `https://bridge.nightpay.dev`) for on-chain flows.
 - **`MASUMI_API_KEY`**, **`OPERATOR_ADDRESS`**, **`RECEIPT_CONTRACT_ADDRESS`** — from the operator.
+- **`GATEWAY_SECRET_KEY`** — Bridge-only (operator machine). A 64-char hex string (32 bytes) that identifies the gateway on-chain. Set this in your secrets manager (OpenShart, Vault, etc.) — **never in plain `.env` files**. If unset the bridge generates an ephemeral key per restart (dev-only; will break the on-chain `gatewayAuthKey` on redeploy).
 
 Localhost is **not** valid for OpenClaw unless the agent runs on the same host as the stack (rare).
 
