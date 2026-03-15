@@ -1,15 +1,13 @@
 #!/usr/bin/env node
-// NightPay OpenClaw plugin entrypoint -- v0.3.8
-// Fix: cpSync instead of symlinkSync -- OpenClaw realpath() check rejects
-//      symlinks that resolve outside the workspace root; copy files directly.
+// NightPay OpenClaw plugin entrypoint -- v0.3.9
+// Fix: always rmSync+cpSync on gateway_start (v0.3.8 skipped real dirs)
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, cpSync, lstatSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, cpSync, rmSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The skills/nightpay directory inside the installed package
 const SKILL_SRC = join(__dirname, "skills", "nightpay");
 
 const REQUIRED_ENV = ["MASUMI_API_KEY", "OPERATOR_ADDRESS", "BRIDGE_URL"];
@@ -78,7 +76,7 @@ const FULL_CONTEXT = [
 ].join("\n");
 
 const OPERATING_MODEL = [
-  "NightPay Operating Model -- v0.3.8",
+  "NightPay Operating Model -- v0.3.9",
   "=".repeat(50),
   "",
   "POOL CREATION",
@@ -113,7 +111,7 @@ const OPERATING_MODEL = [
   "  /nightpay help    -- this message",
   "  /nightpay <task>  -- delegate task to nightpay skill",
   "",
-  "DOCS (copied into each agent workspace on gateway_start)",
+  "DOCS (refreshed on every gateway_start)",
   "  skills/nightpay/SKILL.md              -- full tool reference, trust model",
   "  skills/nightpay/AGENTS.md             -- roles, decision trees, guardrails",
   "  skills/nightpay/ontology/ontology.md  -- concepts, lifecycle states, examples",
@@ -146,65 +144,40 @@ function detectIntent(prompt, messages) {
 }
 
 /**
- * Copy skills/nightpay into every configured agent workspace so agents
- * can read SKILL.md, AGENTS.md, ontology/ through the OpenClaw sandbox.
- *
- * OpenClaw's skill loader does realpath() checks and rejects symlinks that
- * resolve outside the workspace root -- so we copy instead of symlink.
- *
- * Migration: if a legacy symlink exists at the target path, remove it first.
+ * Copy skills/nightpay into every configured agent workspace.
+ * Always removes the existing path first (works for symlinks, real dirs,
+ * or nothing — rmSync with force:true is a no-op on absent paths).
+ * OpenClaw realpath() rejects symlinks outside workspace root; real files pass.
  */
 function wireSkillIntoWorkspaces(config, logger) {
   const workspaces = new Set();
 
-  // Default workspace
   const defaultWs = config?.agents?.defaults?.workspace;
   if (defaultWs) workspaces.add(defaultWs);
 
-  // Per-agent workspaces
   const agents = config?.agents?.list ?? [];
   for (const agent of agents) {
     if (agent?.workspace) workspaces.add(agent.workspace);
   }
 
-  let wired = 0, skipped = 0, errors = 0;
+  let wired = 0, errors = 0;
 
   for (const ws of workspaces) {
     const skillsDir = join(ws, "skills");
     const destPath = join(skillsDir, "nightpay");
     try {
-      // Create skills dir if missing
       if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
-
-      // Migrate: remove legacy symlink so we can replace with a real copy
-      if (existsSync(destPath)) {
-        try {
-          const stat = lstatSync(destPath);
-          if (stat.isSymbolicLink()) {
-            rmSync(destPath);
-            logger.info(`[nightpay] Removed legacy symlink at ${destPath}, replacing with copy`);
-          } else {
-            // Real directory already exists -- skip (already wired)
-            skipped++;
-            continue;
-          }
-        } catch {
-          skipped++;
-          continue;
-        }
-      }
-
-      // Copy skill files into workspace (passes realpath root check)
+      rmSync(destPath, { recursive: true, force: true });
       cpSync(SKILL_SRC, destPath, { recursive: true });
       wired++;
-      logger.info(`[nightpay] Copied skill docs -> ${destPath}`);
+      logger.info(`[nightpay] Skill docs -> ${destPath}`);
     } catch (err) {
       errors++;
-      logger.warn(`[nightpay] Could not copy skill docs into ${ws}: ${err.message}`);
+      logger.warn(`[nightpay] Could not wire skill docs into ${ws}: ${err.message}`);
     }
   }
 
-  return { wired, skipped, errors };
+  return { wired, errors };
 }
 
 const plugin = {
@@ -215,13 +188,12 @@ const plugin = {
 
   register(api) {
     api.on("gateway_start", async () => {
-      // 1. Wire skill files into all agent workspaces
-      const { wired, skipped } = wireSkillIntoWorkspaces(api.config, api.logger);
-      if (wired > 0) {
-        api.logger.info(`[nightpay] Skill docs copied into ${wired} workspace(s) (${skipped} already present)`);
-      }
+      const { wired, errors } = wireSkillIntoWorkspaces(api.config, api.logger);
+      api.logger.info(
+        `[nightpay] Skill docs refreshed in ${wired} workspace(s)` +
+        (errors > 0 ? ` (${errors} error(s))` : "")
+      );
 
-      // 2. Log env status
       const env = resolveEnv(api.config);
       const missing = missingEnv(env);
       if (missing.length > 0) {
@@ -237,7 +209,7 @@ const plugin = {
         const fee = env.OPERATOR_FEE_BPS || DEFAULTS.OPERATOR_FEE_BPS;
         api.logger.info(
           `[nightpay] Ready -- ${url} | network: ${net} | fee: ${fee}bps\n` +
-          `  Skill docs: skills/nightpay/ (copied into all agent workspaces)\n` +
+          `  Skill docs: skills/nightpay/ (in all agent workspaces)\n` +
           `  Context: injected on nightpay/bounty/pool keywords only\n` +
           `  Type /nightpay help for the full operating model`
         );
