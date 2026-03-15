@@ -42,7 +42,7 @@ Our `receipt.compact` runs here. Everything privacy-related depends on this.
 | **Compact Developer Tools** | **0.4.0** ⬆️ | Released Jan 21 2026 — `compact fixup --check` mode added |
 | Wallet SDK | 1.0.0 | Preprod compatibility matrix |
 | Wallet API | 1.0.0 | Preprod compatibility matrix |
-| DApp Connector API | 3.0.0 | Chrome-only (Lace), `window.midnight.mnLace` |
+| DApp Connector API | 3.0.0 | Chrome-only (Lace), providers exposed under `window.midnight.{walletId}` |
 | Midnight.js | 3.1.0 | [midnight-js](https://github.com/midnightntwrk/midnight-js); see [MIDNIGHT_JS_INTEGRATION.md](MIDNIGHT_JS_INTEGRATION.md) for bridge adoption options |
 | Midnight Node | 0.20.1 | GitHub release `node-0.20.1` (Feb 3, 2026) |
 | Midnight Indexer | 2.1.4 | |
@@ -384,14 +384,17 @@ Reasoning:
 - Tailwind CSS
 - Fetch → bridge endpoints (`GET /stats`, `POST /verifyReceipt`)
 - No wallet library in Phase 1
-- Optional Phase 2: Lace wallet (`window.midnight.mnLace`) for agent submission history
+- Optional Phase 2: Lace wallet (`window.midnight.{walletId}`) for agent submission history
 
 ### DApp Connector Reference (for Phase 2)
 
 ```typescript
-const laceWallet = window.midnight?.mnLace;
-await laceWallet.enable();
-const { indexer, proofServer, node } = await laceWallet.serviceUriConfig();
+const laceWallet = Object.values(window.midnight ?? {}).find(
+  (wallet) => /lace/i.test(wallet.name ?? wallet.rdns ?? ''),
+);
+if (!laceWallet) throw new Error('No Lace Midnight provider found');
+const connected = await laceWallet.connect('preprod');
+const { indexerUri, proverServerUri, substrateNodeUri } = await connected.getConfiguration();
 ```
 - Chrome-only (Feb 2026) — also available in SubWallet, NuFi, Vespr, Gero, Tokeo Pay, Keystone, Yoroi, Begin Wallet
 - RxJS Observables for wallet state — `firstValueFrom(wallet.state().pipe(filter(s => s.isSynced)))`

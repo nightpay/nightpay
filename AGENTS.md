@@ -43,7 +43,7 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 - **Mainnet (Kūkolu) launches last week of March 2026** — keep `preprod` default until then
 - **Midnight City simulation opens Feb 26, 2026** — good demo window before mainnet
 - WebSocket polyfill (`globalThis.WebSocket = WebSocket`) must be set before any provider
-- Browser wallet is Lace (Chrome only, `window.midnight.mnLace`) — our bridge is server-side, no browser wallet needed
+- Browser wallet is Lace (Chrome only, injected under `window.midnight.{walletId}`) — our bridge is server-side, no browser wallet needed
 - Compact is now formally named **Minokawa** under LF Decentralized Trust — docs still say "Compact"
 
 **Critical env vars — format reference:**

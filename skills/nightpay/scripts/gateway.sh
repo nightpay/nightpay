@@ -530,6 +530,8 @@ UNCLAIMED_SWEEP_PAGE_SIZE="${UNCLAIMED_SWEEP_PAGE_SIZE:-200}"     # capped to <=
 APPROVER_KEYS="${APPROVER_KEYS:-}"
 MIP003_PORT="${MIP003_PORT:-8090}"
 MIP003_URL="${MIP003_URL:-http://localhost:${MIP003_PORT}}"
+# Optional x402 passthrough for MIP-003 APIs that enforce PAYMENT-SIGNATURE.
+MIP003_PAYMENT_SIGNATURE="${MIP003_PAYMENT_SIGNATURE:-}"
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -550,6 +552,8 @@ case "$COMMAND" in
 
     # SECURITY: domain-separated commitment — matches what the Compact circuit produces
     COMMITMENT=$(compute_bounty_commitment "nullifier:${AMOUNT}:${JOB_HASH}:${NONCE}")
+    TX_ID=""
+    ON_CHAIN="false"
 
     # If bridge is running, submit real on-chain transaction
     if [[ -n "$BRIDGE_URL" ]]; then
@@ -560,6 +564,10 @@ print(json.dumps({'jobHash': sys.argv[1], 'amount': int(sys.argv[2]), 'nonce': s
       BRIDGE_RESULT=$(bridge_post "/postBounty" "$BRIDGE_PAYLOAD" 2>/dev/null) && {
         TX_ID=$(echo "$BRIDGE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('txId',''))" 2>/dev/null)
         ON_CHAIN=$(echo "$BRIDGE_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print('false' if d.get('stub') else 'true')" 2>/dev/null)
+        BRIDGE_COMMITMENT=$(echo "$BRIDGE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('commitment',''))" 2>/dev/null)
+        if [[ "$BRIDGE_COMMITMENT" =~ ^[0-9a-f]{64}$ ]]; then
+          COMMITMENT="$BRIDGE_COMMITMENT"
+        fi
         echo -e "  ${GREEN}Midnight TX${RESET}: ${DIM}$TX_ID${RESET} ${CYAN}(on-chain: $ON_CHAIN)${RESET}" >&2
       } || echo -e "  ${YELLOW}WARNING${RESET}: Bridge unavailable — commitment computed locally only" >&2
     fi
@@ -660,9 +668,14 @@ print(json.dumps({
     }
 }))
 " "$AGENT_ID" "$JOB_DESC" "$AMOUNT")
+    MIP_X402_ARGS=()
+    if [[ -n "$MIP003_PAYMENT_SIGNATURE" ]]; then
+      MIP_X402_ARGS=(-H "PAYMENT-SIGNATURE: ${MIP003_PAYMENT_SIGNATURE}")
+    fi
     curl -sf --max-time 20 \
       -X POST \
       -H "Content-Type: application/json" \
+      "${MIP_X402_ARGS[@]}" \
       -d "$PAYLOAD" \
       "${MIP003_URL}/start_job"
     ;;
@@ -814,6 +827,7 @@ print(hashlib.sha256(canonical.encode()).hexdigest())
 ") || { echo "ERROR: Failed to parse job result as JSON — refusing to mint receipt"; exit 1; }
 
     COMPLETION_NONCE=$(generate_nonce)
+    RECEIPT_SOURCE="local"
 
     # SECURITY: domain-separated receipt hash — cannot be forged from bounty inputs
     RECEIPT_HASH=$(compute_receipt_hash "${COMMITMENT}:${OUTPUT_HASH}:${COMPLETION_NONCE}")
@@ -829,6 +843,12 @@ print(json.dumps({'bountyCommitment': sys.argv[1], 'outputHash': sys.argv[2]}))
       BRIDGE_RESULT=$(bridge_post "/completeAndReceipt" "$BRIDGE_PAYLOAD" 2>/dev/null) && {
         BRIDGE_TX_ID=$(echo "$BRIDGE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('txId',''))" 2>/dev/null)
         BRIDGE_ON_CHAIN=$(echo "$BRIDGE_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print('false' if d.get('stub') else 'true')" 2>/dev/null)
+        BRIDGE_RECEIPT_HASH=$(echo "$BRIDGE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('receiptHash',''))" 2>/dev/null)
+        if [[ "$BRIDGE_RECEIPT_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+          RECEIPT_HASH="$BRIDGE_RECEIPT_HASH"
+          COMPLETION_NONCE=""
+          RECEIPT_SOURCE="bridge"
+        fi
         echo -e "  ${GREEN}Midnight TX${RESET}: ${DIM}$BRIDGE_TX_ID${RESET} ${CYAN}(on-chain: $BRIDGE_ON_CHAIN)${RESET}" >&2
       } || echo -e "  ${YELLOW}WARNING${RESET}: Bridge unavailable — receipt computed locally only" >&2
     fi
@@ -898,26 +918,27 @@ print(json.dumps({
     'receiptHash': sys.argv[1],
     'outputHash': sys.argv[2],
     'commitment': sys.argv[3],
-    'completionNonce': sys.argv[4],
+    'completionNonce': sys.argv[4] or None,
+    'receiptSource': sys.argv[5],
     'status': 'completed',
-    'midnightNetwork': sys.argv[5],
-    'receiptContract': sys.argv[6],
-    'midnightTxId': sys.argv[7] or None,
-    'onChain': sys.argv[8] == 'true',
+    'midnightNetwork': sys.argv[6],
+    'receiptContract': sys.argv[7],
+    'midnightTxId': sys.argv[8] or None,
+    'onChain': sys.argv[9] == 'true',
     # Economics footer — ClawWork-compatible cost accounting shape
     'economics': {
-        'amountSpecks': int(sys.argv[9]),
-        'fee':          int(sys.argv[10]),
-        'netToAgent':   int(sys.argv[11]),
-        'feeBps':       int(sys.argv[12]),
+        'amountSpecks': int(sys.argv[10]),
+        'fee':          int(sys.argv[11]),
+        'netToAgent':   int(sys.argv[12]),
+        'feeBps':       int(sys.argv[13]),
     },
     'mipStatusSync': {
-        'ok': sys.argv[13] == 'true',
-        'state': sys.argv[14],
-        'baseUrl': sys.argv[15],
+        'ok': sys.argv[14] == 'true',
+        'state': sys.argv[15],
+        'baseUrl': sys.argv[16],
     },
 }, indent=2))
-" "$RECEIPT_HASH" "$OUTPUT_HASH" "$COMMITMENT" "$COMPLETION_NONCE" "$MIDNIGHT_NETWORK" "$RECEIPT_CONTRACT" "$BRIDGE_TX_ID" "$BRIDGE_ON_CHAIN" "$_ECON_AMOUNT" "$_ECON_FEE" "$_ECON_NET" "$OPERATOR_FEE_BPS" "$MIP_SYNC_OK" "$MIP_SYNC_STATE" "$MIP003_BASE"
+" "$RECEIPT_HASH" "$OUTPUT_HASH" "$COMMITMENT" "$COMPLETION_NONCE" "$RECEIPT_SOURCE" "$MIDNIGHT_NETWORK" "$RECEIPT_CONTRACT" "$BRIDGE_TX_ID" "$BRIDGE_ON_CHAIN" "$_ECON_AMOUNT" "$_ECON_FEE" "$_ECON_NET" "$OPERATOR_FEE_BPS" "$MIP_SYNC_OK" "$MIP_SYNC_STATE" "$MIP003_BASE"
     ;;
 
   refund)

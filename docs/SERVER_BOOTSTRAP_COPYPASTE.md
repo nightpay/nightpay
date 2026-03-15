@@ -73,6 +73,14 @@ curl -sS http://localhost:8090/availability
 curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:3333/
 ```
 
+If Caddy + DNS are already configured for production, verify the public hosts too:
+
+```bash
+curl -sS https://api.nightpay.dev/availability
+curl -sS -o /dev/null -w "%{http_code}\n" https://board.nightpay.dev/
+curl -sS https://bridge.nightpay.dev/health | python3 -m json.tool
+```
+
 ## 6) Masumi quickstart (if not already installed)
 
 ```bash

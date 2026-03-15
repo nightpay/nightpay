@@ -7,6 +7,17 @@ Usage:
   bash scripts/load-sim.sh [options]
 
 Options:
+  --activity-mode                  Sequential activity feed mode (leaderboard-style)
+  --activity-agent-count <n>       Logical agent pool size in activity mode (default: 100)
+  --activity-target-tasks <n>      Stop after this many tasks in activity mode (default: 15000000)
+  --activity-interval-min-seconds <n>  Min delay between tasks in activity mode (default: 3)
+  --activity-interval-max-seconds <n>  Max delay between tasks in activity mode (default: 5)
+  --activity-report-every <n>      Emit progress summary every N tasks in activity mode (default: 25)
+  --activity-state-file <path>     Persist counters to JSON for resume/observation (default: .tmp/activity-sim-state.json)
+  --activity-visibility <mode>     Job visibility in activity mode: public|private (default: public)
+  --operator-secret <secret>       Operator bearer for /complete_job (default: OPERATOR_SECRET_KEY env var)
+  --skip-complete                  Activity mode only: leave jobs awaiting approval (no /complete_job)
+
   --base-url <url>                 MIP-003 base URL (default: http://127.0.0.1:8090)
   --jobs-per-round <n>             Jobs created per round (default: 100)
   --rounds <n>                     Number of rounds (default: 1, ignored with --continuous)
@@ -29,8 +40,21 @@ Examples:
   bash scripts/load-sim.sh
   bash scripts/load-sim.sh --continuous --sleep-seconds 1
   bash scripts/load-sim.sh --jobs-per-round 200 --job-workers 40 --max-agents-per-job 5
+  bash scripts/load-sim.sh --activity-mode --continuous
+  bash scripts/load-sim.sh --activity-mode --activity-target-tasks 15000000 --activity-agent-count 100
 EOF
 }
+
+ACTIVITY_MODE=0
+ACTIVITY_AGENT_COUNT=100
+ACTIVITY_TARGET_TASKS=15000000
+ACTIVITY_INTERVAL_MIN_SECONDS=3
+ACTIVITY_INTERVAL_MAX_SECONDS=5
+ACTIVITY_REPORT_EVERY=25
+ACTIVITY_STATE_FILE=".tmp/activity-sim-state.json"
+ACTIVITY_VISIBILITY="public"
+OPERATOR_SECRET="${OPERATOR_SECRET_KEY:-}"
+ACTIVITY_SKIP_COMPLETE=0
 
 BASE_URL="http://127.0.0.1:8090"
 JOBS_PER_ROUND=100
@@ -51,6 +75,17 @@ SEED=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --activity-mode) ACTIVITY_MODE=1; shift 1 ;;
+    --activity-agent-count) ACTIVITY_AGENT_COUNT="${2:-}"; shift 2 ;;
+    --activity-target-tasks) ACTIVITY_TARGET_TASKS="${2:-}"; shift 2 ;;
+    --activity-interval-min-seconds) ACTIVITY_INTERVAL_MIN_SECONDS="${2:-}"; shift 2 ;;
+    --activity-interval-max-seconds) ACTIVITY_INTERVAL_MAX_SECONDS="${2:-}"; shift 2 ;;
+    --activity-report-every) ACTIVITY_REPORT_EVERY="${2:-}"; shift 2 ;;
+    --activity-state-file) ACTIVITY_STATE_FILE="${2:-}"; shift 2 ;;
+    --activity-visibility) ACTIVITY_VISIBILITY="${2:-}"; shift 2 ;;
+    --operator-secret) OPERATOR_SECRET="${2:-}"; shift 2 ;;
+    --skip-complete) ACTIVITY_SKIP_COMPLETE=1; shift 1 ;;
+
     --base-url) BASE_URL="${2:-}"; shift 2 ;;
     --jobs-per-round) JOBS_PER_ROUND="${2:-}"; shift 2 ;;
     --rounds) ROUNDS="${2:-}"; shift 2 ;;
@@ -98,6 +133,11 @@ require_positive_int "$MIN_VOTES_TO_SELECT" "min-votes-to-select"
 require_positive_int "$VOTES_PER_SUBMISSION" "votes-per-submission"
 require_positive_int "$AMOUNT_SPECKS" "amount-specks"
 require_positive_int "$TIMEOUT_SECONDS" "timeout-seconds"
+require_positive_int "$ACTIVITY_AGENT_COUNT" "activity-agent-count"
+require_positive_int "$ACTIVITY_TARGET_TASKS" "activity-target-tasks"
+require_positive_int "$ACTIVITY_INTERVAL_MIN_SECONDS" "activity-interval-min-seconds"
+require_positive_int "$ACTIVITY_INTERVAL_MAX_SECONDS" "activity-interval-max-seconds"
+require_positive_int "$ACTIVITY_REPORT_EVERY" "activity-report-every"
 if [[ -n "$SEED" ]]; then
   require_positive_int "$SEED" "seed"
 fi
@@ -122,6 +162,26 @@ if (( JOB_WORKERS < 1 )); then
   echo "ERROR: job-workers must be >= 1" >&2
   exit 1
 fi
+if (( ACTIVITY_AGENT_COUNT < 1 )); then
+  echo "ERROR: activity-agent-count must be >= 1" >&2
+  exit 1
+fi
+if (( ACTIVITY_TARGET_TASKS < 1 )) && (( CONTINUOUS == 0 )) && (( ACTIVITY_MODE == 1 )); then
+  echo "ERROR: activity-target-tasks must be >= 1 unless --continuous is used" >&2
+  exit 1
+fi
+if (( ACTIVITY_INTERVAL_MAX_SECONDS < ACTIVITY_INTERVAL_MIN_SECONDS )); then
+  echo "ERROR: activity-interval-max-seconds must be >= activity-interval-min-seconds" >&2
+  exit 1
+fi
+if (( ACTIVITY_MODE == 1 )) && (( ACTIVITY_SKIP_COMPLETE == 0 )) && [[ -z "${OPERATOR_SECRET}" ]]; then
+  echo "ERROR: activity mode requires --operator-secret (or OPERATOR_SECRET_KEY env var) unless --skip-complete is set" >&2
+  exit 1
+fi
+if [[ "$ACTIVITY_VISIBILITY" != "public" && "$ACTIVITY_VISIBILITY" != "private" ]]; then
+  echo "ERROR: activity-visibility must be one of: public, private" >&2
+  exit 1
+fi
 
 PYTHON_BIN="$(command -v python3 2>/dev/null || true)"
 if [[ -z "$PYTHON_BIN" || "$PYTHON_BIN" == *"WindowsApps"* ]]; then
@@ -133,6 +193,16 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 exec "$PYTHON_BIN" - \
+  "$ACTIVITY_MODE" \
+  "$ACTIVITY_AGENT_COUNT" \
+  "$ACTIVITY_TARGET_TASKS" \
+  "$ACTIVITY_INTERVAL_MIN_SECONDS" \
+  "$ACTIVITY_INTERVAL_MAX_SECONDS" \
+  "$ACTIVITY_REPORT_EVERY" \
+  "$ACTIVITY_STATE_FILE" \
+  "$ACTIVITY_VISIBILITY" \
+  "$OPERATOR_SECRET" \
+  "$ACTIVITY_SKIP_COMPLETE" \
   "$BASE_URL" \
   "$JOBS_PER_ROUND" \
   "$ROUNDS" \
@@ -151,6 +221,7 @@ exec "$PYTHON_BIN" - \
   "$SEED" <<'PYCODE'
 import concurrent.futures
 import json
+import os
 import random
 import secrets
 import statistics
@@ -161,6 +232,16 @@ import urllib.request
 from datetime import datetime, timezone
 
 (
+    activity_mode,
+    activity_agent_count,
+    activity_target_tasks,
+    activity_interval_min_seconds,
+    activity_interval_max_seconds,
+    activity_report_every,
+    activity_state_file,
+    activity_visibility,
+    operator_secret,
+    activity_skip_complete,
     base_url,
     jobs_per_round,
     rounds,
@@ -177,7 +258,18 @@ from datetime import datetime, timezone
     amount_specks,
     timeout_seconds,
     seed_raw,
-) = sys.argv[1:17]
+) = sys.argv[1:27]
+
+activity_mode = int(activity_mode)
+activity_agent_count = int(activity_agent_count)
+activity_target_tasks = int(activity_target_tasks)
+activity_interval_min_seconds = int(activity_interval_min_seconds)
+activity_interval_max_seconds = int(activity_interval_max_seconds)
+activity_report_every = int(activity_report_every)
+activity_skip_complete = int(activity_skip_complete)
+operator_secret = str(operator_secret or "")
+activity_state_file = str(activity_state_file or "").strip()
+activity_visibility = str(activity_visibility or "public").strip().lower()
 
 jobs_per_round = int(jobs_per_round)
 rounds = int(rounds)
@@ -198,9 +290,80 @@ seed = int(seed_raw) if seed_raw else int(time.time_ns() % (2**31 - 1))
 rng = random.Random(seed)
 
 base_url = base_url.rstrip("/")
+
+
+def build_epic_agent_pool(count, local_rng):
+    adjectives = [
+        "amber",
+        "brisk",
+        "cinder",
+        "daring",
+        "ember",
+        "frost",
+        "gale",
+        "helios",
+        "ion",
+        "jade",
+        "kepler",
+        "lunar",
+        "magma",
+        "nova",
+        "onyx",
+        "prism",
+        "quantum",
+        "rivet",
+        "solstice",
+        "turbo",
+        "umbra",
+        "vivid",
+        "wild",
+        "xeno",
+        "young",
+        "zen",
+    ]
+    nouns = [
+        "falcon",
+        "otter",
+        "lynx",
+        "orca",
+        "tiger",
+        "panther",
+        "condor",
+        "rocket",
+        "pixel",
+        "cipher",
+        "orbit",
+        "vortex",
+        "matrix",
+        "beacon",
+        "ranger",
+        "voyager",
+        "striker",
+        "pioneer",
+        "nomad",
+        "engine",
+        "signal",
+        "radar",
+        "comet",
+        "blaze",
+        "atlas",
+        "sentinel",
+    ]
+    names = []
+    used = set()
+    while len(names) < count:
+        candidate = f"{local_rng.choice(adjectives)}-{local_rng.choice(nouns)}-{local_rng.randint(100, 999)}"
+        if candidate in used:
+            continue
+        used.add(candidate)
+        names.append(candidate)
+    return names
+
+
 task_agents = [f"tasker-{i:04d}" for i in range(task_agent_count)]
 worker_agents = [f"worker-{i:04d}" for i in range(worker_agent_count)]
 voter_agents = [f"voter-{i:04d}" for i in range(voter_agent_count)]
+activity_agents = build_epic_agent_pool(activity_agent_count, random.Random(seed + 97))
 
 
 def pctl(values, percentile):
@@ -379,8 +542,21 @@ def run_job(round_index, job_index):
         local["errors"].append(compact_error("start_job", code, start_body))
         return local
 
-    job_id = str(start_body.get("job_id") or "").strip()
-    job_token = str(start_body.get("job_token") or "").strip()
+    legacy = start_body.get("legacy") if isinstance(start_body, dict) else {}
+    if not isinstance(legacy, dict):
+        legacy = {}
+    job_id = str(
+        start_body.get("job_id")
+        or start_body.get("id")
+        or legacy.get("job_id")
+        or ""
+    ).strip()
+    job_token = str(
+        start_body.get("job_token")
+        or start_body.get("jobToken")
+        or legacy.get("job_token")
+        or ""
+    ).strip()
     if not job_id or not job_token:
         local["jobs_start_failed"] += 1
         local["jobs_flow_failed"] += 1
@@ -455,7 +631,10 @@ def run_job(round_index, job_index):
             local["submission_failures"] += 1
             local["errors"].append(compact_error("provide_result", p_code, p_body))
 
-    s_code, subs_body, s_dt = get_json(f"/submissions/{job_id}")
+    s_code, subs_body, s_dt = get_json(
+        f"/submissions/{job_id}",
+        headers={"Authorization": f"Bearer {job_token}"},
+    )
     local["endpoint_latencies_ms"]["submissions"].append(s_dt)
     if s_code != 200:
         local["jobs_flow_failed"] += 1
@@ -469,19 +648,29 @@ def run_job(round_index, job_index):
         return local
 
     # Vote per submission; bias first submission positive so winner selection passes.
+    # Voter snapshot is claim-based when agent_voting_only=true, so prefer claimed agents here.
     used_voters = set()
+    eligible_voters = [agent for agent in claimed if agent]
+    if not eligible_voters:
+        eligible_voters = [agent for agent in worker_agents if agent]
+
+    def pick_voter(exclude_agent):
+        pool = [v for v in eligible_voters if v != exclude_agent and v not in used_voters]
+        if not pool:
+            pool = [v for v in eligible_voters if v != exclude_agent]
+        if not pool:
+            pool = list(eligible_voters)
+        if not pool:
+            pool = list(worker_agents)
+        return local_rng.choice(pool)
+
     for idx, submission in enumerate(submissions):
         sub_id = str(submission.get("submission_id") or "").strip()
         sub_agent = str(submission.get("agent_id") or "").strip()
         if not sub_id:
             continue
         for vote_idx in range(votes_per_submission):
-            voter = local_rng.choice(voter_agents)
-            # Avoid self-votes and duplicate voter on same job as much as possible.
-            for _ in range(10):
-                if voter != sub_agent and voter not in used_voters:
-                    break
-                voter = local_rng.choice(voter_agents)
+            voter = pick_voter(sub_agent)
             used_voters.add(voter)
             vote_value = "approve" if idx == 0 else ("approve" if local_rng.random() >= 0.5 else "reject")
             vote_for_submission(job_id, sub_id, voter, vote_value, local)
@@ -492,7 +681,10 @@ def run_job(round_index, job_index):
         headers={"Authorization": f"Bearer {job_token}"},
     )
     local["endpoint_latencies_ms"]["select_winner"].append(sel_dt)
-    if sel_code != 200 and sel_code == 409 and "not enough votes" in str(sel_body.get("error", "")):
+    sel_error = str(sel_body.get("error", "")).lower()
+    if sel_code != 200 and sel_code == 409 and (
+        "not enough votes" in sel_error or "strict majority" in sel_error
+    ):
         # Top up the best-ranked submission with additional approvals, then retry once.
         first_sub = submissions[0]
         first_sub_id = str(first_sub.get("submission_id") or "").strip()
@@ -500,11 +692,7 @@ def run_job(round_index, job_index):
         if first_sub_id:
             top_up = max(min_votes_to_select, 1)
             for _ in range(top_up):
-                voter = local_rng.choice(voter_agents)
-                for _ in range(10):
-                    if voter != first_agent and voter not in used_voters:
-                        break
-                    voter = local_rng.choice(voter_agents)
+                voter = pick_voter(first_agent)
                 used_voters.add(voter)
                 vote_for_submission(job_id, first_sub_id, voter, "approve", local)
             sel_code, sel_body, sel_dt = post_json(
@@ -527,7 +715,10 @@ def run_job(round_index, job_index):
         local["errors"].append(compact_error("select_winner", sel_code, sel_body))
         return local
 
-    st_code, st_body, st_dt = get_json(f"/status/{job_id}")
+    st_code, st_body, st_dt = get_json(
+        f"/status/{job_id}",
+        headers={"Authorization": f"Bearer {job_token}"},
+    )
     local["endpoint_latencies_ms"]["status"].append(st_dt)
     if st_code == 200:
         internal = str(st_body.get("internal_status") or "")
@@ -620,7 +811,430 @@ def print_round_summary(label, metrics):
     )
 
 
+def empty_activity_metrics():
+    return {
+        "tasks_target": int(activity_target_tasks),
+        "tasks_attempted": 0,
+        "tasks_started": 0,
+        "tasks_completed": 0,
+        "tasks_failed": 0,
+        "claim_success": 0,
+        "submission_success": 0,
+        "completion_success": 0,
+        "endpoint_latencies_ms": {
+            "start_job": [],
+            "claim_job": [],
+            "provide_result": [],
+            "complete_job": [],
+            "status": [],
+        },
+        "errors": [],
+    }
+
+
+def load_activity_state(path):
+    if not path:
+        return None
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    state = empty_activity_metrics()
+    for key in ("tasks_attempted", "tasks_started", "tasks_completed", "tasks_failed", "claim_success", "submission_success", "completion_success"):
+        try:
+            value = int(raw.get(key, 0))
+            if value < 0:
+                value = 0
+            state[key] = value
+        except Exception:
+            state[key] = 0
+    return state
+
+
+def save_activity_state(path, metrics, last_event=None):
+    if not path:
+        return
+    payload = {
+        "mode": "activity",
+        "updated_at": now_iso(),
+        "seed": seed,
+        "base_url": base_url,
+        "tasks_target": int(activity_target_tasks),
+        "tasks_attempted": int(metrics.get("tasks_attempted", 0)),
+        "tasks_started": int(metrics.get("tasks_started", 0)),
+        "tasks_completed": int(metrics.get("tasks_completed", 0)),
+        "tasks_failed": int(metrics.get("tasks_failed", 0)),
+        "claim_success": int(metrics.get("claim_success", 0)),
+        "submission_success": int(metrics.get("submission_success", 0)),
+        "completion_success": int(metrics.get("completion_success", 0)),
+        "last_event": last_event or {},
+    }
+    out_dir = os.path.dirname(path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, separators=(",", ":"), sort_keys=True)
+    os.replace(tmp, path)
+
+
+def pick_two_distinct_agents(local_rng, agents):
+    first = local_rng.choice(agents)
+    second = first
+    if len(agents) > 1:
+        while second == first:
+            second = local_rng.choice(agents)
+    return first, second
+
+
+def run_activity_task(task_seq, local_rng):
+    event = {
+        "event": "activity-task",
+        "ts": now_iso(),
+        "task_seq": int(task_seq),
+    }
+    commitment_hash = secrets.token_hex(32)
+    requester, preferred_worker = pick_two_distinct_agents(local_rng, activity_agents)
+    payload = {
+        "input_data": {
+            "description": f"epic-sim-{requester}-to-{preferred_worker}-task-{task_seq}-{commitment_hash[:10]}",
+            "commitmentHash": commitment_hash,
+            "network": "preprod",
+        },
+        "amount_specks": amount_specks,
+        "visibility": activity_visibility,
+        # Present in strict mode, ignored in compat mode.
+        "agentIdentifier": requester,
+        "identifier_from_purchaser": f"buyer-{requester}",
+    }
+    event["requester"] = requester
+    event["preferred_worker"] = preferred_worker
+
+    code, start_body, start_dt = post_json("/start_job", payload)
+    event["start_status"] = int(code)
+    event["start_ms"] = round(start_dt, 2)
+    if code != 200:
+        event["ok"] = False
+        event["stage"] = "start_job"
+        event["error"] = str(start_body.get("error", "start_job failed"))[:200]
+        return event
+
+    legacy = start_body.get("legacy") if isinstance(start_body, dict) else {}
+    if not isinstance(legacy, dict):
+        legacy = {}
+    job_id = str(
+        start_body.get("job_id")
+        or start_body.get("id")
+        or legacy.get("job_id")
+        or ""
+    ).strip()
+    job_token = str(
+        start_body.get("job_token")
+        or start_body.get("jobToken")
+        or legacy.get("job_token")
+        or ""
+    ).strip()
+    if not job_id or not job_token:
+        event["ok"] = False
+        event["stage"] = "start_job"
+        event["error"] = "missing job_id/job_token"
+        if isinstance(start_body, dict):
+            event["start_body_keys"] = sorted(start_body.keys())
+        if isinstance(legacy, dict):
+            event["legacy_keys"] = sorted(legacy.keys())
+        return event
+
+    event["job_id"] = job_id
+    claim_candidates = [preferred_worker]
+    if len(activity_agents) > 1:
+        remaining = [agent for agent in activity_agents if agent != preferred_worker]
+        local_rng.shuffle(remaining)
+        claim_candidates.extend(remaining[:4])
+
+    claimed_agent = ""
+    claim_errors = []
+    claim_dt_last = 0.0
+    for candidate in claim_candidates:
+        c_code, c_body, c_dt = post_json(f"/claim_job/{job_id}", {"agent_id": candidate})
+        claim_dt_last = c_dt
+        if c_code == 200:
+            claimed_agent = candidate
+            break
+        claim_errors.append({"code": int(c_code), "error": str(c_body.get("error", ""))[:120]})
+    event["claim_ms"] = round(claim_dt_last, 2)
+    if not claimed_agent:
+        event["ok"] = False
+        event["stage"] = "claim_job"
+        event["error"] = "claim failed for all candidates"
+        event["claim_errors"] = claim_errors[:4]
+        return event
+
+    event["worker"] = claimed_agent
+    work_output = (
+        f"epic completion task={task_seq} requester={requester} worker={claimed_agent} "
+        f"commit={commitment_hash[:12]}"
+    )
+    p_code, p_body, p_dt = post_json(
+        f"/provide_result/{job_id}",
+        {"agent_id": claimed_agent, "work_output": work_output, "artifact_file_paths": [f"/tmp/{job_id}/{claimed_agent}.txt"]},
+        headers={"Authorization": f"Bearer {job_token}"},
+    )
+    event["provide_status"] = int(p_code)
+    event["provide_ms"] = round(p_dt, 2)
+    if p_code != 200:
+        event["ok"] = False
+        event["stage"] = "provide_result"
+        event["error"] = str(p_body.get("error", "provide_result failed"))[:200]
+        return event
+
+    if activity_skip_complete == 0:
+        comp_payload = {
+            "receiptHash": secrets.token_hex(32),
+            "outputHash": secrets.token_hex(32),
+            "onChain": False,
+        }
+        k_code, k_body, k_dt = post_json(
+            f"/complete_job/{job_id}",
+            comp_payload,
+            headers={"Authorization": f"Bearer {operator_secret}"},
+        )
+        event["complete_status"] = int(k_code)
+        event["complete_ms"] = round(k_dt, 2)
+        if k_code != 200:
+            event["ok"] = False
+            event["stage"] = "complete_job"
+            event["error"] = str(k_body.get("error", "complete_job failed"))[:200]
+            return event
+    else:
+        event["complete_status"] = 0
+        event["complete_ms"] = 0.0
+
+    s_code, s_body, s_dt = get_json(f"/status/{job_id}", headers={"Authorization": f"Bearer {job_token}"})
+    event["status_check"] = int(s_code)
+    event["status_ms"] = round(s_dt, 2)
+    strict_status = ""
+    if s_code == 200:
+        event["internal_status"] = str(s_body.get("internal_status") or "")
+        strict_status = str(s_body.get("status") or "")
+        event["status"] = strict_status
+    internal_status = str(event.get("internal_status") or "")
+    if activity_skip_complete:
+        status_ok = internal_status in ("awaiting_approval", "multisig_pending") or strict_status == "running"
+    else:
+        status_ok = internal_status == "completed" or strict_status == "completed"
+    if s_code != 200 or not status_ok:
+        expected = "awaiting_approval/running" if activity_skip_complete else "completed"
+        event["ok"] = False
+        event["stage"] = "status"
+        got = internal_status or strict_status or "unknown"
+        event["error"] = f"expected {expected}, got {got}"
+        return event
+
+    event["ok"] = True
+    return event
+
+
+def print_activity_summary(metrics, started_at, label):
+    elapsed = max(time.perf_counter() - started_at, 0.001)
+    started = int(metrics.get("tasks_started", 0))
+    completed = int(metrics.get("tasks_completed", 0))
+    failed = int(metrics.get("tasks_failed", 0))
+    remaining = max(int(activity_target_tasks) - started, 0)
+    rate = started / elapsed
+    eta_seconds = int(remaining / rate) if rate > 0 and remaining > 0 else 0
+    summary = {
+        "event": "activity-sim-progress",
+        "label": label,
+        "ts": now_iso(),
+        "tasks_target": int(activity_target_tasks),
+        "tasks_attempted": int(metrics.get("tasks_attempted", 0)),
+        "tasks_started": started,
+        "tasks_completed": completed,
+        "tasks_failed": failed,
+        "remaining_tasks": remaining,
+        "rate_tasks_per_second": round(rate, 4),
+        "eta_seconds": eta_seconds,
+        "latency": format_latency_table(metrics.get("endpoint_latencies_ms", {})),
+        "error_count": len(metrics.get("errors", [])),
+        "sample_errors": metrics.get("errors", [])[:8],
+    }
+    print(json.dumps(summary, separators=(",", ":"), sort_keys=True), flush=True)
+
+
+def run_activity_mode():
+    metrics = empty_activity_metrics()
+    started_at = time.perf_counter()
+    state = load_activity_state(activity_state_file)
+    if state:
+        metrics.update({k: v for k, v in state.items() if k in metrics})
+        print(
+            json.dumps(
+                {
+                    "event": "activity-sim-resume",
+                    "ts": now_iso(),
+                    "state_file": activity_state_file,
+                    "tasks_attempted": metrics["tasks_attempted"],
+                    "tasks_started": metrics["tasks_started"],
+                    "tasks_completed": metrics["tasks_completed"],
+                    "tasks_failed": metrics["tasks_failed"],
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+    availability_code, availability_payload, availability_dt = get_json("/availability")
+    if availability_code != 200:
+        err = {
+            "event": "load-sim-preflight-failed",
+            "mode": "activity",
+            "base_url": base_url,
+            "endpoint": "/availability",
+            "status_code": availability_code,
+            "latency_ms": round(availability_dt, 2),
+            "error": str(availability_payload.get("error", "service unavailable"))[:300],
+        }
+        print(json.dumps(err, separators=(",", ":"), sort_keys=True), flush=True)
+        return 2
+
+    print(
+        json.dumps(
+            {
+                "event": "load-sim-preflight-ok",
+                "mode": "activity",
+                "base_url": base_url,
+                "availability_status": availability_payload.get("status"),
+                "latency_ms": round(availability_dt, 2),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    print(
+        json.dumps(
+            {
+                "event": "activity-agents",
+                "count": len(activity_agents),
+                "agents": activity_agents,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
+    consecutive_failures = 0
+    max_consecutive_failures = 50
+    try:
+        while True:
+            if not continuous and metrics["tasks_started"] >= activity_target_tasks:
+                break
+
+            task_seq = metrics["tasks_attempted"] + 1
+            task_started_t0 = time.perf_counter()
+            event = run_activity_task(task_seq, rng)
+            event["task_runtime_ms"] = round((time.perf_counter() - task_started_t0) * 1000.0, 2)
+            metrics["tasks_attempted"] += 1
+
+            start_ms = event.get("start_ms")
+            if isinstance(start_ms, (int, float)):
+                metrics["endpoint_latencies_ms"]["start_job"].append(float(start_ms))
+            claim_ms = event.get("claim_ms")
+            if isinstance(claim_ms, (int, float)) and claim_ms > 0:
+                metrics["endpoint_latencies_ms"]["claim_job"].append(float(claim_ms))
+            provide_ms = event.get("provide_ms")
+            if isinstance(provide_ms, (int, float)) and provide_ms > 0:
+                metrics["endpoint_latencies_ms"]["provide_result"].append(float(provide_ms))
+            complete_ms = event.get("complete_ms")
+            if isinstance(complete_ms, (int, float)) and complete_ms > 0:
+                metrics["endpoint_latencies_ms"]["complete_job"].append(float(complete_ms))
+            status_ms = event.get("status_ms")
+            if isinstance(status_ms, (int, float)) and status_ms > 0:
+                metrics["endpoint_latencies_ms"]["status"].append(float(status_ms))
+
+            if event.get("start_status") == 200:
+                metrics["tasks_started"] += 1
+            if event.get("worker"):
+                metrics["claim_success"] += 1
+            if event.get("provide_status") == 200:
+                metrics["submission_success"] += 1
+            if activity_skip_complete == 0 and event.get("complete_status") == 200:
+                metrics["completion_success"] += 1
+            if activity_skip_complete == 1 and event.get("status_check") == 200:
+                metrics["completion_success"] += 1
+
+            if event.get("ok"):
+                metrics["tasks_completed"] += 1
+                consecutive_failures = 0
+            else:
+                metrics["tasks_failed"] += 1
+                consecutive_failures += 1
+                metrics["errors"].append(
+                    {
+                        "task_seq": int(task_seq),
+                        "stage": str(event.get("stage", "unknown")),
+                        "error": str(event.get("error", ""))[:200],
+                    }
+                )
+
+            next_delay = 0
+            if activity_interval_max_seconds > 0:
+                next_delay = rng.randint(activity_interval_min_seconds, activity_interval_max_seconds)
+            event["next_delay_seconds"] = int(next_delay)
+            event["tasks_started_total"] = int(metrics["tasks_started"])
+            event["tasks_completed_total"] = int(metrics["tasks_completed"])
+            event["tasks_failed_total"] = int(metrics["tasks_failed"])
+            print(json.dumps(event, separators=(",", ":"), sort_keys=True), flush=True)
+
+            save_activity_state(activity_state_file, metrics, event)
+
+            if consecutive_failures >= max_consecutive_failures:
+                print(
+                    json.dumps(
+                        {
+                            "event": "activity-sim-abort",
+                            "ts": now_iso(),
+                            "reason": "too_many_consecutive_failures",
+                            "consecutive_failures": consecutive_failures,
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                print_activity_summary(metrics, started_at, "abort")
+                save_activity_state(activity_state_file, metrics, {"event": "activity-sim-abort"})
+                return 1
+
+            if metrics["tasks_attempted"] % activity_report_every == 0:
+                print_activity_summary(metrics, started_at, "periodic")
+
+            if not continuous and metrics["tasks_started"] >= activity_target_tasks:
+                break
+            if next_delay > 0:
+                time.sleep(next_delay)
+    except KeyboardInterrupt:
+        print("[load-sim] interrupted", flush=True)
+        print_activity_summary(metrics, started_at, "interrupted")
+        save_activity_state(activity_state_file, metrics, {"event": "interrupt"})
+        return 130
+
+    print_activity_summary(metrics, started_at, "done")
+    save_activity_state(activity_state_file, metrics, {"event": "done"})
+    return 0
+
+
 def main():
+    if activity_mode:
+        return run_activity_mode()
+
     cumulative = empty_metrics()
     round_index = 1
     availability_code, availability_payload, availability_dt = get_json("/availability")
@@ -670,12 +1284,22 @@ def main():
 
 
 if __name__ == "__main__":
+    start_mode = "activity" if activity_mode else "round"
     print(
         json.dumps(
             {
                 "event": "load-sim-start",
                 "ts": now_iso(),
+                "mode": start_mode,
                 "base_url": base_url,
+                "activity_agent_count": activity_agent_count,
+                "activity_target_tasks": activity_target_tasks,
+                "activity_interval_min_seconds": activity_interval_min_seconds,
+                "activity_interval_max_seconds": activity_interval_max_seconds,
+                "activity_report_every": activity_report_every,
+                "activity_state_file": activity_state_file,
+                "activity_visibility": activity_visibility,
+                "activity_skip_complete": bool(activity_skip_complete),
                 "jobs_per_round": jobs_per_round,
                 "rounds": rounds,
                 "continuous": bool(continuous),

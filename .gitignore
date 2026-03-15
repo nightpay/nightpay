@@ -14,6 +14,8 @@ nightpay-board.json
 *.db
 *.db-wal
 *.db-shm
+__pycache__/
+*.pyc
 .DS_Store
 Thumbs.db
 nul
@@ -34,6 +36,9 @@ plans/
 LAUNCH.md
 docs/MARKETING.md
 .tmp/
+/.tmp/activity-sim-*.log
+/.tmp/activity-sim-*.pid
+/.tmp/activity-sim-state*.json
 masumi-services-dev-quickstart
 
 # UI build artifacts (source goes in, dist stays out)

@@ -84,12 +84,12 @@ Analysis of where NightPay's current implementation stands relative to each upst
 - Bridge integration pattern finalized (witness injection, typed providers)
 
 **Gaps vs. Masumi ecosystem:**
-- **x402 support**: Masumi's [x402-cardano](https://github.com/masumi-network/x402-cardano) adds HTTP 402-native payments — we don't support this protocol yet. Adding it would let any HTTP client pay for bounties without Masumi SDK.
+- **x402 support (partial)**: `mip003-server.sh` now supports an optional x402 handshake (`402` + `PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE` gate, optional facilitator verify/settle). Remaining gap: full proof validation and settlement flow across every paid route + end-to-end gateway propagation.
 - **Registry registration**: We haven't POST'd to `registry.masumi.network` yet — NightPay bounties are invisible to Masumi agent discovery.
 - **MCP bridge**: Masumi's [MCP server](https://github.com/masumi-network/masumi-mcp-server) lets Claude Desktop manage agents — we could expose NightPay bounties through this channel.
 - **Reputation patch**: Masumi registry supports agent reputation updates — our completions don't feed back.
 
-**Way forward:** Register on Masumi mainnet registry (Phase 1 blocker). Add x402 HTTP 402 support as a Phase 2 payment rail. Emit reputation events to Masumi on job completion.
+**Way forward:** Register on Masumi mainnet registry (Phase 1 blocker). Finish full x402 payment rail coverage (beyond current partial server integration). Emit reputation events to Masumi on job completion.
 
 ### vs. Cardano: Indirect via Masumi, Direct Path Available
 
@@ -212,7 +212,7 @@ Analysis of where NightPay's current implementation stands relative to each upst
 
 **Plan:**
 - Add `ui/src/pages/PostFormPage.tsx` — web form with Lace wallet integration
-- Funder connects Lace (`window.midnight.mnLace`), signs ZK transaction from browser
+- Funder connects Lace (`window.midnight.{walletId}`), signs ZK transaction from browser
 - Bridge moves to a mode where the proof is generated browser-side (via [DApp Connector API](https://docs.midnight.network/))
 - Reference: [midnightntwrk/example-bboard](https://github.com/midnightntwrk/example-bboard) wallet integration pattern
 - NIGHT token already on Cardano mainnet — Lace can interact directly
@@ -237,12 +237,20 @@ Analysis of where NightPay's current implementation stands relative to each upst
 - Consider: privacy-preserving aggregate score using ZK (prove “completed > N bounties” without revealing which)
 
 ### x402 HTTP Payment Support (NEW — MEDIUM)
-**Gap:** Masumi's [x402-cardano](https://github.com/masumi-network/x402-cardano) enables HTTP-native payments (HTTP 402 status code). Any HTTP client can pay without Masumi SDK. We don't support this.
+**Status:** **Partially implemented (March 2026)** in `mip003-server.sh`.
 
-**Plan:**
-- Add HTTP 402 response header to `mip003-server.sh` for payment-required endpoints
-- Accept x402 payment proofs in `gateway.sh`
-- Reference: [x402-cardano spec](https://github.com/masumi-network/x402-cardano) — Coinbase co-designed
+Implemented now:
+- Feature-flagged x402 mode (`X402_ENABLED`) with route targeting (`X402_REQUIRE_ROUTES`)
+- `402` challenge responses with `PAYMENT-REQUIRED` header/body (x402 v2 shape)
+- `PAYMENT-SIGNATURE` gating on configured endpoints
+- Optional facilitator verification/settlement hooks (`X402_VERIFY_MODE=facilitator`, `/verify`, `/settle`)
+- Discovery endpoint `GET /x402` + x402 metadata in `GET /availability`
+
+**Remaining work:**
+- Expand proof enforcement from `/start_job` to every intended paid route
+- Validate production facilitator compatibility for Cardano x402 payloads
+- Add broader gateway propagation for x402 proofs beyond direct-hire passthrough
+- Harden replay/settlement accounting for high-throughput production traffic
 
 ---
 

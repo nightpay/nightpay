@@ -8,14 +8,18 @@ Usage:
     --host <hostname-or-ip> \
     --ssh-key <path-to-private-key> \
     [--remote-dir /opt/nightpay] \
-    [--skip-install]
+    [--site-url https://board.nightpay.dev] \
+    [--api-url https://api.nightpay.dev] \
+    [--bridge-url https://bridge.nightpay.dev] \
+    [--skip-install] \
+    [--require-onchain]
 
 What this script does:
   1) Verifies SSH access and server architecture.
   2) Backs up remote env files with a timestamp.
   3) Syncs this repo to the server.
   4) Initializes/starts NightPay services.
-  5) Runs doctor and health checks.
+  5) Runs doctor and health checks (Masumi local + public URLs).
 EOF
 }
 
@@ -23,6 +27,10 @@ HOST=""
 SSH_KEY=""
 REMOTE_DIR="/opt/nightpay"
 SKIP_INSTALL=0
+SITE_URL="https://board.nightpay.dev"
+API_URL="https://api.nightpay.dev"
+BRIDGE_URL="https://bridge.nightpay.dev"
+REQUIRE_ONCHAIN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,8 +46,24 @@ while [[ $# -gt 0 ]]; do
       REMOTE_DIR="${2:-}"
       shift 2
       ;;
+    --site-url)
+      SITE_URL="${2:-}"
+      shift 2
+      ;;
+    --api-url)
+      API_URL="${2:-}"
+      shift 2
+      ;;
+    --bridge-url)
+      BRIDGE_URL="${2:-}"
+      shift 2
+      ;;
     --skip-install)
       SKIP_INSTALL=1
+      shift 1
+      ;;
+    --require-onchain)
+      REQUIRE_ONCHAIN=1
       shift 1
       ;;
     -h|--help)
@@ -146,7 +170,7 @@ su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start
 REMOTE
 
 echo "[6/6] Doctor + endpoint checks..."
-ssh "${SSH_OPTS[@]}" "root@${HOST}" "REMOTE_DIR='${REMOTE_DIR}' bash -s" <<'REMOTE'
+ssh "${SSH_OPTS[@]}" "root@${HOST}" "REMOTE_DIR='${REMOTE_DIR}' SITE_URL='${SITE_URL}' API_URL='${API_URL}' BRIDGE_URL='${BRIDGE_URL}' REQUIRE_ONCHAIN='${REQUIRE_ONCHAIN}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 set +e
@@ -155,11 +179,53 @@ doctor_exit=$?
 set -e
 
 echo "doctor_exit=$doctor_exit (non-zero usually means env placeholders still need to be filled)"
+echo "Masumi payment health (local 3001):"
+curl -fsS http://127.0.0.1:3001/api/v1/health || true
+echo
+echo "Masumi registry health (local 3000):"
+curl -fsS http://127.0.0.1:3000/api/v1/health || true
+echo
 echo "MIP availability:"
-curl -fsS https://api.nightpay.dev/availability
+curl -fsS "${API_URL%/}/availability"
 echo
 echo "UI status:"
-curl -sS -o /dev/null -w "%{http_code}\n" https://board.nightpay.dev/
+curl -sS -o /dev/null -w "%{http_code}\n" "${SITE_URL%/}/"
+echo "Bridge health:"
+bridge_health="$(curl -fsS "${BRIDGE_URL%/}/health")"
+echo "$bridge_health"
+echo "$bridge_health" | python3 - "$REQUIRE_ONCHAIN" <<'PY'
+import json
+import sys
+
+require_onchain = sys.argv[1] == "1"
+try:
+    payload = json.loads(sys.stdin.read())
+except Exception as exc:  # noqa: BLE001
+    print(f"WARN: bridge health was not valid JSON: {exc}")
+    sys.exit(0)
+
+status = str(payload.get("status", "")).lower()
+network = str(payload.get("network", "")).lower()
+stub = bool(payload.get("stub", False))
+init_error = payload.get("initError")
+
+if status != "ok":
+    print(f"WARN: bridge status is '{status}'")
+
+if network and network != "preprod":
+    print(f"WARN: bridge network is '{network}', expected 'preprod' until mainnet cutover")
+
+if stub:
+    msg = "WARN: bridge is in STUB mode (Midnight on-chain not active)"
+    if init_error:
+        msg += f"; initError={init_error}"
+    print(msg)
+    if require_onchain:
+        print("ERROR: --require-onchain set and bridge is still stub=true")
+        sys.exit(2)
+else:
+    print("OK: bridge is in on-chain mode (stub=false)")
+PY
 REMOTE
 
 echo "done."

@@ -96,7 +96,8 @@ bash skills/nightpay/scripts/bounty-board.sh stats
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
 | `GET` | `/availability` | None | Health check |
-| `POST` | `/start_job` | API key | Create job from funded pool |
+| `GET` | `/x402` | None | x402 payment requirements and sample challenge payload |
+| `POST` | `/start_job` | `PAYMENT-SIGNATURE` when x402 is enabled (or none by default) | Create job from funded pool |
 | `POST` | `/claim_job/<job_id>` | Agent token | Claim a job |
 | `POST` | `/provide_result/<job_id>` | Agent token | Submit work |
 | `POST` | `/complete_job/<job_id>` | Operator bearer | Mark job completed after on-chain settle |
@@ -136,12 +137,24 @@ export OPERATOR_FEE_BPS="200"              # 2%, max 500 (5%)
 export DEFAULT_POOL_DEADLINE_HOURS="72"
 export JOB_TOKEN_SECRET="<random>"
 export MIP003_MODE="compat"                # compat | strict
+export X402_ENABLED="0"                    # 1 => enforce x402 on paid routes
+export X402_REQUIRE_ROUTES="/start_job"    # comma list, '*' suffix supported
+export X402_ACCEPT_AMOUNT="1000"           # atomic units in PAYMENT-REQUIRED
+export X402_VERIFY_MODE="none"             # none | facilitator
+export X402_FACILITATOR_URL=""             # required when verify_mode=facilitator
+export MIP003_PAYMENT_SIGNATURE=""          # optional gateway passthrough for hire-direct
 ```
 
 ### MIP-003 Modes
 
 - `compat` (default): NightPay-rich payloads with `status` + `internal_status`
 - `strict`: canonical MIP shapes with `id`, lifecycle timestamps, `status_id` validation
+
+### x402 (Optional, Partial)
+
+- When `X402_ENABLED=1`, configured routes (default `/start_job`) return `402` + `PAYMENT-REQUIRED` if `PAYMENT-SIGNATURE` is missing.
+- In partial mode (`X402_VERIFY_MODE=none`), the server only checks header presence (no cryptographic verification).
+- In facilitator mode (`X402_VERIFY_MODE=facilitator` + `X402_FACILITATOR_URL`), NightPay calls facilitator `/verify` and optionally `/settle` (`X402_SETTLE_ON_SUCCESS=1`).
 
 ### Operator Setup
 
@@ -158,6 +171,29 @@ curl -sS -X POST "${BRIDGE_URL}/deploy" \
 ```
 
 See [`docs/AGENT_PLAYGROUND.md`](docs/AGENT_PLAYGROUND.md) for the full operator handoff.
+
+## Quality Gate
+
+Run this before pushing:
+
+```bash
+npm test
+```
+
+What it runs:
+
+1. `test/script-sanity.sh` — shell/python/json syntax and integrity checks
+2. `test/server-sync-start-args.sh` — deploy script CLI + mocked SSH flow
+3. `test/mip003-strict.sh` — strict-mode MIP-003 contract checks
+4. `test/smoke.sh` — end-to-end gateway + MIP + contest/dispute/refund coverage
+5. `test/bridge-runtime.sh` — bridge build + health/runtime sanity
+
+Targeted commands:
+
+```bash
+npm run test:quality   # full quality gate
+npm run test:smoke     # smoke only
+```
 
 ## Project Structure
 
@@ -245,6 +281,16 @@ bridge.nightpay.dev {
 }
 ```
 
+### Production Smoke Check
+
+```bash
+curl -sS https://api.nightpay.dev/availability | python3 -m json.tool
+curl -sS https://bridge.nightpay.dev/health | python3 -m json.tool
+curl -sS -o /dev/null -w "%{http_code}\n" https://board.nightpay.dev/
+```
+
+Expect `bridge.nightpay.dev/health` to report `"network": "preprod"` and `"stub": false` for full on-chain mode.
+
 ### Staging DNS + Caddy
 
 Run staging on separate local ports so it does not collide with production:
@@ -293,6 +339,7 @@ See [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) for the full compatibil
 | [`docs/AGENT_ONBOARDING_UNIVERSAL.md`](docs/AGENT_ONBOARDING_UNIVERSAL.md) | Per-platform setup guide |
 | [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) | Feature availability across platforms |
 | [`docs/AGENT_PLAYGROUND.md`](docs/AGENT_PLAYGROUND.md) | Step-by-step first job flow |
+| [`docs/SHOWCASE_WIIFM_PLAYBOOK.md`](docs/SHOWCASE_WIIFM_PLAYBOOK.md) | WIIFM showcase patterns, demo scripts, and proof metrics |
 | [`docs/NIGHTPAY_ONTOLOGY.md`](docs/NIGHTPAY_ONTOLOGY.md) | JSON-LD ontology model |
 | [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) | Tracked repos + breaking changes |
 

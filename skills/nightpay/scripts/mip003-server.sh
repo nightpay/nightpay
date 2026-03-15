@@ -27,6 +27,18 @@
 #   MANAGEMENT_LLM_TIMEOUT_SECONDS — HTTP timeout for LLM calls (default: 25)
 #   MANAGEMENT_LLM_TEMPERATURE  — generation temperature (default: 0.2)
 #   MANAGEMENT_LLM_API_KEY      — optional bearer auth for LLM gateway
+#   X402_ENABLED                 — 1/true enables x402 HTTP 402 payment handshake (default: 0)
+#   X402_REQUIRE_ROUTES          — comma list of paid routes, supports '*' suffix (default: /start_job)
+#   X402_ACCEPT_AMOUNT           — atomic units required per paid request (default: 1000)
+#   X402_ACCEPT_ASSET            — asset/currency identifier in PaymentRequirements (default: night:specks)
+#   X402_ACCEPT_NETWORK          — CAIP-2-like network id (default: cardano:preprod)
+#   X402_ACCEPT_SCHEME           — payment scheme (default: exact)
+#   X402_ACCEPT_PAY_TO           — payment recipient identifier/address (default: merchant)
+#   X402_MAX_TIMEOUT_SECONDS     — max payment timeout in requirements (default: 60)
+#   X402_VERIFY_MODE             — none (default) or facilitator
+#   X402_FACILITATOR_URL         — facilitator base URL used for /verify and optional /settle
+#   X402_SETTLE_ON_SUCCESS       — 1/true to call facilitator /settle after successful verify
+#   X402_BYPASS_OPERATOR         — 1/true lets operator bearer bypass x402 checks (default: 1)
 #
 # Register with Masumi after starting:
 #   curl -X POST http://127.0.0.1:3001/api/v1/registry \
@@ -86,9 +98,9 @@ echo -e "${DIM}  mip003 mode: ${MIP003_MODE}${RESET}" >&2
 echo -e "${DIM}  ontology dir: ${ONTOLOGY_DIR}${RESET}" >&2
 
 "$PYTHON_BIN" - "$PORT" "$DB_PATH" "$JOB_TOKEN_SECRET" "$OPERATOR_SECRET_KEY" "$OPTIMISTIC_WINDOW_HOURS" "$MULTISIG_THRESHOLD_SPECKS" "$OPERATOR_FEE_BPS" "$IDEMPOTENCY_TTL_SECONDS" "$MIP003_MODE" "$ONTOLOGY_DIR" <<'PYCODE'
-import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math
+import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math, base64
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from urllib import request as urlrequest, error as urlerror
 
 try:
@@ -133,6 +145,30 @@ def _normalize_management_llm_url(raw):
         base = f'https://{base}'
     return base.rstrip('/')
 
+def _normalize_x402_routes(raw):
+    text = str(raw or '').strip()
+    if not text:
+        return ['/start_job']
+    routes = []
+    for token in text.split(','):
+        item = str(token).strip().replace('\\', '/')
+        if not item:
+            continue
+        # Git Bash on Windows can path-convert "/route" env values into
+        # "/C:/Program Files/Git/route". Recover the intended API route.
+        if re.match(r'^/?[A-Za-z]:/', item):
+            recovered = re.search(
+                r'/(availability|x402|use_cases|agents|ontology|input_schema|start_job|status|claim_job|provide_input|provide_result|complete_job|dispute|jobs|submissions|vote_result|vote_submission|select_winner|management|agent|demo)(?:/.*)?$',
+                item,
+                flags=re.IGNORECASE,
+            )
+            if recovered:
+                item = recovered.group(0)
+        if not item.startswith('/'):
+            item = '/' + item
+        routes.append(item)
+    return routes or ['/start_job']
+
 AGENT_IDENTITY_ENFORCE = _coerce_bool_env('AGENT_IDENTITY_ENFORCE', False)
 AGENT_CHALLENGE_TTL_SECONDS = _coerce_int_env('AGENT_CHALLENGE_TTL_SECONDS', 600)
 AGENT_VERIFIED_TOKEN_TTL_SECONDS = _coerce_int_env('AGENT_VERIFIED_TOKEN_TTL_SECONDS', 86400)
@@ -156,57 +192,114 @@ if AGENT_CHALLENGE_TTL_SECONDS < 30:
 if AGENT_VERIFIED_TOKEN_TTL_SECONDS < 60:
     AGENT_VERIFIED_TOKEN_TTL_SECONDS = 60
 
+X402_ENABLED = _coerce_bool_env('X402_ENABLED', False)
+X402_REQUIRE_ROUTES = _normalize_x402_routes(os.environ.get('X402_REQUIRE_ROUTES', '/start_job'))
+X402_ACCEPT_SCHEME = str(os.environ.get('X402_ACCEPT_SCHEME', 'exact')).strip() or 'exact'
+X402_ACCEPT_NETWORK = str(os.environ.get('X402_ACCEPT_NETWORK', 'cardano:preprod')).strip() or 'cardano:preprod'
+X402_ACCEPT_ASSET = str(os.environ.get('X402_ACCEPT_ASSET', 'night:specks')).strip() or 'night:specks'
+X402_ACCEPT_PAY_TO = str(os.environ.get('X402_ACCEPT_PAY_TO', 'merchant')).strip() or 'merchant'
+X402_ACCEPT_AMOUNT = str(os.environ.get('X402_ACCEPT_AMOUNT', '1000')).strip() or '1000'
+if not re.match(r'^[0-9]+$', X402_ACCEPT_AMOUNT):
+    X402_ACCEPT_AMOUNT = '1000'
+X402_RESOURCE_DESCRIPTION = str(os.environ.get('X402_RESOURCE_DESCRIPTION', 'NightPay paid API access')).strip() or 'NightPay paid API access'
+X402_MAX_TIMEOUT_SECONDS = _coerce_int_env('X402_MAX_TIMEOUT_SECONDS', 60)
+if X402_MAX_TIMEOUT_SECONDS < 1:
+    X402_MAX_TIMEOUT_SECONDS = 60
+if X402_MAX_TIMEOUT_SECONDS > 3600:
+    X402_MAX_TIMEOUT_SECONDS = 3600
+X402_VERIFY_MODE = str(os.environ.get('X402_VERIFY_MODE', 'none')).strip().lower()
+if X402_VERIFY_MODE not in ('none', 'facilitator'):
+    X402_VERIFY_MODE = 'none'
+X402_FACILITATOR_URL = str(os.environ.get('X402_FACILITATOR_URL', '')).strip().rstrip('/')
+if X402_VERIFY_MODE == 'facilitator' and not X402_FACILITATOR_URL:
+    X402_VERIFY_MODE = 'none'
+X402_SETTLE_ON_SUCCESS = _coerce_bool_env('X402_SETTLE_ON_SUCCESS', False) and X402_VERIFY_MODE == 'facilitator'
+X402_BYPASS_OPERATOR = _coerce_bool_env('X402_BYPASS_OPERATOR', True)
+
 KNOWN_STATUSES = ('running', 'awaiting_approval', 'multisig_pending', 'disputed', 'completed')
 MAX_ATTACHMENT_BYTES = 256 * 1024  # .md or .txt attachment at start_job (authenticated only)
 MIP003_STATUSES = ('awaiting_payment', 'awaiting_input', 'running', 'completed', 'failed')
 
 ID_RE = re.compile(r'^[A-Za-z0-9._:@-]{2,128}$')
+JOBS_FTS_AVAILABLE = False
 
 POTENTIAL_USE_CASES = [
     {
-        'id': 'governance-fact-check',
-        'title': 'Governance claim fact-check pools',
-        'starter_bounty': 'Fact-check proposal XYZ against 10 cited sources and return a claim-by-claim evidence matrix with risk tags.',
+        'id': 'confidential-security-triage',
+        'title': 'Confidential security triage bounties',
+        'starter_bounty': 'Reproduce a suspected auth bypass, return a minimal PoC, impact scope, and patch checklist with verification steps.',
+        'wiifm': 'Pay only for reproducible security evidence while keeping sponsor identity and budget participation private.',
+        'proof_metric': 'accepted report rate, median time-to-reproduction, refund rate on abandoned jobs',
+        'demo_flow': 'post-bounty -> find-agent -> hire-and-pay -> complete -> verify-receipt',
         'sources': [
-            'https://arxiv.org/abs/2407.02226',
-            'https://nightpay.dev/',
+            'https://bounty.github.com/',
+            'https://arxiv.org/abs/2511.15712',
+            'https://docs.midnight.network/concepts',
         ],
     },
     {
         'id': 'oss-issue-acceleration',
-        'title': 'Open-source issue acceleration pools',
-        'starter_bounty': 'Resolve issue #123 with passing tests, migration notes, and a short benchmark diff before and after the fix.',
+        'title': 'Open-source backlog burst pools',
+        'starter_bounty': 'Resolve issue #123 with tests passing, migration notes, and before/after benchmark evidence.',
+        'wiifm': 'Turn stalled backlog into paid, objective outcomes without trusting a single sponsor account.',
+        'proof_metric': 'cycle time from post to merged PR, reopened issue rate, payout-to-merge ratio',
+        'demo_flow': 'create-pool -> fund-pool -> hire-and-pay -> complete',
         'sources': [
-            'https://github.com/marketplace/bountyhub-app',
-            'https://githoney.io/',
-            'https://collaborators.build/',
+            'https://github.com/gitcoinco/grants-stack',
+            'https://github.com/microsoft/multi-agent-marketplace',
+            'https://arxiv.org/abs/2510.25779',
         ],
     },
     {
-        'id': 'security-triage',
-        'title': 'Security bug triage and reproduction',
-        'starter_bounty': 'Reproduce auth bypass in target service, submit minimal PoC, impact analysis, and patch guidance checklist.',
+        'id': 'contest-mode-quality-gate',
+        'title': 'Contest mode for quality-critical tasks',
+        'starter_bounty': 'Collect 3 independent solution submissions, run agent voting, and select a winner with quorum evidence.',
+        'wiifm': 'Increase output quality by comparing multiple candidates before releasing funds.',
+        'proof_metric': 'win-rate by agent, vote convergence, post-selection dispute rate',
+        'demo_flow': 'start_job(contest) -> claim_job (multi-agent) -> provide_result -> vote_submission -> select_winner -> complete',
         'sources': [
-            'https://bounty.github.com/',
-            'https://arxiv.org/abs/2408.10648',
-        ],
-    },
-    {
-        'id': 'crypto-rnd',
-        'title': 'Cryptography and privacy R&D tasks',
-        'starter_bounty': 'Implement and benchmark operation-level optimization in FHE module X, including reproducible scripts and tests.',
-        'sources': [
-            'https://github.com/zama-ai/bounty-program',
-            'https://arxiv.org/abs/2401.01204',
-        ],
-    },
-    {
-        'id': 'multi-agent-eval',
-        'title': 'Multi-agent benchmark and routing evaluations',
-        'starter_bounty': 'Compare orchestration strategy A vs B on 20 tasks and deliver success rate, cost, latency, and failure taxonomy.',
-        'sources': [
+            'https://arxiv.org/abs/2510.25779',
             'https://arxiv.org/abs/2512.20973',
-            'https://arxiv.org/abs/2504.00587',
+            'https://docs.masumi.network/core-concepts/agentic-service',
+        ],
+    },
+    {
+        'id': 'governance-fact-check',
+        'title': 'Governance and policy fact-check pools',
+        'starter_bounty': 'Audit proposal claims against 10 cited sources and deliver a claim-by-claim evidence matrix with risk tags.',
+        'wiifm': 'Communities can fund neutral verification without exposing who backed which narrative.',
+        'proof_metric': 'evidence coverage, correction adoption rate, time-to-verification',
+        'demo_flow': 'create-pool -> fund-pool -> hire-and-pay -> complete -> verify-receipt',
+        'sources': [
+            'https://arxiv.org/abs/2407.02226',
+            'https://github.com/nightpay/nightpay',
+            'https://docs.midnight.network/concepts/how-midnight-works/keeping-data-private',
+        ],
+    },
+    {
+        'id': 'high-value-human-gated',
+        'title': 'High-value tasks with human or multisig release gate',
+        'starter_bounty': 'Run a high-value delivery where completion moves to multisig_pending, then finalize only after explicit approval.',
+        'wiifm': 'Keep low-friction automation for small tasks while forcing control gates on expensive payouts.',
+        'proof_metric': 'manual-review coverage for high-value jobs, unauthorized payout rate, approval SLA',
+        'demo_flow': 'hire-and-pay(high amount) -> complete -> multisig_pending -> operator/multisig approval -> complete_job',
+        'sources': [
+            'https://openai.com/index/buy-it-in-chatgpt/',
+            'https://corporate.visa.com/en/solutions/acceptance/agentic-commerce.html',
+            'https://arxiv.org/abs/2506.00073',
+        ],
+    },
+    {
+        'id': 'agent-service-monetization',
+        'title': 'Monetize reusable agent services',
+        'starter_bounty': 'Package a narrow specialist workflow and run repeated hire-and-pay cycles with receipt verification.',
+        'wiifm': 'Agent builders get repeatable revenue while buyers get predictable, escrow-backed delivery.',
+        'proof_metric': 'repeat-hire rate, revenue per agent capability, failed-payment rate',
+        'demo_flow': 'find-agent -> hire-and-pay -> provide_result -> complete -> verify-receipt',
+        'sources': [
+            'https://github.com/coinbase/x402',
+            'https://github.com/agentic-commerce-protocol/agentic-commerce-protocol',
+            'https://github.com/masumi-network/masumi-payment-service',
         ],
     },
 ]
@@ -835,6 +928,81 @@ def normalize_showcase_entries(raw, max_items=8):
         out.append(entry)
     return out
 
+def normalize_agent_address_entries(raw, source='metadata', verified_default=False):
+    out = []
+    seen = set()
+
+    def add_entry(network, kind, address, entry_source=None, verified=None):
+        network_text = str(network or '').strip().lower()[:40] or 'other'
+        kind_text = str(kind or '').strip().lower()[:40] or 'wallet'
+        address_text = str(address or '').strip()[:256]
+        if not address_text:
+            return
+        key = (network_text, kind_text, address_text.lower())
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({
+            'network': network_text,
+            'kind': kind_text,
+            'address': address_text,
+            'source': str(entry_source or source).strip().lower()[:40] or source,
+            'verified': bool(verified_default if verified is None else verified),
+        })
+
+    def ingest_item(item, fallback_network='other'):
+        if isinstance(item, dict):
+            network = item.get('network') or item.get('chain') or item.get('asset') or fallback_network
+            kind = item.get('kind') or item.get('type') or 'wallet'
+            address = item.get('address')
+            if address in (None, ''):
+                address = item.get('value')
+            if address in (None, ''):
+                address = item.get('id')
+            add_entry(
+                network=network,
+                kind=kind,
+                address=address,
+                entry_source=item.get('source') or source,
+                verified=item.get('verified'),
+            )
+        elif isinstance(item, str):
+            add_entry(fallback_network, 'wallet', item)
+
+    known_fields = (
+        ('midnight_address', 'midnight', 'shielded'),
+        ('wallet_address', 'cardano', 'wallet'),
+        ('cardano_address', 'cardano', 'wallet'),
+        ('cardano_stake_address', 'cardano', 'stake'),
+        ('cardano_stake_addr', 'cardano', 'stake'),
+        ('ethereum_address', 'ethereum', 'wallet'),
+        ('eth_address', 'ethereum', 'wallet'),
+        ('solana_address', 'solana', 'wallet'),
+        ('bitcoin_address', 'bitcoin', 'wallet'),
+        ('btc_address', 'bitcoin', 'wallet'),
+    )
+
+    if isinstance(raw, dict):
+        for field, network, kind in known_fields:
+            add_entry(network, kind, raw.get(field))
+
+        nested = raw.get('addresses')
+        if isinstance(nested, dict):
+            for network, value in nested.items():
+                if isinstance(value, list):
+                    for item in value:
+                        ingest_item(item, fallback_network=network)
+                else:
+                    ingest_item(value, fallback_network=network)
+        elif isinstance(nested, list):
+            for item in nested:
+                ingest_item(item)
+    elif isinstance(raw, list):
+        for item in raw:
+            ingest_item(item)
+
+    return out
+
 def normalize_visibility(value, default='public'):
     # API accepts public | private; internal storage is public | hidden (private -> hidden).
     raw = str(value if value is not None else default).strip().lower()
@@ -847,6 +1015,97 @@ def visibility_for_api(internal):
     if internal == 'hidden':
         return 'private'
     return (internal or 'public')
+
+def latest_agent_identities_map(db, agent_ids):
+    ordered = []
+    seen = set()
+    for agent_id in (agent_ids or []):
+        key = str(agent_id or '').strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+
+    if not ordered:
+        return {}
+
+    placeholders = ','.join(['?'] * len(ordered))
+    rows = db.execute(
+        f'''SELECT *
+            FROM agent_identities
+            WHERE revoked_at IS NULL
+              AND agent_id IN ({placeholders})
+            ORDER BY verified_at DESC, updated_at DESC''',
+        tuple(ordered)
+    ).fetchall()
+
+    out = {}
+    for row in rows:
+        key = str(row['agent_id'] or '').strip()
+        if not key or key in out:
+            continue
+        out[key] = row
+    return out
+
+def _jobs_query_fingerprint(status_filter, status_filter_internal, approved_before, search_term, visibility_filter):
+    payload = {
+        'v': 1,
+        'status_filter': str(status_filter or ''),
+        'status_filter_internal': str(status_filter_internal or ''),
+        'approved_before': str(approved_before or ''),
+        'search_term': str(search_term or '').lower(),
+        'visibility_filter': str(visibility_filter or 'public'),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+def make_jobs_cursor(payload):
+    raw = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    sig = hmac.new(JOB_TOKEN_SECRET.encode(), raw, hashlib.sha256).hexdigest().encode('ascii')
+    token_raw = raw + b'.' + sig
+    return base64.urlsafe_b64encode(token_raw).decode('ascii').rstrip('=')
+
+def parse_jobs_cursor(token):
+    value = str(token or '').strip()
+    if not value:
+        raise ValueError('cursor is required')
+    if len(value) > 4096:
+        raise ValueError('cursor is too long')
+    try:
+        padded = value + ('=' * (-len(value) % 4))
+        decoded = base64.urlsafe_b64decode(padded.encode('ascii'))
+    except Exception:
+        raise ValueError('invalid cursor encoding')
+    if b'.' not in decoded:
+        raise ValueError('invalid cursor format')
+    raw, sig = decoded.rsplit(b'.', 1)
+    expected = hmac.new(JOB_TOKEN_SECRET.encode(), raw, hashlib.sha256).hexdigest().encode('ascii')
+    if not hmac.compare_digest(sig, expected):
+        raise ValueError('invalid cursor signature')
+    try:
+        payload = json.loads(raw.decode('utf-8'))
+    except Exception:
+        raise ValueError('invalid cursor payload')
+    if not isinstance(payload, dict) or int(payload.get('v', 0)) != 1:
+        raise ValueError('unsupported cursor version')
+    return payload
+
+def build_jobs_fts_query(search_term):
+    text = str(search_term or '').strip().lower()
+    if not text:
+        return None
+    tokens = re.findall(r'[a-z0-9]{2,64}', text)
+    if not tokens:
+        return None
+    return ' AND '.join([f'{token}*' for token in tokens[:8]])
+
+def append_jobs_like_search(where_clauses, query_params, search_term):
+    esc = str(search_term or '').lower().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    like = f'%{esc}%'
+    where_clauses.append(
+        '(LOWER(COALESCE(j.input_data, "")) LIKE ? ESCAPE "\\" OR LOWER(j.job_id) LIKE ? ESCAPE "\\")'
+    )
+    query_params.extend([like, like])
 
 def _sigmoid(value):
     if value >= 60:
@@ -1130,6 +1389,10 @@ def canonical_json_sha256(payload):
 def canonical_input_hash(input_data):
     return canonical_json_sha256(input_data)
 
+def make_input_ack_signature(job_id, status_id, input_hash):
+    msg = f'nightpay-provide-input-v1:{job_id}:{status_id}:{input_hash}'
+    return hmac.new(OPERATOR_SECRET_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()
+
 def is_sha256_hex(value):
     return bool(re.fullmatch(r'[0-9a-f]{64}', str(value or '').strip().lower()))
 
@@ -1254,6 +1517,8 @@ conn.executescript('''
         WHERE approved_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_jobs_approved ON jobs(approved_at)
         WHERE approved_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_jobs_updated_job_id ON jobs(updated_at DESC, job_id ASC);
+    CREATE INDEX IF NOT EXISTS idx_jobs_visibility_updated_job_id ON jobs(visibility, updated_at DESC, job_id ASC);
 
     CREATE TABLE IF NOT EXISTS agents (
         agent_id       TEXT PRIMARY KEY,
@@ -1403,6 +1668,43 @@ for col_def in [
     except Exception:
         pass  # column already exists — idempotent
 conn.commit()
+
+try:
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(job_id, input_data, tokenize='unicode61 remove_diacritics 2')"
+    )
+    conn.executescript('''
+        CREATE TRIGGER IF NOT EXISTS jobs_fts_ai AFTER INSERT ON jobs BEGIN
+            INSERT INTO jobs_fts(rowid, job_id, input_data)
+            VALUES (new.rowid, new.job_id, COALESCE(new.input_data, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS jobs_fts_ad AFTER DELETE ON jobs BEGIN
+            INSERT INTO jobs_fts(jobs_fts, rowid, job_id, input_data)
+            VALUES ('delete', old.rowid, old.job_id, COALESCE(old.input_data, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS jobs_fts_au AFTER UPDATE OF job_id, input_data ON jobs BEGIN
+            INSERT INTO jobs_fts(jobs_fts, rowid, job_id, input_data)
+            VALUES ('delete', old.rowid, old.job_id, COALESCE(old.input_data, ''));
+            INSERT INTO jobs_fts(rowid, job_id, input_data)
+            VALUES (new.rowid, new.job_id, COALESCE(new.input_data, ''));
+        END;
+    ''')
+
+    jobs_total = int(conn.execute('SELECT COUNT(*) AS n FROM jobs').fetchone()[0] or 0)
+    fts_total = int(conn.execute('SELECT COUNT(*) AS n FROM jobs_fts').fetchone()[0] or 0)
+    if jobs_total > 0 and fts_total == 0:
+        conn.execute(
+            '''INSERT INTO jobs_fts(rowid, job_id, input_data)
+               SELECT rowid, job_id, COALESCE(input_data, '')
+               FROM jobs'''
+        )
+    conn.commit()
+    JOBS_FTS_AVAILABLE = True
+except Exception as exc:
+    print(f'[nightpay] WARNING: jobs_fts unavailable; falling back to LIKE search ({exc})')
+
 conn.close()
 
 # ─── HTTP handler ─────────────────────────────────────────────────────────────
@@ -1428,13 +1730,201 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             
         return None
 
-    def respond(self, code, data):
+    def _x402_route_matches(self, path_only):
+        for route in X402_REQUIRE_ROUTES:
+            if route.endswith('*'):
+                if path_only.startswith(route[:-1]):
+                    return True
+                continue
+            if path_only == route or path_only.startswith(route + '/'):
+                return True
+        return False
+
+    def _x402_payment_requirements(self):
+        return {
+            'scheme': X402_ACCEPT_SCHEME,
+            'network': X402_ACCEPT_NETWORK,
+            'amount': X402_ACCEPT_AMOUNT,
+            'asset': X402_ACCEPT_ASSET,
+            'payTo': X402_ACCEPT_PAY_TO,
+            'maxTimeoutSeconds': X402_MAX_TIMEOUT_SECONDS,
+            'extra': {},
+        }
+
+    def _x402_payment_required_payload(self, path_only, error_message, invalid_reason=''):
+        payload = {
+            'x402Version': 2,
+            'error': str(error_message or 'payment required'),
+            'resource': {
+                'url': f'{self._public_base_url()}{path_only}',
+                'description': X402_RESOURCE_DESCRIPTION,
+                'mimeType': 'application/json',
+            },
+            'accepts': [self._x402_payment_requirements()],
+            'extensions': {},
+        }
+        if invalid_reason:
+            payload['invalidReason'] = str(invalid_reason)[:400]
+        return payload
+
+    def _x402_b64_json(self, payload):
+        raw = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        return base64.b64encode(raw).decode('ascii')
+
+    def _x402_parse_signature(self, raw_signature):
+        value = str(raw_signature or '').strip()
+        if not value:
+            return None, 'PAYMENT-SIGNATURE header is missing'
+
+        try:
+            decoded = base64.b64decode(value, validate=True)
+            data = json.loads(decoded.decode('utf-8'))
+            return data, ''
+        except Exception:
+            pass
+
+        # Accept URL-safe base64 payloads from some client SDKs.
+        try:
+            padded = value + ('=' * (-len(value) % 4))
+            decoded = base64.urlsafe_b64decode(padded.encode('ascii'))
+            data = json.loads(decoded.decode('utf-8'))
+            return data, ''
+        except Exception:
+            pass
+
+        if value.startswith('{'):
+            try:
+                data = json.loads(value)
+                return data, ''
+            except Exception:
+                return None, 'PAYMENT-SIGNATURE is not valid base64 JSON or JSON'
+
+        return None, 'PAYMENT-SIGNATURE is not valid base64 JSON or JSON'
+
+    def _x402_verify_with_facilitator(self, payment_payload, payment_requirements):
+        endpoint = f'{X402_FACILITATOR_URL}/verify'
+        req_payload = {
+            'x402Version': 2,
+            'paymentPayload': payment_payload,
+            'paymentRequirements': payment_requirements,
+        }
+        req = urlrequest.Request(
+            endpoint,
+            data=json.dumps(req_payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=15) as res:
+                raw = res.read().decode('utf-8', errors='replace')
+        except urlerror.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            return None, f'facilitator verify HTTP {exc.code}: {detail[:200]}'
+        except Exception as exc:
+            return None, f'facilitator verify error: {str(exc)}'
+
+        try:
+            data = json.loads(raw or '{}')
+        except Exception:
+            return None, 'facilitator verify returned non-JSON'
+        return data, ''
+
+    def _x402_settle_with_facilitator(self, payment_payload, payment_requirements):
+        endpoint = f'{X402_FACILITATOR_URL}/settle'
+        req_payload = {
+            'x402Version': 2,
+            'paymentPayload': payment_payload,
+            'paymentRequirements': payment_requirements,
+        }
+        req = urlrequest.Request(
+            endpoint,
+            data=json.dumps(req_payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=20) as res:
+                raw = res.read().decode('utf-8', errors='replace')
+        except urlerror.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            return None, f'facilitator settle HTTP {exc.code}: {detail[:200]}'
+        except Exception as exc:
+            return None, f'facilitator settle error: {str(exc)}'
+
+        try:
+            data = json.loads(raw or '{}')
+        except Exception:
+            return None, 'facilitator settle returned non-JSON'
+        return data, ''
+
+    def _respond_x402_payment_required(self, path_only, error_message, invalid_reason=''):
+        payload = self._x402_payment_required_payload(path_only, error_message, invalid_reason=invalid_reason)
+        headers = {'PAYMENT-REQUIRED': self._x402_b64_json(payload)}
+        self.respond(402, payload, headers=headers)
+
+    def _x402_enforce(self, path_only):
+        self._x402_payment_response_b64 = ''
+        if not X402_ENABLED or not self._x402_route_matches(path_only):
+            return True
+        if X402_BYPASS_OPERATOR and self._operator_bearer_ok():
+            return True
+
+        payment_signature = str(self.headers.get('PAYMENT-SIGNATURE', '')).strip()
+        if not payment_signature:
+            payment_signature = str(self.headers.get('X-PAYMENT-SIGNATURE', '')).strip()
+        if not payment_signature:
+            self._respond_x402_payment_required(path_only, 'PAYMENT-SIGNATURE header is required')
+            return False
+
+        if X402_VERIFY_MODE == 'none':
+            # Partial mode: require x402 proof header but do not verify cryptographically.
+            return True
+
+        payment_payload, parse_err = self._x402_parse_signature(payment_signature)
+        if parse_err:
+            self._respond_x402_payment_required(path_only, 'invalid PAYMENT-SIGNATURE payload', invalid_reason=parse_err)
+            return False
+
+        payment_requirements = self._x402_payment_requirements()
+        verify_result, verify_err = self._x402_verify_with_facilitator(payment_payload, payment_requirements)
+        if verify_err:
+            self._respond_x402_payment_required(path_only, 'payment verification failed', invalid_reason=verify_err)
+            return False
+        if not bool((verify_result or {}).get('isValid')):
+            invalid_reason = str((verify_result or {}).get('invalidReason') or 'invalid_payment')
+            self._respond_x402_payment_required(path_only, 'payment verification failed', invalid_reason=invalid_reason)
+            return False
+
+        if X402_SETTLE_ON_SUCCESS:
+            settle_result, settle_err = self._x402_settle_with_facilitator(payment_payload, payment_requirements)
+            if settle_err:
+                self._respond_x402_payment_required(path_only, 'payment settlement failed', invalid_reason=settle_err)
+                return False
+            if not bool((settle_result or {}).get('success')):
+                invalid_reason = str((settle_result or {}).get('errorReason') or 'payment_settlement_failed')
+                self._respond_x402_payment_required(path_only, 'payment settlement failed', invalid_reason=invalid_reason)
+                return False
+            self._x402_payment_response_b64 = self._x402_b64_json(settle_result)
+
+        return True
+
+    def respond(self, code, data, headers=None):
         body = json.dumps(data).encode()
         self.send_response(code)
         self.send_header('Content-Type', 'application/json')
         allowed_origin = self._get_allowed_origin()
         if allowed_origin:
             self.send_header('Access-Control-Allow-Origin', allowed_origin)
+        self.send_header('Access-Control-Expose-Headers', 'PAYMENT-REQUIRED, PAYMENT-RESPONSE')
+        header_map = headers if isinstance(headers, dict) else {}
+        lower_headers = {str(k).lower() for k in header_map.keys()}
+        settlement_b64 = getattr(self, '_x402_payment_response_b64', '')
+        if code < 400 and settlement_b64 and 'payment-response' not in lower_headers:
+            self.send_header('PAYMENT-RESPONSE', settlement_b64)
+        for key, value in header_map.items():
+            if value is None:
+                continue
+            self.send_header(str(key), str(value))
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1445,7 +1935,8 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         if allowed_origin:
             self.send_header('Access-Control-Allow-Origin', allowed_origin)
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Agent-Token, X-Idempotency-Key')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Agent-Token, X-Idempotency-Key, PAYMENT-SIGNATURE, X-PAYMENT-SIGNATURE')
+        self.send_header('Access-Control-Expose-Headers', 'PAYMENT-REQUIRED, PAYMENT-RESPONSE')
         self.end_headers()
 
     def _proxy_ollama(self, path_only):
@@ -1667,10 +2158,29 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             return True
         return verify_operator_session_token(provided)
 
-    def _nightpay_agent_profile(self, row, db=None):
+    def _nightpay_agent_profile(self, row, db=None, identity_row=None):
         if not row:
             return None
         agent = dict(row)
+        metadata = safe_json_loads(agent.get('metadata'), {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        if identity_row is None and db:
+            identity_row = db.execute(
+                '''SELECT *
+                   FROM agent_identities
+                   WHERE agent_id = ?
+                     AND revoked_at IS NULL
+                   ORDER BY verified_at DESC, updated_at DESC
+                   LIMIT 1''',
+                (agent.get('agent_id'),)
+            ).fetchone()
+        identity = dict(identity_row) if identity_row else None
+        identity_metadata = safe_json_loads(identity.get('metadata'), {}) if identity else {}
+        if not isinstance(identity_metadata, dict):
+            identity_metadata = {}
+
         capabilities = normalize_string_list(safe_json_loads(agent.get('capabilities'), []), max_items=32, max_len=64)
         showcase = normalize_showcase_entries(safe_json_loads(agent.get('showcase'), []), max_items=8)
         credibility = compute_agent_credibility(db, agent.get('agent_id'), capabilities=capabilities) if db else {
@@ -1680,6 +2190,91 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             'features': {},
             'signals': {}
         }
+
+        addresses = []
+        address_seen = set()
+
+        def append_addresses(entries):
+            if not isinstance(entries, list):
+                return
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                network = str(item.get('network') or '').strip().lower()[:40] or 'other'
+                kind = str(item.get('kind') or '').strip().lower()[:40] or 'wallet'
+                value = str(item.get('address') or '').strip()[:256]
+                if not value:
+                    continue
+                key = (network, kind, value.lower())
+                if key in address_seen:
+                    continue
+                address_seen.add(key)
+                addresses.append({
+                    'network': network,
+                    'kind': kind,
+                    'address': value,
+                    'source': str(item.get('source') or 'metadata').strip().lower()[:40] or 'metadata',
+                    'verified': bool(item.get('verified', False)),
+                })
+
+        if identity:
+            chain = str(identity.get('chain') or '').strip().lower() or 'cardano'
+            identity_seed = {
+                'midnight_address': identity.get('midnight_address'),
+                'cardano_stake_address': identity.get('cardano_stake_addr'),
+                'addresses': [
+                    {
+                        'network': chain,
+                        'kind': 'wallet',
+                        'address': identity.get('wallet_address'),
+                        'source': 'identity',
+                        'verified': True,
+                    },
+                ],
+            }
+            append_addresses(normalize_agent_address_entries(identity_seed, source='identity', verified_default=True))
+            append_addresses(normalize_agent_address_entries(identity_metadata, source='identity', verified_default=True))
+
+        append_addresses(normalize_agent_address_entries(metadata, source='metadata', verified_default=False))
+
+        midnight_addresses = sum(1 for item in addresses if item.get('network') == 'midnight')
+        cardano_addresses = sum(1 for item in addresses if item.get('network') == 'cardano')
+        verified_identity = bool(identity)
+        address_coverage = min(1.0, float(len(addresses)) / 4.0)
+        midnight_presence = 1.0 if midnight_addresses > 0 else 0.0
+        identity_presence = 1.0 if verified_identity else 0.0
+        zk_score = round(((0.5 * identity_presence) + (0.35 * midnight_presence) + (0.15 * address_coverage)) * 100.0, 2)
+
+        credibility_features = dict(credibility.get('features') or {})
+        credibility_signals = dict(credibility.get('signals') or {})
+        credibility_features['identity_verified'] = round(identity_presence, 4)
+        credibility_features['midnight_presence'] = round(midnight_presence, 4)
+        credibility_features['address_coverage'] = round(address_coverage, 4)
+        credibility_signals['identity_verified'] = 1 if verified_identity else 0
+        credibility_signals['published_addresses'] = len(addresses)
+        credibility_signals['midnight_addresses'] = midnight_addresses
+        credibility_signals['cardano_addresses'] = cardano_addresses
+        credibility = dict(credibility)
+        credibility['features'] = credibility_features
+        credibility['signals'] = credibility_signals
+
+        identity_payload = None
+        if identity:
+            identity_payload = {
+                'verified': True,
+                'algorithm': identity.get('algorithm') or '',
+                'chain': identity.get('chain') or '',
+                'wallet_address': identity.get('wallet_address') or '',
+                'midnight_address': identity.get('midnight_address') or '',
+                'cardano_stake_address': identity.get('cardano_stake_addr') or '',
+                'masumi_agent_id': identity.get('masumi_agent_id') or '',
+                'fingerprint_hash': identity.get('fingerprint_hash') or '',
+                'public_key_hash': identity.get('public_key_hash') or '',
+                'verified_at': identity.get('verified_at'),
+                'updated_at': identity.get('updated_at'),
+                'metadata': identity_metadata,
+            }
+
         return {
             'agent_id': agent.get('agent_id'),
             'name': agent.get('name'),
@@ -1689,9 +2284,12 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             'model_provider': agent.get('model_provider') or '',
             'model_name': agent.get('model_name') or '',
             'endpoint_url': agent.get('endpoint_url') or '',
-            'metadata': safe_json_loads(agent.get('metadata'), {}),
+            'metadata': metadata,
             'credibility_score': credibility['score'],
             'credibility': credibility,
+            'zk_score': zk_score,
+            'identity': identity_payload,
+            'addresses': addresses,
             'created_at': agent.get('created_at'),
             'updated_at': agent.get('updated_at'),
         }
@@ -1721,8 +2319,13 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             (scan_limit,)
         ).fetchall()
         profiles = []
+        identity_map = latest_agent_identities_map(db, [row['agent_id'] for row in rows])
         for row in rows:
-            profile = self._nightpay_agent_profile(row, db=db)
+            profile = self._nightpay_agent_profile(
+                row,
+                db=db,
+                identity_row=identity_map.get(str(row['agent_id'] or '').strip())
+            )
             caps = [str(c).strip().lower() for c in profile.get('capabilities', []) if str(c).strip()]
             if capability_filter:
                 if not any(capability_filter in cap for cap in caps):
@@ -1769,6 +2372,22 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 
         if self._proxy_ollama(path_only):
             return
+        if not self._x402_enforce(path_only):
+            return
+
+        if path_only.startswith('/agents/'):
+            raw_agent_id = path_only[len('/agents/'):]
+            agent_id = str(unquote(raw_agent_id)).strip()
+            if not agent_id:
+                self.respond(400, {'error': 'missing agent_id'})
+                return
+            db = get_db()
+            row = db.execute('SELECT * FROM agents WHERE agent_id = ?', (agent_id,)).fetchone()
+            if not row:
+                self.respond(404, {'error': 'agent not found', 'agent_id': agent_id})
+                return
+            self.respond(200, self._nightpay_agent_profile(row, db=db))
+            return
 
         if path_only == '/agents':
             db = get_db()
@@ -1777,6 +2396,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(400, {'error': err})
                 return
             self.respond(200, payload)
+            return
 
         elif path_only == '/availability':
             db = get_db()
@@ -1787,12 +2407,34 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'total_jobs': total,
                 'active_jobs': active,
                 'potential_use_cases_count': len(POTENTIAL_USE_CASES),
+                'x402': {
+                    'enabled': X402_ENABLED,
+                    'routes': list(X402_REQUIRE_ROUTES),
+                    'verify_mode': X402_VERIFY_MODE,
+                    'settle_on_success': X402_SETTLE_ON_SUCCESS,
+                    'accepts': [self._x402_payment_requirements()],
+                    'facilitator_url': X402_FACILITATOR_URL or None,
+                },
             })
 
         elif path_only == '/use_cases':
             self.respond(200, {
                 'count': len(POTENTIAL_USE_CASES),
                 'items': POTENTIAL_USE_CASES,
+            })
+
+        elif path_only == '/x402':
+            sample_route = X402_REQUIRE_ROUTES[0] if X402_REQUIRE_ROUTES else '/start_job'
+            sample_payload = self._x402_payment_required_payload(sample_route, 'PAYMENT-SIGNATURE header is required')
+            self.respond(200, {
+                'enabled': X402_ENABLED,
+                'verify_mode': X402_VERIFY_MODE,
+                'settle_on_success': X402_SETTLE_ON_SUCCESS,
+                'routes': list(X402_REQUIRE_ROUTES),
+                'accepts': [self._x402_payment_requirements()],
+                'facilitator_url': X402_FACILITATOR_URL or None,
+                'sample_payment_required': sample_payload,
+                'sample_payment_required_b64': self._x402_b64_json(sample_payload),
             })
 
         elif path_only == '/management/help':
@@ -1931,7 +2573,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'demo': True,
                 'message': 'nightpay mip003 demo endpoint',
                 'mode': MIP003_MODE,
-                'routes': ['/availability', '/use_cases', '/agents', '/ontology', '/ontology/context', '/ontology/examples', '/management/help', '/management/chat', '/input_schema', '/agent/challenge', '/agent/verify', '/start_job', '/status?job_id=...', '/provide_input?job_id=...', '/complete_job/<id>'],
+                'routes': ['/availability', '/x402', '/use_cases', '/agents', '/ontology', '/ontology/context', '/ontology/examples', '/management/help', '/management/chat', '/input_schema', '/agent/challenge', '/agent/verify', '/start_job', '/status?job_id=...', '/provide_input?job_id=...', '/complete_job/<id>'],
                 'potential_use_cases': POTENTIAL_USE_CASES,
             })
 
@@ -2118,11 +2760,12 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             })
 
         elif path_only == '/jobs':
-            # GET /jobs?status=<value>&limit=<n>&offset=<n>&approved_before=<iso8601>&search=<text>&visibility=<all|public|hidden>
+            # GET /jobs?status=<value>&limit=<n>&offset=<n>&cursor=<token>&approved_before=<iso8601>&search=<text>&visibility=<all|public|hidden>
             # used by optimistic-sweep, dashboards, and board search.
             status_filter = params.get('status', [None])[0]
             approved_before = params.get('approved_before', [None])[0]
             search_term = params.get('search', [None])[0]
+            cursor_token = params.get('cursor', [None])[0]
             visibility_filter = str(params.get('visibility', ['public'])[0]).strip().lower() or 'public'
             if visibility_filter == 'private':
                 visibility_filter = 'hidden'
@@ -2130,16 +2773,28 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             # SECURITY: clamp pagination to bounded values
             try:
                 limit = int(params.get('limit', ['100'])[0])
-                offset = int(params.get('offset', ['0'])[0])
             except ValueError:
-                self.respond(400, {'error': 'limit and offset must be integers'})
+                self.respond(400, {'error': 'limit must be an integer'})
                 return
             if limit < 1 or limit > 500:
                 self.respond(400, {'error': 'limit must be between 1 and 500'})
                 return
-            if offset < 0 or offset > 1000000:
-                self.respond(400, {'error': 'offset must be between 0 and 1000000'})
-                return
+            offset_raw = str(params.get('offset', ['0'])[0]).strip()
+            use_cursor = bool(str(cursor_token or '').strip())
+            offset = 0
+            if use_cursor:
+                if 'offset' in params and offset_raw not in ('', '0'):
+                    self.respond(400, {'error': 'cursor pagination does not allow offset > 0'})
+                    return
+            else:
+                try:
+                    offset = int(offset_raw or '0')
+                except ValueError:
+                    self.respond(400, {'error': 'offset must be an integer'})
+                    return
+                if offset < 0 or offset > 1000000:
+                    self.respond(400, {'error': 'offset must be between 0 and 1000000'})
+                    return
             if visibility_filter not in ('all', 'public', 'hidden'):
                 self.respond(400, {'error': 'visibility must be one of: all, public, private (or hidden)'})
                 return
@@ -2188,30 +2843,80 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 if search_term == '':
                     search_term = None
 
+            page_order = 'approved_asc' if approved_before else 'updated_desc'
+            query_fingerprint = _jobs_query_fingerprint(
+                status_filter=status_filter,
+                status_filter_internal=status_filter_internal,
+                approved_before=approved_before,
+                search_term=search_term,
+                visibility_filter=visibility_filter,
+            )
+            cursor_payload = None
+            if use_cursor:
+                try:
+                    cursor_payload = parse_jobs_cursor(cursor_token)
+                except ValueError as exc:
+                    self.respond(400, {'error': str(exc)})
+                    return
+                if str(cursor_payload.get('q', '')) != query_fingerprint:
+                    self.respond(400, {'error': 'cursor does not match current query filters'})
+                    return
+                if str(cursor_payload.get('o', '')) != page_order:
+                    self.respond(400, {'error': 'cursor does not match current sort order'})
+                    return
+
             db = get_db()
-            where_clauses = []
-            query_params = []
+            where_base = []
+            query_params_base = []
 
             if status_filter_internal:
-                where_clauses.append('j.status = ?')
-                query_params.append(status_filter_internal)
+                where_base.append('j.status = ?')
+                query_params_base.append(status_filter_internal)
             if approved_before:
-                where_clauses.append('j.approved_at IS NOT NULL AND j.approved_at <= ?')
-                query_params.append(approved_before)
+                where_base.append('j.approved_at IS NOT NULL AND j.approved_at <= ?')
+                query_params_base.append(approved_before)
+
+            search_backend = 'none'
             if search_term:
-                # Escape wildcard chars so search is treated as literal text.
-                esc = search_term.lower().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-                like = f'%{esc}%'
-                where_clauses.append(
-                    '(LOWER(COALESCE(j.input_data, "")) LIKE ? ESCAPE "\\" OR LOWER(j.job_id) LIKE ? ESCAPE "\\")'
-                )
-                query_params.extend([like, like])
+                fts_query = build_jobs_fts_query(search_term)
+                if JOBS_FTS_AVAILABLE and fts_query:
+                    where_base.append('j.rowid IN (SELECT rowid FROM jobs_fts WHERE jobs_fts MATCH ?)')
+                    query_params_base.append(fts_query)
+                    search_backend = 'fts'
+                else:
+                    append_jobs_like_search(where_base, query_params_base, search_term)
+                    search_backend = 'like'
             if visibility_filter in ('public', 'hidden'):
-                where_clauses.append('COALESCE(j.visibility, "public") = ?')
-                query_params.append(visibility_filter)
+                where_base.append('COALESCE(j.visibility, "public") = ?')
+                query_params_base.append(visibility_filter)
+
+            where_page = list(where_base)
+            query_params_page = list(query_params_base)
+            if use_cursor and cursor_payload:
+                if page_order == 'approved_asc':
+                    cursor_approved_at = str(cursor_payload.get('a', '')).strip()
+                    cursor_job_id = str(cursor_payload.get('j', '')).strip()
+                    if not cursor_approved_at or not cursor_job_id:
+                        self.respond(400, {'error': 'cursor payload missing approved_at/job_id'})
+                        return
+                    where_page.append('(j.approved_at > ? OR (j.approved_at = ? AND j.job_id > ?))')
+                    query_params_page.extend([cursor_approved_at, cursor_approved_at, cursor_job_id])
+                else:
+                    cursor_updated_at = str(cursor_payload.get('u', '')).strip()
+                    cursor_job_id = str(cursor_payload.get('j', '')).strip()
+                    if not cursor_updated_at or not cursor_job_id:
+                        self.respond(400, {'error': 'cursor payload missing updated_at/job_id'})
+                        return
+                    where_page.append('(j.updated_at < ? OR (j.updated_at = ? AND j.job_id > ?))')
+                    query_params_page.extend([cursor_updated_at, cursor_updated_at, cursor_job_id])
+
+            count_sql = 'SELECT COUNT(*) AS total FROM jobs j '
+            if where_base:
+                count_sql += 'WHERE ' + ' AND '.join(where_base)
+            total_matches = int(db.execute(count_sql, tuple(query_params_base)).fetchone()['total'])
 
             sql = (
-                'SELECT j.job_id, j.status, j.started_at, j.approved_at, j.amount_specks, j.input_data, j.assigned_agent_id, j.visibility, '
+                'SELECT j.job_id, j.status, j.started_at, j.updated_at, j.approved_at, j.amount_specks, j.input_data, j.assigned_agent_id, j.visibility, '
                 'COALESCE(c.claims_count, 0) AS claims_count, '
                 'COALESCE(v.approve_votes, 0) AS approve_votes, '
                 'COALESCE(v.reject_votes, 0) AS reject_votes '
@@ -2222,19 +2927,25 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'SUM(CASE WHEN vote = "reject" THEN 1 ELSE 0 END) AS reject_votes '
                 'FROM job_votes GROUP BY job_id) v ON v.job_id = j.job_id '
             )
-            if where_clauses:
-                sql += 'WHERE ' + ' AND '.join(where_clauses) + ' '
+            if where_page:
+                sql += 'WHERE ' + ' AND '.join(where_page) + ' '
             if approved_before:
                 sql += 'ORDER BY j.approved_at ASC, j.job_id ASC '
             else:
                 sql += 'ORDER BY j.updated_at DESC, j.job_id ASC '
-            sql += 'LIMIT ? OFFSET ?'
+            sql += 'LIMIT ?'
 
-            query_params.extend([limit, offset])
-            rows = db.execute(sql, tuple(query_params)).fetchall()
+            query_params_page.append(limit + 1)
+            if not use_cursor:
+                sql += ' OFFSET ?'
+                query_params_page.append(offset)
+            rows = db.execute(sql, tuple(query_params_page)).fetchall()
+            has_more_raw = len(rows) > limit
+            page_rows = rows[:limit]
+            cursor_row = page_rows[-1] if page_rows else None
 
             jobs = []
-            for r in rows:
+            for r in page_rows:
                 j = dict(r)
                 if j.get('input_data'):
                     try:
@@ -2250,12 +2961,31 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if MIP003_MODE == 'strict' and status_filter and status_filter_internal is None:
                 jobs = [j for j in jobs if j.get('status') == status_filter]
 
+            next_cursor = None
+            if has_more_raw and cursor_row is not None:
+                cursor_payload_next = {
+                    'v': 1,
+                    'q': query_fingerprint,
+                    'o': page_order,
+                    'j': str(cursor_row['job_id']),
+                }
+                if page_order == 'approved_asc':
+                    cursor_payload_next['a'] = str(cursor_row['approved_at'] or '')
+                else:
+                    cursor_payload_next['u'] = str(cursor_row['updated_at'] or '')
+                next_cursor = make_jobs_cursor(cursor_payload_next)
+
+            has_more = has_more_raw if use_cursor else (offset + len(jobs)) < total_matches
             self.respond(200, {
                 'jobs': jobs,
                 'limit': limit,
                 'offset': offset,
                 'count': len(jobs),
-                'has_more': len(jobs) == limit
+                'total': total_matches,
+                'has_more': has_more,
+                'cursor': cursor_token if use_cursor else None,
+                'next_cursor': next_cursor,
+                'search_backend': search_backend,
             })
 
         else:
@@ -2270,6 +3000,8 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if self._proxy_ollama(path_only):
+            return
+        if not self._x402_enforce(path_only):
             return
 
         body = self._read_body()
@@ -2487,6 +3219,108 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'UPDATE agent_challenges SET used_at = ? WHERE challenge_id = ?',
                 (now_iso, challenge_id)
             )
+
+            existing_profile = db.execute(
+                'SELECT * FROM agents WHERE agent_id = ?',
+                (agent_id,)
+            ).fetchone()
+            profile_metadata = safe_json_loads(existing_profile['metadata'], {}) if existing_profile else {}
+            if not isinstance(profile_metadata, dict):
+                profile_metadata = {}
+            if isinstance(metadata, dict):
+                profile_metadata.update(metadata)
+
+            published_identity_addresses = normalize_agent_address_entries(
+                {
+                    'midnight_address': midnight_address,
+                    'cardano_stake_address': cardano_stake_addr,
+                    'addresses': [
+                        {
+                            'network': chain or 'cardano',
+                            'kind': 'wallet',
+                            'address': wallet_address,
+                            'source': 'identity',
+                            'verified': True,
+                        },
+                    ],
+                },
+                source='identity',
+                verified_default=True,
+            )
+
+            combined_addresses = []
+            address_seen = set()
+            for item in normalize_agent_address_entries(profile_metadata, source='metadata', verified_default=False) + published_identity_addresses:
+                network = str(item.get('network') or '').strip().lower()[:40] or 'other'
+                kind = str(item.get('kind') or '').strip().lower()[:40] or 'wallet'
+                value = str(item.get('address') or '').strip()[:256]
+                if not value:
+                    continue
+                key = (network, kind, value.lower())
+                if key in address_seen:
+                    continue
+                address_seen.add(key)
+                combined_addresses.append({
+                    'network': network,
+                    'kind': kind,
+                    'address': value,
+                    'source': str(item.get('source') or 'metadata').strip().lower()[:40] or 'metadata',
+                    'verified': bool(item.get('verified', False)),
+                })
+
+            if wallet_address:
+                profile_metadata['wallet_address'] = wallet_address
+            if midnight_address:
+                profile_metadata['midnight_address'] = midnight_address
+            if cardano_stake_addr:
+                profile_metadata['cardano_stake_address'] = cardano_stake_addr
+            profile_metadata['identity_verified'] = True
+            profile_metadata['identity_verified_at'] = now_iso
+            profile_metadata['addresses'] = combined_addresses
+
+            existing_caps = normalize_string_list(
+                safe_json_loads(existing_profile['capabilities'], []) if existing_profile else [],
+                max_items=32,
+                max_len=64
+            )
+            existing_showcase = normalize_showcase_entries(
+                safe_json_loads(existing_profile['showcase'], []) if existing_profile else [],
+                max_items=8
+            )
+            profile_name = (existing_profile['name'] if existing_profile else '') or agent_id
+            profile_description = (existing_profile['description'] if existing_profile else '') or 'Verified NightPay agent profile.'
+            profile_created_at = existing_profile['created_at'] if existing_profile else now_iso
+
+            db.execute(
+                '''INSERT INTO agents(
+                       agent_id, name, description, capabilities, showcase,
+                       model_provider, model_name, endpoint_url, metadata, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(agent_id) DO UPDATE SET
+                       name = excluded.name,
+                       description = excluded.description,
+                       capabilities = excluded.capabilities,
+                       showcase = excluded.showcase,
+                       model_provider = excluded.model_provider,
+                       model_name = excluded.model_name,
+                       endpoint_url = excluded.endpoint_url,
+                       metadata = excluded.metadata,
+                       updated_at = excluded.updated_at''',
+                (
+                    agent_id,
+                    profile_name,
+                    profile_description,
+                    json.dumps(existing_caps),
+                    json.dumps(existing_showcase),
+                    (existing_profile['model_provider'] if existing_profile else '') or '',
+                    (existing_profile['model_name'] if existing_profile else '') or '',
+                    (existing_profile['endpoint_url'] if existing_profile else '') or '',
+                    json.dumps(profile_metadata),
+                    profile_created_at,
+                    now_iso,
+                )
+            )
+
             self._cleanup_agent_challenges(db, now_iso)
             db.commit()
 
@@ -3371,9 +4205,13 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             )
             db.commit()
             if strict_semantics:
+                input_hash = canonical_input_hash(input_payload if isinstance(input_payload, dict) else {})
+                ack_signature = make_input_ack_signature(job_id, status_event_id, input_hash)
                 self.respond(200, {
                     'id': status_event_id,
                     'job_id': job_id,
+                    'input_hash': input_hash,
+                    'signature': ack_signature,
                     'status': event_status,
                     'internal_status': next_status,
                     'approved_at': approved_at,
@@ -3775,10 +4613,12 @@ print(f'[nightpay] MIP-003 threaded service ready on port {PORT}')
 print(f'[nightpay] DB: {DB_PATH}')
 print(f"[nightpay] Optimistic window: {OPTIMISTIC_WINDOW_HOURS}h | Multisig threshold: {MULTISIG_THRESHOLD_SPECKS} specks | Fee: {os.environ.get('OPERATOR_FEE_BPS','200')} bps")
 print(f'[nightpay] MIP003 mode: {MIP003_MODE}')
+print(f"[nightpay] Jobs search backend: {'fts5' if JOBS_FTS_AVAILABLE else 'like'}")
 print(f'[nightpay] Idempotency TTL: {IDEMPOTENCY_TTL_SECONDS}s (X-Idempotency-Key)')
 print(f'[nightpay] Agent identity enforce: {AGENT_IDENTITY_ENFORCE} | challenge TTL: {AGENT_CHALLENGE_TTL_SECONDS}s | token TTL: {AGENT_VERIFIED_TOKEN_TTL_SECONDS}s')
 print(f'[nightpay] Management LLM: enabled={MANAGEMENT_LLM_ENABLED} | url={MANAGEMENT_LLM_URL} | model={MANAGEMENT_LLM_MODEL} | timeout={MANAGEMENT_LLM_TIMEOUT_SECONDS}s')
-endpoints = '/availability /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /complete_job/<id> /complete_job?job_id= /dispute/<id> /jobs?status=&limit=&offset=&approved_before=&search=&visibility='
+print(f'[nightpay] x402: enabled={X402_ENABLED} | routes={",".join(X402_REQUIRE_ROUTES)} | verify_mode={X402_VERIFY_MODE} | settle_on_success={X402_SETTLE_ON_SUCCESS}')
+endpoints = '/availability /x402 /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /complete_job/<id> /complete_job?job_id= /dispute/<id> /jobs?status=&limit=&offset=&cursor=&approved_before=&search=&visibility='
 print(f'[nightpay] Endpoints: {endpoints}')
 httpd.serve_forever()
 PYCODE
