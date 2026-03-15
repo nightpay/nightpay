@@ -136,7 +136,6 @@ jobs:
           if [ -n "${HETZNER_MASUMI_DIR:-}" ]; then
             args+=(--masumi-dir "$HETZNER_MASUMI_DIR")
           fi
-            args+=(--skip-masumi-recreate)
           bash bin/deploy-hetzner-ci.sh "${args[@]}"
 
       - name: Validate Web Endpoints (Production Gate)
