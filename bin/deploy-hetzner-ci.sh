@@ -492,6 +492,10 @@ compose = Path("docker-compose.yml")
 text = compose.read_text()
 
 replacements = {
+    "3000:3000": "127.0.0.1:3000:3000",
+    "3001:3001": "127.0.0.1:3001:3001",
+    "13000:3000": "127.0.0.1:13000:3000",
+    "13001:3001": "127.0.0.1:13001:3001",
     "5432:5432": "127.0.0.1:5432:5432",
     "5433:5432": "127.0.0.1:5433:5432",
     "15432:5432": "127.0.0.1:15432:5432",
@@ -501,9 +505,9 @@ for src, dst in replacements.items():
     text = text.replace(f'"{src}"', f'"{dst}"')
     text = text.replace(f"'{src}'", f"'{dst}'")
 
-bad = re.findall(r'(?<!127\.0\.0\.1:)(?:5432|5433|15432|15433):5432', text)
+bad = re.findall(r'(?<!127\.0\.0\.1:)(?:(?:3000|13000):3000|(?:3001|13001):3001|(?:5432|5433|15432|15433):5432)', text)
 if bad:
-    print("ERROR: docker-compose.yml still contains non-loopback Postgres port mappings:", sorted(set(bad)), file=sys.stderr)
+    print("ERROR: docker-compose.yml still contains non-loopback internal port mappings:", sorted(set(bad)), file=sys.stderr)
     sys.exit(1)
 
 compose.write_text(text)
@@ -539,13 +543,13 @@ run_ssh "\
     echo 'masumi_db_ports=skipped'; \
     exit 0; \
   fi; \
-  exposed=\$(ss -ltn | awk 'NR>1 && \$4 ~ /:(5432|5433|15432|15433)\$/ && \$4 !~ /^127\\.0\\.0\\.1:/ {print \$4}'); \
+  exposed=\$(ss -ltn | awk 'NR>1 && \$4 ~ /:(3000|3001|13000|13001|5432|5433|15432|15433)\$/ && \$4 !~ /^127\\.0\\.0\\.1:/ {print \$4}'); \
   if [[ -n \"\$exposed\" ]]; then \
-    echo 'ERROR: Masumi Postgres ports are publicly reachable:' >&2; \
+    echo 'ERROR: Masumi internal ports are publicly reachable:' >&2; \
     echo \"\$exposed\" >&2; \
     exit 1; \
   fi; \
-  echo 'masumi_db_ports=private'"
+  echo 'masumi_internal_ports=private'"
 
 MIP_PORT_CHECK="${MIP_PORT:-8090}"
 UI_PORT_CHECK="${UI_PORT:-3333}"

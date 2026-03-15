@@ -52,7 +52,7 @@ Configure these in GitHub before relying on auto-deploy:
 After these are set, every push to `master` (or `main`) triggers deploy + Docker recreate + health checks.
 Submodule token checks are fail-fast: deploy now stops immediately if `ui` or `bridge` private repo access is missing.
 Production now has a mandatory web gate: deploy fails unless site/board/api/bridge URLs are healthy.
-Masumi DB ports are now enforced as private-only: deploy forces Postgres mappings to `127.0.0.1` and fails if `5432/5433/15432/15433` are publicly bound.
+Masumi internal ports are now enforced as private-only: deploy forces service and DB mappings to `127.0.0.1` and fails if `3000/3001/13000/13001/5432/5433/15432/15433` are publicly bound.
 
 ## 2.2) Optional staging auto-deploy (`staging` branch)
 
