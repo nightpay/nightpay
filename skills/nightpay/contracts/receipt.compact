@@ -38,6 +38,19 @@ module NightPay {
   // DARK ENERGY: gateway address locked at init — cannot be injected per-transaction.
   ledger gatewayAddress: Bytes<32>;
 
+  // Total number of individual funding contributions — used for fundingTree capacity guard.
+  ledger fundingCount: Counter;
+
+  // H-1: per-pool running total of contributions — activatePool verifies totalFunded against this.
+  ledger poolFundedAmounts: Map<Bytes<32>, Field>;
+
+  // H-2: running total of infrastructure fees retained — caps what the operator can withdraw.
+  ledger accumulatedFees: Counter;
+
+  // H-3: gateway authentication key (bboard pattern) — derived from gateway secret at init.
+  // expirePool and activatePool verify the caller knows the corresponding secret key.
+  ledger gatewayAuthKey: Bytes<32>;
+
   // FAILSAFE: monotonic transaction counter — incremented on every state-changing call.
   // Used as a crude on-chain clock for emergency refunds when the gateway disappears.
   // Compact has no block/time primitives, so this is the best proxy: after enough
@@ -52,13 +65,13 @@ module NightPay {
   secret ledger nullifiers:   Set<Bytes<32>>;
 
   // ─── Domain separation prefixes ─────────────────────────────────────────────
-  const DOMAIN_BOUNTY:     Bytes<8> = 0x626f756e7479303030; // "bounty000"
-  const DOMAIN_RECEIPT:    Bytes<8> = 0x726563656970743030; // "receipt00"
-  const DOMAIN_NULLIFIER:  Bytes<8> = 0x6e756c6c6966696572; // "nullifier"
+  const DOMAIN_BOUNTY:     Bytes<9> = 0x626f756e7479303030; // "bounty000"
+  const DOMAIN_RECEIPT:    Bytes<9> = 0x726563656970743030; // "receipt00"
+  const DOMAIN_NULLIFIER:  Bytes<9> = 0x6e756c6c6966696572; // "nullifier"
   const DOMAIN_POOL:       Bytes<8> = 0x706f6f6c30303030;   // "pool0000"
-  const DOMAIN_FUNDING:    Bytes<8> = 0x66756e64696e673030; // "funding00"
-  const DOMAIN_REFUND:     Bytes<8> = 0x726566756e64303030; // "refund000"
-  const DOMAIN_EMERGENCY:  Bytes<8> = 0x656d657267656e6379; // "emergenc"
+  const DOMAIN_FUNDING:    Bytes<9> = 0x66756e64696e673030; // "funding00"
+  const DOMAIN_REFUND:     Bytes<9> = 0x726566756e64303030; // "refund000"
+  const DOMAIN_EMERGENCY:  Bytes<9> = 0x656d657267656e6379; // "emergency"
 
   // ─── Capacity limits ─────────────────────────────────────────────────────────
   const MAX_TREE_ENTRIES: Field = 30199000;  // ~90% of 2^25
@@ -77,6 +90,23 @@ module NightPay {
   // gateway to act, short enough that funds aren't locked forever.
   const EMERGENCY_TX_THRESHOLD: Field = 500;
 
+  // ─── Gateway authentication (H-3: bboard pattern) ───────────────────────────
+  // The bridge implements localGatewaySecretKey() in witnesses.ts, returning its
+  // stored secret key from private state (LevelDB). The public key is derived
+  // in-circuit — the secret never leaves the prover.
+  witness localGatewaySecretKey(): Bytes<32>;
+
+  pure circuit gatewayPublicKey(sk: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([pad(32, "nightpay:gateway:v1"), sk]);
+  }
+
+  // Internal guard — call at the top of any gateway-only circuit.
+  circuit assertGateway(): [] {
+    const sk = localGatewaySecretKey();
+    const derived = gatewayPublicKey(sk);
+    assert disclose(derived == gatewayAuthKey);
+  }
+
   // ─── Circuits ───────────────────────────────────────────────────────────────
 
   // SECURITY: guarded by initialized flag — reverts if called twice.
@@ -84,7 +114,7 @@ module NightPay {
     operatorAddr: Bytes<32>,
     gatewayAddr:  Bytes<32>,
     feeBps:       Field
-  ): Void {
+  ): [] {
     assert initialized == 0;
     assert feeBps <= 500;
     assert feeBps >= 0;
@@ -93,6 +123,12 @@ module NightPay {
     gatewayAddress  = gatewayAddr;
     operatorFeeBps  = feeBps;
     initialized     = 1;
+
+    // H-3: derive and store the gateway's auth key from its secret key.
+    // The bridge calls initialize, so localGatewaySecretKey() returns the
+    // bridge's secret. From this point on, expirePool + activatePool require
+    // proof of knowing this secret.
+    gatewayAuthKey = gatewayPublicKey(localGatewaySecretKey());
   }
 
   // ─── Pool Lifecycle ───────────────────────────────────────────────────────────
@@ -163,10 +199,15 @@ module NightPay {
     assert !nullifiers.contains(fundingRecord);
     nullifiers.insert(fundingRecord);
 
-    // SECURITY: tree capacity check
-    assert activeCount < MAX_TREE_ENTRIES;
+    // SECURITY: tree capacity check (M-2 fix — use fundingCount, not activeCount)
+    assert fundingCount < MAX_TREE_ENTRIES;
 
     fundingTree.insert(fundingRecord);
+    fundingCount.increment(1);
+
+    // H-1: track running total funded per pool — activatePool will verify against this.
+    const prevFunded = poolFundedAmounts.lookup(poolCommitment);
+    poolFundedAmounts.insert(poolCommitment, prevFunded + contributionAmount);
 
     // Hold funds in contract — no release until pool activates
     effects.retainInContract(contributionAmount);
@@ -183,22 +224,39 @@ module NightPay {
     witness poolCommitment:  Bytes<32>,
     witness poolMerkleProof: Proof<25>,
     witness totalFunded:     Field
-  ): Void {
+  ): [] {
     assert initialized == 1;
     assert totalFunded > 0;
     assert totalFunded <= MAX_AMOUNT;
+
+    // H-3: only the gateway can activate pools
+    assertGateway();
 
     // SECURITY: pool must exist
     assert poolTree.verify(poolCommitment, poolMerkleProof);
 
     // SECURITY: prevent double-activation
     assert !nullifiers.contains(poolCommitment);
+
+    // SECURITY: prevent activating an expired pool (C-1 fix)
+    // expirePool inserts hash(DOMAIN_REFUND, poolCommitment) — if that exists,
+    // funders have already been allowed to refund. Activating now would be a double-spend.
+    const expiredMarker = hash(DOMAIN_REFUND, poolCommitment);
+    assert !nullifiers.contains(expiredMarker);
+
     nullifiers.insert(poolCommitment);
 
-    // Fee split — same model as single bounties
+    // H-1: verify totalFunded matches the on-chain sum of contributions
+    const onChainTotal = poolFundedAmounts.lookup(poolCommitment);
+    assert disclose(totalFunded == onChainTotal);
+
+    // Fee split
     const fee       = totalFunded * operatorFeeBps / 10000;
     const netAmount = totalFunded - fee;
     assert fee + netAmount == totalFunded;
+
+    // H-2: record accumulated fees so withdrawFees can enforce a cap
+    accumulatedFees.increment(fee);
 
     effects.retainInContract(fee);
     effects.releaseToAddress(gatewayAddress, netAmount);
@@ -217,7 +275,7 @@ module NightPay {
     witness poolCommitment:      Bytes<32>,
     witness contributionAmount:  Field,
     witness funderAddress:       Bytes<32>
-  ): Void {
+  ): [] {
     assert initialized == 1;
     assert contributionAmount > 0;
     assert contributionAmount <= MAX_AMOUNT;
@@ -248,8 +306,11 @@ module NightPay {
   export circuit expirePool(
     witness poolCommitment:  Bytes<32>,
     witness poolMerkleProof: Proof<25>
-  ): Void {
+  ): [] {
     assert initialized == 1;
+
+    // H-3: only the gateway can expire pools
+    assertGateway();
 
     // SECURITY: pool must exist
     assert poolTree.verify(poolCommitment, poolMerkleProof);
@@ -282,7 +343,7 @@ module NightPay {
     witness nonce:               Bytes<32>,
     witness fundingMerkleProof:  Proof<25>,
     witness funderAddress:       Bytes<32>
-  ): Void {
+  ): [] {
     assert initialized == 1;
     assert contributionAmount > 0;
     assert contributionAmount <= MAX_AMOUNT;
@@ -376,10 +437,15 @@ module NightPay {
   export circuit withdrawFees(
     caller:       Bytes<32>,
     withdrawAmount: Field
-  ): Void {
+  ): [] {
     assert initialized == 1;
     assert caller == operatorAddress;
     assert withdrawAmount > 0;
+
+    // H-2: cap withdrawals to accumulated fees — operator cannot drain funder/bounty funds
+    assert withdrawAmount <= accumulatedFees.read();
+    accumulatedFees.decrement(withdrawAmount);
+
     effects.releaseToAddress(caller, withdrawAmount);
   }
 

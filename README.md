@@ -92,22 +92,34 @@ bash skills/nightpay/scripts/gateway.sh stats
 # Create pool: description, contribution (specks), goal (specks)
 bash skills/nightpay/scripts/gateway.sh create-pool "Audit XYZ contract" 10000000 50000000
 
-# Fund
+# Fund (returns memoryId when OpenShart is available)
 bash skills/nightpay/scripts/gateway.sh fund-pool <pool_commitment>
+
+# Optional pool transitions
+bash skills/nightpay/scripts/gateway.sh activate-pool <pool_commitment>
+bash skills/nightpay/scripts/gateway.sh expire-pool <pool_commitment>
 
 # Hire + complete
 bash skills/nightpay/scripts/gateway.sh find-agent "smart contract audit"
-bash skills/nightpay/scripts/gateway.sh hire-and-pay <agent_id> <pool_commitment>
-bash skills/nightpay/scripts/gateway.sh complete <job_id> <bounty_commitment>
+bash skills/nightpay/scripts/gateway.sh hire-and-pay <agent_id> "Audit XYZ contract" <commitment_hash> [refund_address]
+bash skills/nightpay/scripts/gateway.sh complete <job_id> <commitment_hash>
 
 # Refund (expired pool)
 bash skills/nightpay/scripts/gateway.sh claim-refund <pool_commitment> <funder_nullifier>
+bash skills/nightpay/scripts/gateway.sh claim-refund --memory-id <openshart_memory_id>
 
 # Emergency refund (gateway offline, 500+ tx passed)
 bash skills/nightpay/scripts/gateway.sh emergency-refund <pool_commitment> <funder_nullifier> <specks> <funded_at_tx> <nonce>
+bash skills/nightpay/scripts/gateway.sh emergency-refund --memory-id <openshart_memory_id> <specks> <funded_at_tx>
 
-# Verify receipt
-bash skills/nightpay/scripts/gateway.sh verify-receipt <receipt_hash>
+# Verify receipt (bridge endpoint)
+curl -sS -X POST "${BRIDGE_URL}/verifyReceipt" \
+  -H "Content-Type: application/json" \
+  -d '{"receiptHash":"<receipt_hash>"}'
+
+# Optional sweep helpers
+bash skills/nightpay/scripts/gateway.sh refund-unclaimed --dry-run
+bash skills/nightpay/scripts/gateway.sh optimistic-sweep --dry-run
 
 # Browse bounties
 bash skills/nightpay/scripts/bounty-board.sh stats
@@ -117,10 +129,11 @@ bash skills/nightpay/scripts/bounty-board.sh stats
 ### OpenClaw
 
 ```bash
-npx nightpay setup       # auto-detects OpenClaw, installs skill + registers it
+openclaw plugins install nightpay
+openclaw plugins enable nightpay
 ```
 
-> **Note:** `openclaw plugins install nightpay` will fail — NightPay is a **skill bundle**, not an OpenClaw plugin (it has no JS gateway extension). Use `npx nightpay setup` instead, which installs the skill files and prints the `openclaw-fragment.json` merge instructions.
+> **Note:** Preferred path is plugin install + enable (above). `npx nightpay setup` remains a fallback for non-plugin/manual setups.
 
 After setup, merge `skills/nightpay/openclaw-fragment.json` into `~/.openclaw/openclaw.json` and fill in your credentials:
 
@@ -130,6 +143,9 @@ MASUMI_API_KEY      = "your-masumi-api-key"
 OPERATOR_ADDRESS    = "your-64-char-hex-address"
 BRIDGE_URL          = "https://bridge.nightpay.dev"
 # NIGHTPAY_API_URL defaults to https://api.nightpay.dev — no change needed
+# Optional command overrides for /nightpay wallet*
+# MIDNIGHT_WALLET_CLI_BIN = "midnight"
+# OPENSHART_BIN           = "openshart"
 ```
 
 Then validate:
@@ -138,6 +154,31 @@ Then validate:
 openclaw config validate
 npx nightpay validate
 ```
+
+Optional wallet tooling for agents (`midnight-wallet-cli` + OpenShart):
+
+```bash
+npm install -g midnight-wallet-cli
+npm install -g openshart
+midnight --version
+midnight info --json
+```
+
+Inside OpenClaw, NightPay now exposes:
+
+```text
+/nightpay wallet
+/nightpay wallet status
+/nightpay wallet provision
+/nightpay wallet provision preprod
+/nightpay wallet help
+```
+
+`/nightpay wallet provision` generates a Midnight wallet and stores seed+mnemonic in OpenShart under encrypted memory.
+The command output includes only address/network/fingerprint + `memoryId` (no plaintext seed or mnemonic).
+
+This integration is optional and helps with agent-side wallet workflows (provision/balance/transfer/localnet).
+It does **not** replace NightPay's bridge-side `OPERATOR_ADDRESS` requirement (shielded 64-char hex).
 
 ### MIP-003 API
 
@@ -191,6 +232,8 @@ export X402_ACCEPT_AMOUNT="1000"           # atomic units in PAYMENT-REQUIRED
 export X402_VERIFY_MODE="none"             # none | facilitator
 export X402_FACILITATOR_URL=""             # required when verify_mode=facilitator
 export MIP003_PAYMENT_SIGNATURE=""          # optional gateway passthrough for hire-direct
+export OPENSHART_BIN="openshart"            # optional: override OpenShart command path
+export MIDNIGHT_WALLET_CLI_BIN="midnight"   # optional: override midnight-wallet-cli command
 ```
 
 ### MIP-003 Modes
@@ -298,7 +341,10 @@ The Midnight contract enforces critical guarantees via ZK circuits:
 
 - **Fee is public and immutable** — `operatorFeeBps` set once at `initialize()`, max 500 (5%)
 - **No double-funding/refund** — nullifier set rejects duplicates
+- **Gateway-only pool activation/expiry** — `activatePool` and `expirePool` require gateway auth proof
+- **Activation amount is enforced** — `activatePool` checks `totalFunded` against on-chain contribution sum
 - **No fund theft** — contract only releases to locked gateway address
+- **Operator withdrawals are capped** — `withdrawFees` is limited to accumulated fees
 - **Receipts are verifiable** — `verifyReceipt()` is public
 - **Emergency exit** — `emergencyRefund` bypasses gateway after 500+ contract txs
 
@@ -308,7 +354,7 @@ The gateway is the only trusted component. It handles deadlines, activation, and
 # Pre-flight checks before funding or accepting work
 curl -sf "$NIGHTPAY_API_URL/availability"
 bash skills/nightpay/scripts/gateway.sh stats        # feeBps, poolCount, initialized
-bash skills/nightpay/scripts/gateway.sh verify-receipt <hash>  # proves ZK system works
+curl -sS -X POST "$BRIDGE_URL/verifyReceipt" -H "Content-Type: application/json" -d '{"receiptHash":"<hash>"}'
 ```
 
 See [`skills/nightpay/SKILL.md`](skills/nightpay/SKILL.md) for the full trust checklist.
@@ -346,6 +392,8 @@ Run staging on separate local ports so it does not collide with production:
 - `staging.nightpay.dev` -> `127.0.0.1:3334`
 - `api.staging.nightpay.dev` -> `127.0.0.1:8091`
 - `bridge.staging.nightpay.dev` -> `127.0.0.1:4001` (optional, if staging bridge exists)
+
+Current CI staging deploys pass `--skip-bridge-restart` to avoid contending with the production bridge path.
 
 ```caddy
 staging.nightpay.dev {

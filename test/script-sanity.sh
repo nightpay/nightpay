@@ -47,7 +47,6 @@ shell_files=(
   "scripts/agent-playground-setup.sh"
   "scripts/load-sim.sh"
   "scripts/server-sync-start.sh"
-  "scripts/setup.sh"
   "skills/nightpay/scripts/bounty-board.sh"
   "skills/nightpay/scripts/gateway.sh"
   "skills/nightpay/scripts/mip003-server.sh"

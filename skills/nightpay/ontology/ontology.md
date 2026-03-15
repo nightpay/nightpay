@@ -30,6 +30,7 @@ Agents can call **`GET /ontology`** and **`GET /ontology/context`** to get the J
 | **ManagementAssistant** | RAG-based assistant for onboarding and navigation. |
 | **Agent** | An autonomous system that claims and performs NightPay work. |
 | **FundingCommitment** | A private contribution commitment represented only by hashes. |
+| **EncryptedWalletMemory** | OpenShart-protected seed/mnemonic record referenced by `memoryId` (no plaintext secret in chat). |
 
 ---
 
@@ -57,6 +58,12 @@ Agents can call **`GET /ontology`** and **`GET /ontology/context`** to get the J
 - You have your `funderNullifier` and `nonce` stored securely
 - Standard path: `claim-refund` via gateway
 - Emergency path: `emergencyRefund` if gateway is down AND 500+ tx have passed
+
+### When to provision a wallet
+- Agent runtime needs a fresh Midnight wallet for balance/transfer/localnet work
+- You must avoid exposing seed/mnemonic in conversation output
+- OpenShart is available (`openshart --version`) so secrets can be encrypted at rest
+- Use OpenClaw command `/nightpay wallet provision [network]` and keep only `memoryId`
 
 ---
 
@@ -199,6 +206,18 @@ curl -s "$NIGHTPAY_API_URL/status/<job_id>" -H "X-Api-Key: $MASUMI_API_KEY"
 # 7. Complete and mint receipt
 bash skills/nightpay/scripts/gateway.sh complete <job_id> <bounty_commitment>
 ```
+
+### Example 4: Encrypted Wallet Provisioning (OpenClaw Plugin)
+
+```text
+/nightpay wallet provision preprod
+```
+
+Expected behavior:
+- Creates a wallet via `midnight generate --json`
+- Stores `seed` + `mnemonic` in OpenShart (`NIGHTPAY_FUNDING`)
+- Returns only: address, network, seed fingerprint, and `memoryId`
+- Never prints plaintext seed or mnemonic to the chat
 
 ---
 

@@ -6,6 +6,8 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, cpSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_SRC = join(__dirname, "skills", "nightpay");
@@ -106,8 +108,9 @@ const OPERATING_MODEL = [
   "",
   "WALLET CONNECTIVITY",
   "  Masumi:   NIGHTPAY_API_URL (MIP-003, /availability /start_job /status)",
-  "  Cardano:  OPERATOR_ADDRESS (64-char hex, receives operator fees on settlement)",
+  "  Midnight: OPERATOR_ADDRESS (shielded 64-char hex, set at initialize())",
   "  Midnight: BRIDGE_URL/health (ZK contract, auto-discovered contractAddress)",
+  "  Optional: midnight-wallet-cli / midnight-wallet-mcp for agent wallet ops",
   "  Keys:     MASUMI_API_KEY + OPERATOR_SECRET_KEY + RECEIPT_CONTRACT_ADDRESS",
   "",
   "ACTIVATION PHRASES",
@@ -116,6 +119,8 @@ const OPERATING_MODEL = [
   "",
   "COMMANDS",
   "  /nightpay status  -- config + bridge + connectivity check",
+  "  /nightpay wallet  -- optional midnight-wallet-cli status",
+  "  /nightpay wallet help -- install + MCP wiring hints",
   "  /nightpay help    -- this message",
   "  /nightpay <task>  -- delegate task to nightpay skill",
   "",
@@ -123,6 +128,31 @@ const OPERATING_MODEL = [
   "  skills/nightpay/SKILL.md              -- full tool reference, trust model",
   "  skills/nightpay/AGENTS.md             -- roles, decision trees, guardrails",
   "  skills/nightpay/ontology/ontology.md  -- concepts, lifecycle states, examples",
+].join("\n");
+
+const WALLET_CLI_HELP = [
+  "NightPay wallet helper (optional)",
+  "",
+  "Install:",
+  "  npm install -g midnight-wallet-cli",
+  "  npm install -g openshart",
+  "",
+  "Quick checks:",
+  "  midnight --version",
+  "  midnight info --json",
+  "  midnight balance --json",
+  "",
+  "Provision encrypted wallet seed (no seed/mnemonic in chat output):",
+  "  /nightpay wallet provision",
+  "  /nightpay wallet provision preprod",
+  "",
+  "MCP server command (for agent runtimes):",
+  "  midnight-wallet-mcp",
+  "",
+  "Notes:",
+  "  - Provision uses OpenShart and stores secrets in compartment NIGHTPAY_FUNDING.",
+  "  - This CLI manages wallet files for transfers and localnet workflows.",
+  "  - NightPay OPERATOR_ADDRESS is still the bridge-side shielded 64-char hex value.",
 ].join("\n");
 
 function resolveEnv(config) {
@@ -163,6 +193,294 @@ function detectIntent(prompt, messages) {
     if (WEAK_TRIGGERS.some((t) => recent.includes(t))) return "brief";
   }
   return "none";
+}
+
+function runCommand(command, args, timeoutMs = 7000) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout: timeoutMs,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const stdout = String(result.stdout ?? "").trim();
+  const stderr = String(result.stderr ?? "").trim();
+  let parsed = null;
+  if (stdout) {
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  return {
+    ok: result.status === 0,
+    status: result.status ?? 1,
+    stdout,
+    stderr,
+    parsed,
+    errorCode: result.error?.code ?? "",
+    errorMessage: result.error?.message ?? "",
+  };
+}
+
+function parseCommandSpec(raw, fallback = "") {
+  const value = String(raw || fallback || "").trim();
+  if (!value) return null;
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return null;
+  return {
+    command: parts[0],
+    args: parts.slice(1),
+    label: value,
+  };
+}
+
+function runCommandSpec(spec, args, timeoutMs = 7000) {
+  if (!spec) {
+    return { ok: false, status: 1, stdout: "", stderr: "", parsed: null, errorCode: "ENOENT", errorMessage: "command spec missing" };
+  }
+  return runCommand(spec.command, [...spec.args, ...args], timeoutMs);
+}
+
+function detectOpenShart(env, options = {}) {
+  const allowNpx = options.allowNpx === true;
+  const configured = parseCommandSpec(env.OPENSHART_BIN || process.env.OPENSHART_BIN || "");
+  const defaults = [parseCommandSpec("openshart")];
+  if (allowNpx) defaults.push(parseCommandSpec("npx openshart"));
+  const normalizedDefaults = defaults.filter(Boolean);
+  const candidates = [];
+  if (configured) candidates.push(configured);
+  candidates.push(...normalizedDefaults);
+
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (seen.has(candidate.label)) continue;
+    seen.add(candidate.label);
+    const result = runCommandSpec(candidate, ["--version"], 5000);
+    if (result.ok) {
+      return {
+        available: true,
+        spec: candidate,
+        version: result.stdout || "",
+      };
+    }
+  }
+
+  return {
+    available: false,
+    spec: configured || normalizedDefaults[0] || parseCommandSpec("openshart"),
+    version: "",
+  };
+}
+
+function storeWalletSecret(shartSpec, payload, tags) {
+  const content = JSON.stringify(payload);
+  const result = runCommandSpec(
+    shartSpec,
+    [
+      "store",
+      "--content",
+      content,
+      "--classification",
+      "CONFIDENTIAL",
+      "--tags",
+      tags,
+      "--compartments",
+      "NIGHTPAY_FUNDING",
+    ],
+    12000,
+  );
+
+  if (!result.ok) return { ok: false, id: "" };
+  const id = String(result.parsed?.id || "").trim();
+  if (!id) return { ok: false, id: "" };
+  return { ok: true, id };
+}
+
+function normalizeWalletNetwork(raw, fallback) {
+  const value = String(raw || fallback || "").trim().toLowerCase();
+  if (!value) return "preprod";
+  if (value === "kukolu") return "mainnet";
+  return value;
+}
+
+function provisionWalletEncrypted(env, requestedNetwork = "") {
+  const walletProbe = probeWalletCli(env);
+  if (!walletProbe.available) {
+    return {
+      ok: false,
+      text:
+        "Wallet provisioning requires midnight-wallet-cli.\n" +
+        "Install: npm install -g midnight-wallet-cli\n" +
+        "Then run: /nightpay wallet provision",
+    };
+  }
+
+  const shartProbe = detectOpenShart(env, { allowNpx: true });
+  if (!shartProbe.available) {
+    return {
+      ok: false,
+      text:
+        "Encrypted seed storage requires OpenShart.\n" +
+        "Install: npm install -g openshart\n" +
+        "Optional override: set OPENSHART_BIN in skills.entries.nightpay.env\n" +
+        "No wallet was provisioned because encrypted storage is mandatory for this flow.",
+    };
+  }
+
+  const network = normalizeWalletNetwork(requestedNetwork, env.MIDNIGHT_NETWORK || DEFAULTS.MIDNIGHT_NETWORK);
+  const generateResult = runCommand(walletProbe.command, ["generate", "--network", network, "--json"], 20000);
+  if (!generateResult.ok || !generateResult.parsed || generateResult.parsed.error) {
+    const msg = String(generateResult.parsed?.message || generateResult.stderr || generateResult.errorMessage || "wallet generate failed").trim();
+    return {
+      ok: false,
+      text:
+        "Wallet provisioning failed before secret storage.\n" +
+        `Reason: ${msg}`,
+    };
+  }
+
+  const wallet = generateResult.parsed;
+  const seed = String(wallet.seed || "").trim();
+  const mnemonic = String(wallet.mnemonic || "").trim();
+  const address = String(wallet.address || "").trim();
+  const walletFile = String(wallet.file || "").trim();
+  const walletNetwork = String(wallet.network || network).trim();
+
+  if (!seed || !mnemonic) {
+    if (walletFile && existsSync(walletFile)) {
+      try { rmSync(walletFile, { force: true }); } catch {}
+    }
+    return {
+      ok: false,
+      text:
+        "Wallet CLI did not return seed/mnemonic in JSON mode.\n" +
+        "Aborted to avoid an unsafe provisioning state.",
+    };
+  }
+
+  const seedFingerprint = createHash("sha256").update(seed).digest("hex").slice(0, 16);
+  const secretPayload = {
+    kind: "midnight_wallet_seed_v1",
+    seed,
+    mnemonic,
+    address,
+    network: walletNetwork,
+    walletFile,
+    createdAt: wallet.createdAt || new Date().toISOString(),
+    source: "nightpay-openclaw-plugin",
+    seedFingerprint,
+  };
+  const tags = `nightpay,wallet,midnight,${walletNetwork}`;
+  const stored = storeWalletSecret(shartProbe.spec, secretPayload, tags);
+  if (!stored.ok) {
+    if (walletFile && existsSync(walletFile)) {
+      try { rmSync(walletFile, { force: true }); } catch {}
+    }
+    return {
+      ok: false,
+      text:
+        "OpenShart storage failed. Provisioning rolled back and wallet file was removed to avoid plaintext seed retention.\n" +
+        "Check OpenShart availability and retry.",
+    };
+  }
+
+  return {
+    ok: true,
+    text:
+      "Wallet provisioned with encrypted seed storage.\n" +
+      `  Address:          ${address || "unknown"}\n` +
+      `  Network:          ${walletNetwork}\n` +
+      `  Wallet file:      ${walletFile || "default path"}\n` +
+      `  Seed fingerprint: ${seedFingerprint}\n` +
+      `  OpenShart ID:     ${stored.id}\n` +
+      "  Secret output:    suppressed (seed/mnemonic not printed)\n" +
+      "Use the OpenShart memory ID for controlled recovery in operator workflows.",
+  };
+}
+
+function probeWalletCli(env) {
+  const command = (env.MIDNIGHT_WALLET_CLI_BIN || process.env.MIDNIGHT_WALLET_CLI_BIN || "midnight").trim();
+  const versionResult = runCommand(command || "midnight", ["--version"], 4000);
+  if (!versionResult.ok) {
+    return {
+      command: command || "midnight",
+      available: false,
+      version: "",
+      walletReady: false,
+      summary: versionResult.errorCode === "ENOENT" ? "not installed" : "not reachable",
+    };
+  }
+
+  const infoResult = runCommand(command || "midnight", ["info", "--json"], 8000);
+  if (infoResult.ok && infoResult.parsed && !infoResult.parsed.error) {
+    const wallet = infoResult.parsed;
+    return {
+      command: command || "midnight",
+      available: true,
+      version: versionResult.stdout,
+      walletReady: true,
+      walletAddress: wallet.address || "",
+      walletNetwork: wallet.network || "",
+      walletFile: wallet.file || "",
+      summary: "wallet loaded",
+    };
+  }
+
+  if (infoResult.parsed?.code === "WALLET_NOT_FOUND") {
+    return {
+      command: command || "midnight",
+      available: true,
+      version: versionResult.stdout,
+      walletReady: false,
+      summary: "installed (wallet not initialized)",
+    };
+  }
+
+  return {
+    command: command || "midnight",
+    available: true,
+    version: versionResult.stdout,
+    walletReady: false,
+    summary: "installed (wallet check failed)",
+  };
+}
+
+function walletStatusText(walletProbe, includeHelp = false, env = {}) {
+  const lines = [];
+  const shartProbe = detectOpenShart(env, { allowNpx: false });
+  lines.push("Midnight wallet CLI (optional)");
+  lines.push(`  Command: ${walletProbe.command}`);
+
+  if (!walletProbe.available) {
+    lines.push(`  Status:  ${walletProbe.summary}`);
+    lines.push("  Install: npm install -g midnight-wallet-cli");
+    lines.push('  MCP:     command "midnight-wallet-mcp"');
+    lines.push(`  OpenShart: ${shartProbe.available ? "available" : "missing (required for encrypted wallet provisioning)"}`);
+    return lines.join("\n");
+  }
+
+  lines.push(`  Status:  ${walletProbe.version ? `v${walletProbe.version}` : "installed"} (${walletProbe.summary})`);
+
+  if (walletProbe.walletReady) {
+    lines.push(`  Wallet:  ${walletProbe.walletAddress || "unknown"}`);
+    lines.push(`  Network: ${walletProbe.walletNetwork || "unknown"}`);
+  } else {
+    lines.push("  Wallet:  not initialized");
+    lines.push("  Init:    midnight generate --network preprod");
+  }
+
+  lines.push(`  OpenShart: ${shartProbe.available ? "available" : "missing (required for /nightpay wallet provision)"}`);
+  lines.push("  Note:    does not replace bridge OPERATOR_ADDRESS (64-char shielded hex)");
+
+  if (includeHelp) {
+    lines.push("");
+    lines.push("Run /nightpay wallet help for full setup notes.");
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -243,6 +561,7 @@ const plugin = {
       // 2. Probe bridge for Midnight contract + stub status
       const bridgeUrl = env.BRIDGE_URL || "";
       const bridgeHealth = bridgeUrl ? await probeBridge(bridgeUrl, api.logger) : null;
+      const walletProbe = probeWalletCli(env);
 
       // 3. Auto-populate RECEIPT_CONTRACT_ADDRESS from bridge if not already set
       if (bridgeHealth?.contractAddress && !env.RECEIPT_CONTRACT_ADDRESS) {
@@ -266,8 +585,8 @@ const plugin = {
       if (isPlaceholderAddress(env.OPERATOR_ADDRESS)) {
         api.logger.warn(
           `[nightpay] OPERATOR_ADDRESS looks like a placeholder ("${env.OPERATOR_ADDRESS?.slice(0, 12)}...").\n` +
-          `  Set a real Cardano preprod address (bech32 addr_test1... or 56-byte hex).\n` +
-          `  This is where operator fees are sent on successful pool completion.`
+          `  Set a real Midnight shielded address (64-char lowercase hex).\n` +
+          `  Read it from bridge /operator-address or your operator wallet setup.`
         );
       }
 
@@ -284,7 +603,8 @@ const plugin = {
         `[nightpay] Ready -- ${url} | network: ${net} | fee: ${fee}bps\n` +
         `  Masumi (MIP-003): ${url} [API reachable on startup]\n` +
         `  Midnight bridge:  ${bridgeUrl} -> ${bridgeStatus}\n` +
-        `  Cardano operator: ${env.OPERATOR_ADDRESS ? env.OPERATOR_ADDRESS.slice(0, 16) + "..." : "NOT SET"}\n` +
+        `  Midnight operator: ${env.OPERATOR_ADDRESS ? env.OPERATOR_ADDRESS.slice(0, 16) + "..." : "NOT SET"}\n` +
+        `  Wallet CLI:       ${walletProbe.summary}${walletProbe.available && walletProbe.version ? ` (v${walletProbe.version})` : ""}\n` +
         `  ZK receipts:      ${env.RECEIPT_CONTRACT_ADDRESS ? "contract set" : "RECEIPT_CONTRACT_ADDRESS missing"}\n` +
         `  Skill docs:       skills/nightpay/ (in all agent workspaces)\n` +
         `  Type /nightpay help for the full operating model`
@@ -301,7 +621,7 @@ const plugin = {
 
     api.registerCommand({
       name: "nightpay",
-      description: "NightPay -- status, bridge check, operating model",
+      description: "NightPay -- status, bridge check, wallet helper, operating model",
       acceptsArgs: true,
       requireAuth: true,
       handler: async (ctx) => {
@@ -310,6 +630,17 @@ const plugin = {
         const args = (ctx.args || "").trim();
 
         if (args === "help") return { text: OPERATING_MODEL };
+        if (args === "wallet help") return { text: WALLET_CLI_HELP };
+        if (args === "wallet provision" || args.startsWith("wallet provision ")) {
+          const parts = args.split(/\s+/).filter(Boolean);
+          const requestedNetwork = parts[2] || "";
+          const provision = provisionWalletEncrypted(env, requestedNetwork);
+          return { text: provision.text };
+        }
+        if (args === "wallet" || args === "wallet status") {
+          const walletProbe = probeWalletCli(env);
+          return { text: walletStatusText(walletProbe, true, env) };
+        }
 
         if (missing.length > 0) {
           const fixes = missing
@@ -327,6 +658,7 @@ const plugin = {
         const network = env.MIDNIGHT_NETWORK || DEFAULTS.MIDNIGHT_NETWORK;
         const feeBps = env.OPERATOR_FEE_BPS || DEFAULTS.OPERATOR_FEE_BPS;
         const bridgeUrl = env.BRIDGE_URL || "";
+        const walletProbe = probeWalletCli(env);
 
         if (!args || args === "status") {
           // Live bridge probe for /nightpay status
@@ -356,13 +688,14 @@ const plugin = {
               `  URL:     ${bridgeUrl || "MISSING"}\n` +
               `  Status:  ${bridgeLine}\n` +
               `  Receipt: ${env.RECEIPT_CONTRACT_ADDRESS ? env.RECEIPT_CONTRACT_ADDRESS.slice(0, 16) + "..." : "MISSING -- set RECEIPT_CONTRACT_ADDRESS"}\n\n` +
-              `Cardano operator\n` +
-              `  Address: ${addrOk ? env.OPERATOR_ADDRESS.slice(0, 16) + "..." : "PLACEHOLDER -- set a real Cardano address"}\n` +
+              `Midnight operator\n` +
+              `  Address: ${addrOk ? env.OPERATOR_ADDRESS.slice(0, 16) + "..." : "PLACEHOLDER -- set a real 64-char hex address"}\n` +
               `  Fee:     ${feeBps} bps (${(Number(feeBps) / 100).toFixed(1)}%)\n` +
               `  Network: ${network}\n\n` +
               (walletMissing.length > 0
                 ? `Missing wallet credentials: ${walletMissing.join(", ")}\n  RECEIPT_CONTRACT_ADDRESS: from bridge /health\n  OPERATOR_SECRET_KEY: from your Midnight wallet\n\n`
                 : "Wallet: fully configured\n\n") +
+              walletStatusText(walletProbe, false, env) + "\n\n" +
               `Run /nightpay help for the operating model.`,
           };
         }

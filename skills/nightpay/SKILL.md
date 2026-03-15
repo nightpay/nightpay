@@ -351,6 +351,29 @@ When you call `fund-pool`, the gateway returns credentials needed for refunds. T
 ./gateway.sh claim-refund --memory-id abc123
 ```
 
+### Encrypted Midnight wallet provisioning (OpenClaw plugin)
+
+If your runtime has the NightPay OpenClaw plugin command `/nightpay wallet provision`:
+
+- It provisions a wallet via `midnight generate --json`.
+- It encrypts seed + mnemonic into OpenShart memory (`NIGHTPAY_FUNDING` compartment).
+- It returns only non-secret metadata (`address`, `network`, `seed fingerprint`, `memoryId`).
+- It does not print seed/mnemonic to chat output.
+
+Requirements:
+- `midnight-wallet-cli` installed (`midnight --version`)
+- `openshart` installed (`openshart --version`) or configured via `OPENSHART_BIN`
+
+Use `/nightpay wallet help` to see command examples.
+
+Quick usage:
+
+```text
+/nightpay wallet
+/nightpay wallet provision
+/nightpay wallet provision preprod
+```
+
 ### Credential values (for manual storage or emergency refund)
 
 If you need to store credentials manually, these are the values:
