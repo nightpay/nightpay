@@ -381,7 +381,23 @@ fi
 rm -rf "$REMOTE_DIR/ui/.vite" "$REMOTE_DIR/ui/node_modules/.vite" || true
 
 su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start"
-su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh doctor"
+
+doctor_ok=0
+for attempt in $(seq 1 12); do
+  if su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh doctor"; then
+    doctor_ok=1
+    break
+  fi
+  echo "WARN: doctor check failed on attempt ${attempt}/12; waiting for services to settle..."
+  sleep 5
+done
+
+if [[ "$doctor_ok" != "1" ]]; then
+  echo "ERROR: agent doctor checks failed after retries." >&2
+  tail -n 120 "$REMOTE_DIR/.agent-playground/logs/mip003.log" >&2 || true
+  tail -n 120 "$REMOTE_DIR/.agent-playground/logs/ui.log" >&2 || true
+  exit 1
+fi
 REMOTE
 
 echo "[8/11] Build and restart bridge service (if available)..."
@@ -528,8 +544,23 @@ PY
 
 # Keep DB volumes stable; only recreate API containers unless DB services are down.
 docker compose up -d postgres-payment postgres-registry
+
+# Defensive self-heal: keep DB password aligned with compose DATABASE_URL defaults.
+docker exec masumi-postgres-payment psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" >/dev/null 2>&1 || true
+docker exec masumi-postgres-registry psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" >/dev/null 2>&1 || true
+
 docker compose pull payment-service registry-service || true
-docker compose up -d --no-deps --force-recreate payment-service registry-service
+docker compose rm -sf payment-service registry-service >/dev/null 2>&1 || true
+if ! docker compose up -d --no-deps --force-recreate payment-service registry-service; then
+  echo "WARN: failed to recreate Masumi API containers; pruning stale containers and retrying..."
+  for pattern in masumi-payment-service masumi-registry-service; do
+    ids="$(docker ps -aq --filter "name=${pattern}")"
+    if [[ -n "$ids" ]]; then
+      docker rm -f $ids >/dev/null 2>&1 || true
+    fi
+  done
+  docker compose up -d --no-deps --force-recreate payment-service registry-service
+fi
 
 for i in $(seq 1 90); do
   p="$(curl -fsS -m 2 http://localhost:3001/api/v1/health || true)"
