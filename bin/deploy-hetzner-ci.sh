@@ -15,7 +15,8 @@ Usage:
     [--mip-port 8090] \
     [--skip-npm-install] \
     [--skip-proof-recreate] \
-    [--skip-masumi-recreate]
+    [--skip-masumi-recreate] \
+    [--skip-bridge-restart]
 
 This script is intended for CI/CD usage.
 It syncs the current committed HEAD to the server, restarts NightPay services,
@@ -32,6 +33,7 @@ MASUMI_DIR="/opt/masumi-services-dev-quickstart"
 SKIP_NPM_INSTALL=0
 SKIP_PROOF_RECREATE=0
 SKIP_MASUMI_RECREATE=0
+SKIP_BRIDGE_RESTART=0
 UI_PORT=""
 MIP_PORT=""
 
@@ -71,6 +73,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-masumi-recreate)
       SKIP_MASUMI_RECREATE=1
+      shift
+      ;;
+    --skip-bridge-restart)
+      SKIP_BRIDGE_RESTART=1
       shift
       ;;
     --ui-port)
@@ -208,29 +214,33 @@ tar -C "$TMP_SYNC_DIR" -cf - . \
 cleanup_tmp
 trap - EXIT
 
-echo "[6/11] Sync bridge source to ${HOST}:${BRIDGE_DIR} (if available)..."
-if [[ -f "$ROOT_DIR/bridge/package.json" ]]; then
-  HAS_BRIDGE_PAYLOAD=1
-  TMP_BRIDGE_SYNC_DIR="$(mktemp -d)"
-  tar -C "$ROOT_DIR/bridge" \
-    --exclude=.git \
-    --exclude=node_modules \
-    --exclude=dist \
-    --exclude=.env \
-    -cf - . | tar -xf - -C "$TMP_BRIDGE_SYNC_DIR"
-
-  tar -C "$TMP_BRIDGE_SYNC_DIR" -cf - . \
-    | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
-        set -euo pipefail; \
-        mkdir -p '${BRIDGE_DIR}'; \
-        tar -xf - -C '${BRIDGE_DIR}'; \
-        if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi; \
-        chown -R deploy:deploy '${BRIDGE_DIR}'; \
-        find '${BRIDGE_DIR}' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
-
-  rm -rf "$TMP_BRIDGE_SYNC_DIR"
+if [[ "$SKIP_BRIDGE_RESTART" == "1" ]]; then
+  echo "[6/11] Skipping bridge sync (--skip-bridge-restart)."
 else
-  echo "WARN: bridge submodule missing in CI payload; skipping bridge source sync."
+  echo "[6/11] Sync bridge source to ${HOST}:${BRIDGE_DIR} (if available)..."
+  if [[ -f "$ROOT_DIR/bridge/package.json" ]]; then
+    HAS_BRIDGE_PAYLOAD=1
+    TMP_BRIDGE_SYNC_DIR="$(mktemp -d)"
+    tar -C "$ROOT_DIR/bridge" \
+      --exclude=.git \
+      --exclude=node_modules \
+      --exclude=dist \
+      --exclude=.env \
+      -cf - . | tar -xf - -C "$TMP_BRIDGE_SYNC_DIR"
+
+    tar -C "$TMP_BRIDGE_SYNC_DIR" -cf - . \
+      | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
+          set -euo pipefail; \
+          mkdir -p '${BRIDGE_DIR}'; \
+          tar -xf - -C '${BRIDGE_DIR}'; \
+          if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi; \
+          chown -R deploy:deploy '${BRIDGE_DIR}'; \
+          find '${BRIDGE_DIR}' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
+
+    rm -rf "$TMP_BRIDGE_SYNC_DIR"
+  else
+    echo "WARN: bridge submodule missing in CI payload; skipping bridge source sync."
+  fi
 fi
 
 echo "[7/11] Restart NightPay services..."
@@ -402,8 +412,10 @@ if [[ "$doctor_ok" != "1" ]]; then
 fi
 REMOTE
 
-echo "[8/11] Build and restart bridge service (if available)..."
-if [[ "$HAS_BRIDGE_PAYLOAD" == "1" ]]; then
+if [[ "$SKIP_BRIDGE_RESTART" == "1" ]]; then
+  echo "[8/11] Skipping bridge build/restart (--skip-bridge-restart)."
+elif [[ "$HAS_BRIDGE_PAYLOAD" == "1" ]]; then
+  echo "[8/11] Build and restart bridge service (if available)..."
   ssh "${SSH_OPTS[@]}" "root@${HOST}" \
     "BRIDGE_DIR='${BRIDGE_DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -469,6 +481,7 @@ done
 echo "bridge_service=nohup:${bridge_port}"
 REMOTE
 else
+  echo "[8/11] Build and restart bridge service (if available)..."
   echo "WARN: bridge payload missing in CI workspace; skipping bridge build/restart."
 fi
 

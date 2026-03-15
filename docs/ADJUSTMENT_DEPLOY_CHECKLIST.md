@@ -61,6 +61,7 @@ Workflow: `.github/workflows/deploy-hetzner-staging.yml`
 Behavior:
 - Push to `staging` deploys into an isolated app directory (default `/opt/nightpay-staging`)
 - Staging defaults to ports `3334` (UI) + `8091` (MIP)
+- Staging skips bridge sync/restart by default so production bridge deploy path is not contended
 - Staging skips proof/Masumi container recreation by default so production services are not touched
 
 Optional staging-specific secrets (fallbacks to production secrets when omitted):
