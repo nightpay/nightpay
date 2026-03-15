@@ -52,8 +52,14 @@ jobs:
             exit 0
           fi
           auth="$(printf 'x-access-token:%s' "$NIGHTPAY_UI_REPO_TOKEN" | base64 | tr -d '\n')"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync --recursive
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --recursive --depth 1
+          if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- ui; then
+            echo "::warning::UI submodule sync failed; continuing without ui/ checkout."
+            exit 0
+          fi
+          if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- ui; then
+            echo "::warning::UI submodule checkout failed (token may be invalid or missing repo access); continuing without ui/ checkout."
+            rm -rf ui || true
+          fi
 
       - name: Deploy To Hetzner (Staging)
         env:
