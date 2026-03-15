@@ -98,7 +98,7 @@ echo -e "${DIM}  mip003 mode: ${MIP003_MODE}${RESET}" >&2
 echo -e "${DIM}  ontology dir: ${ONTOLOGY_DIR}${RESET}" >&2
 
 "$PYTHON_BIN" - "$PORT" "$DB_PATH" "$JOB_TOKEN_SECRET" "$OPERATOR_SECRET_KEY" "$OPTIMISTIC_WINDOW_HOURS" "$MULTISIG_THRESHOLD_SPECKS" "$OPERATOR_FEE_BPS" "$IDEMPOTENCY_TTL_SECONDS" "$MIP003_MODE" "$ONTOLOGY_DIR" <<'PYCODE'
-import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math, base64
+import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math, base64, traceback
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
 from urllib import request as urlrequest, error as urlerror
@@ -218,6 +218,13 @@ X402_BYPASS_OPERATOR = _coerce_bool_env('X402_BYPASS_OPERATOR', True)
 
 KNOWN_STATUSES = ('running', 'awaiting_approval', 'multisig_pending', 'disputed', 'completed')
 MAX_ATTACHMENT_BYTES = 256 * 1024  # .md or .txt attachment at start_job (authenticated only)
+MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024
+MAX_DESCRIPTION_CHARS = 8192
+MAX_INPUT_PAYLOAD_BYTES = 256 * 1024
+MAX_WORK_OUTPUT_CHARS = 200000
+MAX_REASON_CHARS = 4096
+MAX_SPECKS = 10**15
+READ_BODY_ERROR = object()
 MIP003_STATUSES = ('awaiting_payment', 'awaiting_input', 'running', 'completed', 'failed')
 
 ID_RE = re.compile(r'^[A-Za-z0-9._:@-]{2,128}$')
@@ -867,6 +874,47 @@ def safe_json_loads(raw, fallback):
     except Exception:
         return fallback
 
+def contains_disallowed_control_chars(value):
+    text = str(value or '')
+    for ch in text:
+        code = ord(ch)
+        if code == 127:
+            return True
+        if code < 32 and ch not in ('\n', '\r', '\t'):
+            return True
+    return False
+
+def parse_non_negative_int(value, field_name, max_value=MAX_SPECKS):
+    if isinstance(value, bool):
+        raise ValueError(f'{field_name} must be a non-negative integer')
+
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError(f'{field_name} must be a non-negative integer')
+        parsed = int(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r'[0-9]{1,40}', text):
+            raise ValueError(f'{field_name} must be a non-negative integer')
+        parsed = int(text)
+    else:
+        raise ValueError(f'{field_name} must be a non-negative integer')
+
+    if parsed < 0:
+        raise ValueError(f'{field_name} must be a non-negative integer')
+    if parsed > int(max_value):
+        raise ValueError(f'{field_name} exceeds allowed maximum')
+    return parsed
+
+def json_size_bytes(value):
+    try:
+        raw = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+    except Exception:
+        return MAX_REQUEST_BODY_BYTES + 1
+    return len(raw)
+
 def parse_iso8601(raw):
     if raw in (None, ''):
         return None
@@ -1482,15 +1530,17 @@ local = threading.local()
 
 def get_db():
     if not hasattr(local, 'conn'):
-        local.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        local.conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0)
         local.conn.execute('PRAGMA journal_mode=WAL')
+        local.conn.execute('PRAGMA busy_timeout=1000')
         local.conn.execute('PRAGMA synchronous=NORMAL')
         local.conn.row_factory = sqlite3.Row
     return local.conn
 
 # Initialize schema on main thread
-conn = sqlite3.connect(DB_PATH)
+conn = sqlite3.connect(DB_PATH, timeout=5.0)
 conn.execute('PRAGMA journal_mode=WAL')
+conn.execute('PRAGMA busy_timeout=1000')
 conn.executescript('''
     CREATE TABLE IF NOT EXISTS jobs (
         job_id         TEXT PRIMARY KEY,
@@ -1712,6 +1762,33 @@ conn.close()
 class MIP003Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f'[nightpay] {args[0]}')
+
+    def handle_one_request(self):
+        # Prevent lock/handler exceptions from dropping TCP connections without JSON.
+        try:
+            return super().handle_one_request()
+        except sqlite3.OperationalError as exc:
+            message = str(exc).strip() or 'database error'
+            print(f'[nightpay] sqlite operational error: {message}', file=sys.stderr)
+            if 'database is locked' in message.lower():
+                payload = {'error': 'database is busy, retry request'}
+                code = 503
+            else:
+                payload = {'error': message[:300]}
+                code = 500
+            try:
+                self.respond(code, payload)
+            except Exception:
+                pass
+            return
+        except Exception as exc:
+            print(f'[nightpay] unhandled request error: {exc}', file=sys.stderr)
+            traceback.print_exc()
+            try:
+                self.respond(500, {'error': 'internal server error'})
+            except Exception:
+                pass
+            return
 
     def _get_allowed_origin(self):
         origin = self.headers.get('Origin')
@@ -2003,11 +2080,42 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         return True
 
     def _read_body(self):
-        length = int(self.headers.get('Content-Length', 0))
-        if length > 5 * 1024 * 1024:  # 5MB limit
-            self.respond(413, {'error': 'Payload too large'})
-            return None
-        return json.loads(self.rfile.read(length)) if length else {}
+        length_header = self.headers.get('Content-Length')
+        if length_header in (None, ''):
+            return {}
+        try:
+            length = int(str(length_header).strip())
+        except Exception:
+            self.respond(400, {'error': 'invalid Content-Length header'})
+            return READ_BODY_ERROR
+        if length < 0:
+            self.respond(400, {'error': 'Content-Length must be non-negative'})
+            return READ_BODY_ERROR
+        if length == 0:
+            return {}
+        if length > MAX_REQUEST_BODY_BYTES:
+            self.respond(413, {'error': f'payload exceeds {MAX_REQUEST_BODY_BYTES} bytes'})
+            return READ_BODY_ERROR
+
+        content_type = str(self.headers.get('Content-Type', '') or '')
+        media_type = content_type.split(';', 1)[0].strip().lower()
+        if media_type != 'application/json':
+            self.respond(415, {'error': 'Content-Type must be application/json'})
+            return READ_BODY_ERROR
+
+        raw = self.rfile.read(length)
+        try:
+            decoded = raw.decode('utf-8')
+        except Exception:
+            self.respond(400, {'error': 'request body must be valid UTF-8 JSON'})
+            return READ_BODY_ERROR
+        if not decoded.strip():
+            return {}
+        try:
+            return json.loads(decoded)
+        except Exception:
+            self.respond(400, {'error': 'invalid JSON body'})
+            return READ_BODY_ERROR
 
     def _validate_job_id(self, job_id):
         # Mirrors validate_job_id in gateway.sh — prevents path traversal
@@ -3005,13 +3113,14 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             return
 
         body = self._read_body()
-        if body is None:
+        if body is READ_BODY_ERROR:
+            return
+
+        if not isinstance(body, dict):
+            self.respond(400, {'error': 'JSON object body required'})
             return
 
         if path_only == '/management/chat':
-            if not isinstance(body, dict):
-                self.respond(400, {'error': 'JSON object body required'})
-                return
             message = str(body.get('message', '')).strip()
             if not message:
                 self.respond(400, {'error': 'message is required'})
@@ -3030,10 +3139,6 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if path_only == '/agent/challenge':
-            if not isinstance(body, dict):
-                self.respond(400, {'error': 'JSON object body required'})
-                return
-
             agent_id = str(body.get('agent_id', '')).strip()
             if not validate_actor_id(agent_id):
                 self.respond(400, {'error': 'agent_id must match [A-Za-z0-9._:@-] and be 2-128 chars'})
@@ -3344,9 +3449,6 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if path_only == '/start_job':
-            if not isinstance(body, dict):
-                self.respond(400, {'error': 'JSON object body required'})
-                return
             strict_start = (MIP003_MODE == 'strict')
             contest_cfg, contest_err = validate_contest_config(body.get('contest'))
             if contest_err:
@@ -3363,9 +3465,48 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 if not identifier_from_purchaser:
                     self.respond(400, {'error': 'identifier_from_purchaser is required in strict mode'})
                     return
-                if not has_input_data:
-                    self.respond(400, {'error': 'input_data object is required in strict mode'})
-                    return
+            if not has_input_data:
+                self.respond(400, {'error': 'input_data object is required'})
+                return
+            input_data = dict(input_data)
+
+            description = input_data.get('description')
+            if not isinstance(description, str):
+                self.respond(400, {'error': 'input_data.description must be a string'})
+                return
+            description = description.strip()
+            if not description:
+                self.respond(400, {'error': 'input_data.description is required'})
+                return
+            if len(description) > MAX_DESCRIPTION_CHARS:
+                self.respond(400, {'error': f'input_data.description must be <= {MAX_DESCRIPTION_CHARS} chars'})
+                return
+            if contains_disallowed_control_chars(description):
+                self.respond(400, {'error': 'input_data.description must not contain control characters'})
+                return
+            input_data['description'] = description
+
+            if json_size_bytes(input_data) > MAX_INPUT_PAYLOAD_BYTES:
+                self.respond(413, {'error': f'input_data exceeds {MAX_INPUT_PAYLOAD_BYTES} bytes'})
+                return
+
+            amount_raw = body.get('amount_specks')
+            if amount_raw is None:
+                amount_raw = input_data.get('amount_specks')
+            if amount_raw is None:
+                self.respond(400, {'error': 'amount_specks is required'})
+                return
+            try:
+                amount_specks = parse_non_negative_int(amount_raw, 'amount_specks')
+            except ValueError as exc:
+                self.respond(400, {'error': str(exc)})
+                return
+
+            # Canonicalize body for idempotency hash consistency.
+            body = dict(body)
+            body['amount_specks'] = amount_specks
+            body['input_data'] = input_data
+
             direct_agent_id = str(body.get('direct_agent_id') or '').strip()
             visibility_default = 'hidden' if direct_agent_id else 'private'
             visibility = normalize_visibility(body.get('visibility'), default=visibility_default)
@@ -3385,17 +3526,6 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if work_commit is not None:
                 if not re.match(r'^[0-9a-f]{64}$', str(work_commit)):
                     self.respond(400, {'error': 'work_commit must be 64-char lowercase hex sha256'})
-                    return
-
-            # Validate optional amount_specks
-            amount_specks = body.get('amount_specks')
-            if amount_specks is not None:
-                try:
-                    amount_specks = int(amount_specks)
-                    if amount_specks < 0:
-                        raise ValueError
-                except (ValueError, TypeError):
-                    self.respond(400, {'error': 'amount_specks must be a non-negative integer'})
                     return
 
             # Optional attachment (.md or .txt) — only for authenticated callers (operator or X-Agent-Token).
@@ -4150,6 +4280,13 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     self.respond(403, {'error': 'invalid job_token'})
                     return
 
+            if not isinstance(input_payload, dict):
+                self.respond(400, {'error': 'input payload must be a JSON object'})
+                return
+            if json_size_bytes(input_payload) > MAX_INPUT_PAYLOAD_BYTES:
+                self.respond(413, {'error': f'input payload exceeds {MAX_INPUT_PAYLOAD_BYTES} bytes'})
+                return
+
             # SECURITY: commit-reveal verification (skipped if no work_commit — backward compat)
             work_commit = row['work_commit']
             if work_commit is not None:
@@ -4257,16 +4394,47 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     self.respond(403, {'error': 'invalid job_token'})
                     return
 
-            work_output = str(body.get('work_output', ''))
-            artifact_paths = body.get('artifact_file_paths', [])
-            if not isinstance(artifact_paths, list):
-                artifact_paths = []
-            submit_agent_id = str(body.get('agent_id', '')).strip() if isinstance(body, dict) else ''
-            verified_identity = None
-
+            work_output = body.get('work_output')
+            if not isinstance(work_output, str):
+                self.respond(400, {'error': 'work_output must be a string'})
+                return
             if len(work_output) < 10:
                 self.respond(400, {'error': 'work_output must be at least 10 chars'})
                 return
+            if len(work_output) > MAX_WORK_OUTPUT_CHARS:
+                self.respond(400, {'error': f'work_output must be <= {MAX_WORK_OUTPUT_CHARS} chars'})
+                return
+            if contains_disallowed_control_chars(work_output):
+                self.respond(400, {'error': 'work_output must not contain control characters'})
+                return
+
+            artifact_paths = body.get('artifact_file_paths', [])
+            if not isinstance(artifact_paths, list):
+                self.respond(400, {'error': 'artifact_file_paths must be an array of strings'})
+                return
+            if len(artifact_paths) > 128:
+                self.respond(400, {'error': 'artifact_file_paths must contain at most 128 entries'})
+                return
+            normalized_artifact_paths = []
+            for idx, item in enumerate(artifact_paths):
+                if not isinstance(item, str):
+                    self.respond(400, {'error': f'artifact_file_paths[{idx}] must be a string'})
+                    return
+                path = item.strip()
+                if not path:
+                    self.respond(400, {'error': f'artifact_file_paths[{idx}] must not be empty'})
+                    return
+                if len(path) > 512:
+                    self.respond(400, {'error': f'artifact_file_paths[{idx}] must be <= 512 chars'})
+                    return
+                if contains_disallowed_control_chars(path):
+                    self.respond(400, {'error': f'artifact_file_paths[{idx}] must not contain control characters'})
+                    return
+                normalized_artifact_paths.append(path)
+            artifact_paths = normalized_artifact_paths
+
+            submit_agent_id = str(body.get('agent_id', '')).strip()
+            verified_identity = None
 
             db  = get_db()
             row = db.execute(
@@ -4545,7 +4713,22 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'invalid job_id format'})
                 return
 
-            reason = str(body.get('reason', 'no reason given'))[:500]
+            if 'reason' not in body:
+                reason = 'no reason given'
+            else:
+                if not isinstance(body.get('reason'), str):
+                    self.respond(400, {'error': 'reason must be a string'})
+                    return
+                reason = str(body.get('reason') or '').strip()
+                if not reason:
+                    self.respond(400, {'error': 'reason is required'})
+                    return
+            if len(reason) > MAX_REASON_CHARS:
+                self.respond(400, {'error': f'reason must be <= {MAX_REASON_CHARS} chars'})
+                return
+            if contains_disallowed_control_chars(reason):
+                self.respond(400, {'error': 'reason must not contain control characters'})
+                return
 
             # SECURITY: job_token holder, operator Bearer, or X-Operator-Sig can dispute
             auth_header   = self.headers.get('Authorization', '')
@@ -4604,6 +4787,18 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         if self._proxy_ollama(parsed.path):
             return
         self.respond(404, {'error': 'not found'})
+
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        if self._proxy_ollama(parsed.path):
+            return
+        self.respond(405, {'error': 'method not allowed'})
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if self._proxy_ollama(parsed.path):
+            return
+        self.respond(405, {'error': 'method not allowed'})
 
 class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
