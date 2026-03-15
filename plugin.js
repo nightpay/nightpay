@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// NightPay OpenClaw plugin entrypoint -- v0.3.6
-// Fix: prependContext (was appendSystemContext -- context was never being injected)
-// New: context-aware injection, operating model wired into install
+// NightPay OpenClaw plugin entrypoint -- v0.3.7
+// Fix: auto-symlink skill files into all agent workspaces on gateway_start
+//      so SKILL.md / AGENTS.md / ontology/ are readable through the sandbox
 
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, symlinkSync, lstatSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// The skills/nightpay directory inside the installed package
+const SKILL_SRC = join(__dirname, "skills", "nightpay");
 
 const REQUIRED_ENV = ["MASUMI_API_KEY", "OPERATOR_ADDRESS", "BRIDGE_URL"];
 const DEFAULTS = {
@@ -15,29 +19,24 @@ const DEFAULTS = {
   OPERATOR_FEE_BPS: "200",
 };
 
-// Strong: explicit nightpay intent -> inject full context
 const STRONG_TRIGGERS = [
   "nightpay", "bounty pool", "bounty board", "create a pool", "create a bounty",
   "fund this anonymously", "anonymous bounty", "anonymous pool", "crowdfund",
   "masumi", "midnight zk", "cardano bounty", "hire an agent", "post a bounty",
   "claim refund", "zk receipt", "verify receipt", "fund the pool",
 ];
-
-// Weak: adjacent topics -> inject brief pointer only
 const WEAK_TRIGGERS = [
   "bounty", "anonymous fund", "fund the ", "pool ", "pool,", "pool.",
   "funder", "operator fee", "on-chain settlement",
 ];
 
-// Injected on weak signals or ongoing nightpay thread
 const BRIEF_CONTEXT = [
   "## NightPay available",
   "Anonymous community bounty pools on Cardano.",
   'Activate: "create a bounty pool for X", "show bounty board", "fund this anonymously".',
-  "Skill docs auto-loaded: SKILL.md / AGENTS.md / ontology/ontology.md",
+  "Skill docs auto-loaded: skills/nightpay/SKILL.md / AGENTS.md / ontology/ontology.md",
 ].join("\n");
 
-// Injected on strong nightpay signals
 const FULL_CONTEXT = [
   "## NightPay Skill Active",
   "",
@@ -75,11 +74,11 @@ const FULL_CONTEXT = [
   "Use memoryId pattern for encrypted credential storage.",
   "",
   "### Amounts: always in specks. 1 NIGHT = 1,000,000 specks.",
-  "Full docs: SKILL.md / AGENTS.md / ontology/ontology.md",
+  "Full docs at skills/nightpay/ (symlinked into your agent workspace by this plugin).",
 ].join("\n");
 
 const OPERATING_MODEL = [
-  "NightPay Operating Model -- v0.3.6",
+  "NightPay Operating Model -- v0.3.7",
   "=".repeat(50),
   "",
   "POOL CREATION",
@@ -103,7 +102,7 @@ const OPERATING_MODEL = [
   "",
   "REFUND PATH",
   "  Pool expires (deadline + goal unmet) -> claimRefund() returns 100% to funders",
-  "  Work disputed -> dispute resolution flow (see AGENTS.md)",
+  "  Work disputed -> dispute resolution flow (see skills/nightpay/AGENTS.md)",
   "",
   "ACTIVATION PHRASES",
   '  "create a bounty pool for X"  "show bounty board"  "fund this anonymously"',
@@ -114,10 +113,10 @@ const OPERATING_MODEL = [
   "  /nightpay help    -- this message",
   "  /nightpay <task>  -- delegate task to nightpay skill",
   "",
-  "DOCS (auto-loaded from installed package)",
-  "  SKILL.md              -- full tool reference, trust model, credential patterns",
-  "  AGENTS.md             -- roles, decision trees, guardrails",
-  "  ontology/ontology.md  -- concepts, lifecycle states, worked examples",
+  "DOCS (symlinked into each agent workspace)",
+  "  skills/nightpay/SKILL.md              -- full tool reference, trust model",
+  "  skills/nightpay/AGENTS.md             -- roles, decision trees, guardrails",
+  "  skills/nightpay/ontology/ontology.md  -- concepts, lifecycle states, examples",
 ].join("\n");
 
 function resolveEnv(config) {
@@ -132,8 +131,6 @@ function detectIntent(prompt, messages) {
   const text = (prompt || "").toLowerCase();
   if (STRONG_TRIGGERS.some((t) => text.includes(t))) return "full";
   if (WEAK_TRIGGERS.some((t) => text.includes(t))) return "brief";
-
-  // Check ongoing conversation thread (last 6 messages)
   if (Array.isArray(messages) && messages.length > 0) {
     const recent = messages.slice(-6).map((m) => {
       if (typeof m === "string") return m.toLowerCase();
@@ -148,6 +145,51 @@ function detectIntent(prompt, messages) {
   return "none";
 }
 
+/**
+ * Symlink skills/nightpay into every configured agent workspace so agents
+ * can read SKILL.md, AGENTS.md, ontology/ through the OpenClaw sandbox.
+ * Safe to call on every gateway_start: skips if symlink already exists.
+ */
+function wireSkillIntoWorkspaces(config, logger) {
+  const workspaces = new Set();
+
+  // Default workspace
+  const defaultWs = config?.agents?.defaults?.workspace;
+  if (defaultWs) workspaces.add(defaultWs);
+
+  // Per-agent workspaces
+  const agents = config?.agents?.list ?? [];
+  for (const agent of agents) {
+    if (agent?.workspace) workspaces.add(agent.workspace);
+  }
+
+  let wired = 0, skipped = 0, errors = 0;
+
+  for (const ws of workspaces) {
+    const skillsDir = join(ws, "skills");
+    const linkPath = join(skillsDir, "nightpay");
+    try {
+      // Create skills dir if missing
+      if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
+
+      // Skip if already correct
+      if (existsSync(linkPath)) {
+        skipped++;
+        continue;
+      }
+
+      symlinkSync(SKILL_SRC, linkPath);
+      wired++;
+      logger.info(`[nightpay] Wired skill docs -> ${linkPath}`);
+    } catch (err) {
+      errors++;
+      logger.warn(`[nightpay] Could not wire skill docs into ${ws}: ${err.message}`);
+    }
+  }
+
+  return { wired, skipped, errors };
+}
+
 const plugin = {
   id: "nightpay",
   name: "NightPay",
@@ -155,8 +197,14 @@ const plugin = {
   configSchema: { safeParse: () => ({ success: true }) },
 
   register(api) {
-    // Log operating model summary + env status on gateway start
     api.on("gateway_start", async () => {
+      // 1. Wire skill files into all agent workspaces
+      const { wired, skipped } = wireSkillIntoWorkspaces(api.config, api.logger);
+      if (wired > 0) {
+        api.logger.info(`[nightpay] Skill docs wired into ${wired} workspace(s) (${skipped} already present)`);
+      }
+
+      // 2. Log env status
       const env = resolveEnv(api.config);
       const missing = missingEnv(env);
       if (missing.length > 0) {
@@ -172,14 +220,13 @@ const plugin = {
         const fee = env.OPERATOR_FEE_BPS || DEFAULTS.OPERATOR_FEE_BPS;
         api.logger.info(
           `[nightpay] Ready -- ${url} | network: ${net} | fee: ${fee}bps\n` +
-          `  Skill docs auto-loaded: SKILL.md / AGENTS.md / ontology/\n` +
-          `  Context injected: only on nightpay/bounty/pool keywords (context-aware)\n` +
+          `  Skill docs: skills/nightpay/ (accessible in all agent workspaces)\n` +
+          `  Context: injected on nightpay/bounty/pool keywords only\n` +
           `  Type /nightpay help for the full operating model`
         );
       }
     });
 
-    // Context-aware injection -- only fires when conversation is nightpay-relevant
     api.on("before_prompt_build", async (event, ctx) => {
       const env = resolveEnv(api.config);
       if (missingEnv(env).length > 0) return;
@@ -188,7 +235,6 @@ const plugin = {
       return { prependContext: intent === "full" ? FULL_CONTEXT : BRIEF_CONTEXT };
     });
 
-    // /nightpay slash command
     api.registerCommand({
       name: "nightpay",
       description: "NightPay -- status, operating model, config check",
@@ -199,7 +245,6 @@ const plugin = {
         const missing = missingEnv(env);
         const args = (ctx.args || "").trim();
 
-        // /nightpay help -- always works even if not configured
         if (args === "help") return { text: OPERATING_MODEL };
 
         if (missing.length > 0) {
@@ -232,7 +277,7 @@ const plugin = {
 
         return {
           text: `NightPay: handling "${args}"`,
-          agentInstructions: `Use the nightpay skill. Task: ${args}. Read SKILL.md for tool reference.`,
+          agentInstructions: `Use the nightpay skill. Task: ${args}. Read skills/nightpay/SKILL.md for tool reference.`,
         };
       },
     });
