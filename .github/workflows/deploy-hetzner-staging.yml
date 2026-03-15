@@ -44,8 +44,8 @@ jobs:
 
       - name: Checkout Private Submodules (Required)
         env:
-          NIGHTPAY_UI_REPO_TOKEN: ${{ secrets.NIGHTPAY_UI_REPO_TOKEN }}
-          NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
+          NIGHTPAY_UI_REPO_TOKEN: ${{ secrets.REPO_NIGHTPAY_UI_REPO_TOKEN || secrets.NIGHTPAY_UI_REPO_TOKEN }}
+          NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.REPO_NIGHTPAY_BRIDGE_REPO_TOKEN || secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
         run: |
           set -euo pipefail
           sanitize_token() {

@@ -36,6 +36,8 @@ Configure these in GitHub before relying on auto-deploy:
   - `HETZNER_SSH_KEY` (private key content, e.g. `hetzner_ed25519_martin`)
   - `HETZNER_KNOWN_HOSTS` (optional but recommended; `known_hosts` entry)
   - `HETZNER_SSH_PORT` (optional, default `22`)
+  - `REPO_NIGHTPAY_UI_REPO_TOKEN` (optional but preferred fallback when environment secrets are not manageable)
+  - `REPO_NIGHTPAY_BRIDGE_REPO_TOKEN` (optional but preferred fallback when environment secrets are not manageable)
   - `NIGHTPAY_UI_REPO_TOKEN` (required; fine-grained PAT with read access to `nightpay/nightpay-ui` and `nightpay/nightpay-bridge`)
   - `NIGHTPAY_BRIDGE_REPO_TOKEN` (optional override for bridge submodule; each submodule now prefers its own secret and falls back to the other one; you can use the same token value in both secrets)
 - **Repository variables** (optional overrides)
