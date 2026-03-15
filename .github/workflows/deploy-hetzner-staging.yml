@@ -48,13 +48,23 @@ jobs:
           NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          TOKEN="${NIGHTPAY_BRIDGE_REPO_TOKEN:-${NIGHTPAY_UI_REPO_TOKEN:-}}"
-          if [ -z "${TOKEN:-}" ]; then
+          UI_TOKEN="${NIGHTPAY_UI_REPO_TOKEN:-${NIGHTPAY_BRIDGE_REPO_TOKEN:-}}"
+          BRIDGE_TOKEN="${NIGHTPAY_BRIDGE_REPO_TOKEN:-${NIGHTPAY_UI_REPO_TOKEN:-}}"
+          if [ -z "${UI_TOKEN:-}" ] && [ -z "${BRIDGE_TOKEN:-}" ]; then
             echo "::error::Missing submodule token. Set NIGHTPAY_UI_REPO_TOKEN (and optionally NIGHTPAY_BRIDGE_REPO_TOKEN)."
             exit 1
           fi
-          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
           for module in ui bridge; do
+            case "$module" in
+              ui) token="$UI_TOKEN" ;;
+              bridge) token="$BRIDGE_TOKEN" ;;
+              *) echo "::error::Unexpected submodule '$module'"; exit 1 ;;
+            esac
+            if [ -z "${token:-}" ]; then
+              echo "::error::Missing token for submodule '${module}'."
+              exit 1
+            fi
+            auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
             url="$(git config -f .gitmodules --get "submodule.${module}.url" || true)"
             if [ -z "${url:-}" ]; then
               echo "::error::Missing URL for submodule '${module}' in .gitmodules."
