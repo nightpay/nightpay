@@ -119,17 +119,17 @@ run_ssh() {
   ssh "${SSH_OPTS[@]}" "root@${HOST}" "$remote_cmd"
 }
 
-echo "[1/9] Verify SSH connectivity..."
+echo "[1/11] Verify SSH connectivity..."
 run_ssh "echo connected: \$(hostname)"
 
-echo "[2/9] Verify server architecture..."
+echo "[2/11] Verify server architecture..."
 ARCH="$(run_ssh "uname -m")"
 if [[ "$ARCH" != "x86_64" ]]; then
   echo "ERROR: expected x86_64 server for Masumi compatibility; found: $ARCH" >&2
   exit 1
 fi
 
-echo "[3/9] Backup remote env files..."
+echo "[3/11] Backup remote env files..."
 run_ssh "\
   set -euo pipefail; \
   mkdir -p '${REMOTE_DIR}/.backups'; \
@@ -139,7 +139,7 @@ run_ssh "\
   done; \
   echo backup_timestamp=\$ts"
 
-echo "[4/9] Stop NightPay services before sync..."
+echo "[4/11] Stop NightPay services before sync..."
 run_ssh "\
   set -euo pipefail; \
   if [[ ! -d '${REMOTE_DIR}' ]]; then exit 0; fi; \
@@ -153,7 +153,7 @@ run_ssh "\
   rm -f '${REMOTE_DIR}/.agent-playground/run/'*.pid || true; \
   rm -rf '${REMOTE_DIR}/ui/.vite' '${REMOTE_DIR}/ui/node_modules/.vite' || true"
 
-echo "[5/9] Sync tracked commit to ${HOST}:${REMOTE_DIR}..."
+echo "[5/11] Sync tracked commit to ${HOST}:${REMOTE_DIR}..."
 TMP_SYNC_DIR="$(mktemp -d)"
 cleanup_tmp() { rm -rf "$TMP_SYNC_DIR"; }
 trap cleanup_tmp EXIT
@@ -188,7 +188,31 @@ tar -C "$TMP_SYNC_DIR" -cf - . \
 cleanup_tmp
 trap - EXIT
 
-echo "[6/9] Restart NightPay services..."
+echo "[6/11] Sync bridge source to ${HOST}:${BRIDGE_DIR} (if available)..."
+if [[ -f "$ROOT_DIR/bridge/package.json" ]]; then
+  TMP_BRIDGE_SYNC_DIR="$(mktemp -d)"
+  tar -C "$ROOT_DIR/bridge" \
+    --exclude=.git \
+    --exclude=node_modules \
+    --exclude=dist \
+    --exclude=.env \
+    -cf - . | tar -xf - -C "$TMP_BRIDGE_SYNC_DIR"
+
+  tar -C "$TMP_BRIDGE_SYNC_DIR" -cf - . \
+    | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
+        set -euo pipefail; \
+        mkdir -p '${BRIDGE_DIR}'; \
+        tar -xf - -C '${BRIDGE_DIR}'; \
+        if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi; \
+        chown -R deploy:deploy '${BRIDGE_DIR}'; \
+        find '${BRIDGE_DIR}' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
+
+  rm -rf "$TMP_BRIDGE_SYNC_DIR"
+else
+  echo "bridge/ submodule not present in CI workspace; skipping bridge sync."
+fi
+
+echo "[7/11] Restart NightPay services..."
 ssh "${SSH_OPTS[@]}" "root@${HOST}" \
   "REMOTE_DIR='${REMOTE_DIR}' SKIP_NPM_INSTALL='${SKIP_NPM_INSTALL}' UI_PORT='${UI_PORT}' MIP_PORT='${MIP_PORT}' SKIP_MASUMI_RECREATE='${SKIP_MASUMI_RECREATE}' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -339,10 +363,63 @@ su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start
 su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh doctor"
 REMOTE
 
+echo "[8/11] Build and restart bridge service (if available)..."
+ssh "${SSH_OPTS[@]}" "root@${HOST}" \
+  "BRIDGE_DIR='${BRIDGE_DIR}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+if [[ ! -f "$BRIDGE_DIR/package.json" ]]; then
+  echo "bridge package not found at $BRIDGE_DIR; skipping bridge build/restart"
+  exit 0
+fi
+
+if [[ ! -f "$BRIDGE_DIR/.env" ]]; then
+  echo "WARN: $BRIDGE_DIR/.env missing; bridge may start in stub mode."
+fi
+
+su - deploy -c "cd '$BRIDGE_DIR' && npm install --no-audit --no-fund"
+su - deploy -c "cd '$BRIDGE_DIR' && npm run build"
+
+if command -v systemctl >/dev/null 2>&1; then
+  for unit in nightpay-bridge.service bridge.service; do
+    if systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"; then
+      systemctl restart "$unit"
+      if ! systemctl is-active --quiet "$unit"; then
+        journalctl -u "$unit" --no-pager -n 80 >&2 || true
+        exit 1
+      fi
+      echo "bridge_service=systemd:$unit"
+      exit 0
+    fi
+  done
+fi
+
+# Fallback for hosts without a systemd unit: run bridge as deploy user with .env.
+pkill -u deploy -f "$BRIDGE_DIR/dist/server.js" || true
+pkill -u deploy -f "node dist/server.js" || true
+su - deploy -c "cd '$BRIDGE_DIR' && bash -lc '
+  set -euo pipefail
+  if [[ -f .bridge.pid ]]; then
+    kill \$(cat .bridge.pid) || true
+    rm -f .bridge.pid || true
+  fi
+  set -a
+  if [[ -f .env ]]; then source ./.env; fi
+  set +a
+  nohup node \"$BRIDGE_DIR/dist/server.js\" >> bridge.log 2>&1 &
+  echo \$! > .bridge.pid
+'"
+
+bridge_port="$(awk -F= '/^BRIDGE_PORT=/{print $2}' "$BRIDGE_DIR/.env" 2>/dev/null | tail -n 1 | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
+bridge_port="${bridge_port:-4000}"
+curl -fsS -m 10 "http://127.0.0.1:${bridge_port}/health" >/dev/null
+echo "bridge_service=nohup:${bridge_port}"
+REMOTE
+
 if [[ "$SKIP_PROOF_RECREATE" == "1" ]]; then
-  echo "[7/9] Skipping proof-server recreate (--skip-proof-recreate)."
+  echo "[9/11] Skipping proof-server recreate (--skip-proof-recreate)."
 else
-  echo "[7/9] Recreate proof-server Docker stack..."
+  echo "[9/11] Recreate proof-server Docker stack..."
   ssh "${SSH_OPTS[@]}" "root@${HOST}" \
     "BRIDGE_DIR='${BRIDGE_DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -366,9 +443,9 @@ REMOTE
 fi
 
 if [[ "$SKIP_MASUMI_RECREATE" == "1" ]]; then
-  echo "[8/9] Skipping Masumi recreate (--skip-masumi-recreate)."
+  echo "[10/11] Skipping Masumi recreate (--skip-masumi-recreate)."
 else
-  echo "[8/9] Recreate Masumi API containers..."
+  echo "[10/11] Recreate Masumi API containers..."
   ssh "${SSH_OPTS[@]}" "root@${HOST}" \
     "MASUMI_DIR='${MASUMI_DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -406,7 +483,7 @@ fi
 MIP_PORT_CHECK="${MIP_PORT:-8090}"
 UI_PORT_CHECK="${UI_PORT:-3333}"
 
-echo "[9/9] Final health checks..."
+echo "[11/11] Final health checks..."
 run_ssh "\
   set -euo pipefail; \
   ui_enabled='1'; \
@@ -418,6 +495,13 @@ run_ssh "\
     if [[ \"\$ui_code\" != '200' ]]; then echo 'ERROR: UI health check failed' >&2; exit 1; fi; \
   else \
     echo 'ui_status=skipped'; \
+  fi; \
+  if [[ -f '${BRIDGE_DIR}/package.json' ]]; then \
+    bridge_port=\$(awk -F= '/^BRIDGE_PORT=/{print \$2}' '${BRIDGE_DIR}/.env' 2>/dev/null | tail -n 1 | tr -d '\"' | tr -d \"'\" | tr -d '[:space:]'); \
+    bridge_port=\${bridge_port:-4000}; \
+    echo -n 'bridge='; curl -fsS http://localhost:\${bridge_port}/health; echo; \
+  else \
+    echo 'bridge=skipped'; \
   fi; \
   if [[ '${SKIP_MASUMI_RECREATE}' != '1' && -f '${MASUMI_DIR}/docker-compose.yml' ]]; then \
     echo -n 'payment='; curl -fsS http://localhost:3001/api/v1/health; echo; \

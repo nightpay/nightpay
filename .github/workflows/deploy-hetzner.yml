@@ -39,24 +39,28 @@ jobs:
             chmod 644 "$HOME/.ssh/known_hosts"
           fi
 
-      - name: Checkout UI Submodule (Optional)
+      - name: Checkout Private Submodules (Optional)
         env:
           NIGHTPAY_UI_REPO_TOKEN: ${{ secrets.NIGHTPAY_UI_REPO_TOKEN }}
+          NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NIGHTPAY_UI_REPO_TOKEN:-}" ]; then
-            echo "NIGHTPAY_UI_REPO_TOKEN not set; skipping UI submodule checkout."
+          TOKEN="${NIGHTPAY_BRIDGE_REPO_TOKEN:-${NIGHTPAY_UI_REPO_TOKEN:-}}"
+          if [ -z "${TOKEN:-}" ]; then
+            echo "No submodule token set (NIGHTPAY_UI_REPO_TOKEN or NIGHTPAY_BRIDGE_REPO_TOKEN); skipping private submodule checkout."
             exit 0
           fi
-          auth="$(printf 'x-access-token:%s' "$NIGHTPAY_UI_REPO_TOKEN" | base64 | tr -d '\n')"
-          if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- ui; then
-            echo "::warning::UI submodule sync failed; continuing without ui/ checkout."
-            exit 0
-          fi
-          if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- ui; then
-            echo "::warning::UI submodule checkout failed (token may be invalid or missing repo access); continuing without ui/ checkout."
-            rm -rf ui || true
-          fi
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          for module in ui bridge; do
+            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- "$module"; then
+              echo "::warning::${module} submodule sync failed; continuing without ${module}/ checkout."
+              continue
+            fi
+            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- "$module"; then
+              echo "::warning::${module} submodule checkout failed (token may be invalid or missing repo access); continuing without ${module}/ checkout."
+              rm -rf "$module" || true
+            fi
+          done
 
       - name: Deploy To Hetzner
         env:
