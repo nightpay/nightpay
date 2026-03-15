@@ -53,27 +53,37 @@ jobs:
           fi
           for module in ui bridge; do
             case "$module" in
-              ui) token="$UI_TOKEN" ;;
-              bridge) token="$BRIDGE_TOKEN" ;;
+              ui)
+                primary_token="$UI_TOKEN"
+                fallback_token="$BRIDGE_TOKEN"
+                ;;
+              bridge)
+                primary_token="$BRIDGE_TOKEN"
+                fallback_token="$UI_TOKEN"
+                ;;
               *) echo "::error::Unexpected submodule '$module'"; exit 1 ;;
             esac
-            if [ -z "${token:-}" ]; then
-              echo "::error::Missing token for submodule '${module}'."
-              exit 1
-            fi
-            auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
             url="$(git config -f .gitmodules --get "submodule.${module}.url" || true)"
             if [ -z "${url:-}" ]; then
               echo "::error::Missing URL for submodule '${module}' in .gitmodules."
               exit 1
             fi
-            echo "Checking token access for ${module} (${url})..."
-            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" HEAD >/dev/null 2>&1; then
-              echo "::error::Token cannot read ${url}. Grant repository read access for this submodule."
+            module_checked=0
+            for token in "$primary_token" "$fallback_token"; do
+              [ -n "${token:-}" ] || continue
+              auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
+              echo "Checking token access for ${module} (${url})..."
+              if git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" HEAD >/dev/null 2>&1; then
+                git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- "$module"
+                git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- "$module"
+                module_checked=1
+                break
+              fi
+            done
+            if [ "$module_checked" != "1" ]; then
+              echo "::error::No configured token can read ${url}. Check NIGHTPAY_UI_REPO_TOKEN and NIGHTPAY_BRIDGE_REPO_TOKEN access."
               exit 1
             fi
-            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- "$module"
-            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- "$module"
             if [ ! -f "${module}/package.json" ]; then
               echo "::error::${module}/package.json missing after submodule checkout."
               exit 1
