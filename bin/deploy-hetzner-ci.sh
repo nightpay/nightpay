@@ -181,33 +181,29 @@ if [[ "$HAS_UI_PAYLOAD" != "1" ]]; then
 fi
 
 tar -C "$TMP_SYNC_DIR" -cf - . \
-  | ssh "${SSH_OPTS[@]}" "root@${HOST}" \
-      "REMOTE_DIR='${REMOTE_DIR}' PRESERVE_REMOTE_UI='${PRESERVE_REMOTE_UI}' bash -s" <<'REMOTE'
-set -euo pipefail
-
-mkdir -p "$REMOTE_DIR"
-if [[ "$PRESERVE_REMOTE_UI" == "1" ]]; then
-  find "$REMOTE_DIR" -mindepth 1 -maxdepth 1 \
-    ! -name '.backups' \
-    ! -name '.agent-playground' \
-    ! -name '.agent-playground.env' \
-    ! -name '.env' \
-    ! -name 'ui' \
-    -exec rm -rf {} +
-else
-  find "$REMOTE_DIR" -mindepth 1 -maxdepth 1 \
-    ! -name '.backups' \
-    ! -name '.agent-playground' \
-    ! -name '.agent-playground.env' \
-    ! -name '.env' \
-    -exec rm -rf {} +
-fi
-
-tar -xf - -C "$REMOTE_DIR"
-if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi
-chown -R deploy:deploy "$REMOTE_DIR"
-find "$REMOTE_DIR" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
-REMOTE
+  | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
+      set -euo pipefail; \
+      mkdir -p '${REMOTE_DIR}'; \
+      if [[ '${PRESERVE_REMOTE_UI}' == '1' ]]; then \
+        find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 \
+          ! -name '.backups' \
+          ! -name '.agent-playground' \
+          ! -name '.agent-playground.env' \
+          ! -name '.env' \
+          ! -name 'ui' \
+          -exec rm -rf {} +; \
+      else \
+        find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 \
+          ! -name '.backups' \
+          ! -name '.agent-playground' \
+          ! -name '.agent-playground.env' \
+          ! -name '.env' \
+          -exec rm -rf {} +; \
+      fi; \
+      tar -xf - -C '${REMOTE_DIR}'; \
+      if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi; \
+      chown -R deploy:deploy '${REMOTE_DIR}'; \
+      find '${REMOTE_DIR}' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
 
 cleanup_tmp
 trap - EXIT
