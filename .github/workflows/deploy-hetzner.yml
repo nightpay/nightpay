@@ -96,11 +96,14 @@ jobs:
               [ -n "${token:-}" ] || continue
               auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
               echo "Checking token access for ${module} (${url})..."
-              if git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" HEAD >/dev/null 2>&1; then
+              if git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" HEAD >/dev/null 2>"/tmp/${module}-ls-remote.err"; then
                 git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- "$module"
                 git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- "$module"
                 module_checked=1
                 break
+              else
+                echo "ls-remote failed for ${module} with current token."
+                tail -n 3 "/tmp/${module}-ls-remote.err" || true
               fi
             done
             if [ "$module_checked" != "1" ]; then
