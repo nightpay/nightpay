@@ -158,10 +158,14 @@ TMP_SYNC_DIR="$(mktemp -d)"
 cleanup_tmp() { rm -rf "$TMP_SYNC_DIR"; }
 trap cleanup_tmp EXIT
 
+HAS_UI_PAYLOAD=0
+HAS_BRIDGE_PAYLOAD=0
+
 git -C "$ROOT_DIR" archive --format=tar HEAD | tar -xf - -C "$TMP_SYNC_DIR"
 
 # If ui/ exists locally (for example checked-out private submodule), include it in deploy payload.
 if [[ -f "$ROOT_DIR/ui/package.json" ]]; then
+  HAS_UI_PAYLOAD=1
   mkdir -p "$TMP_SYNC_DIR/ui"
   tar -C "$ROOT_DIR/ui" \
     --exclude=.git \
@@ -170,26 +174,47 @@ if [[ -f "$ROOT_DIR/ui/package.json" ]]; then
     -cf - . | tar -xf - -C "$TMP_SYNC_DIR/ui"
 fi
 
+PRESERVE_REMOTE_UI=0
+if [[ "$HAS_UI_PAYLOAD" != "1" ]]; then
+  PRESERVE_REMOTE_UI=1
+  echo "WARN: ui submodule missing in CI payload; preserving existing ${REMOTE_DIR}/ui on server."
+fi
+
 tar -C "$TMP_SYNC_DIR" -cf - . \
-  | ssh "${SSH_OPTS[@]}" "root@${HOST}" "\
-      set -euo pipefail; \
-      mkdir -p '${REMOTE_DIR}'; \
-      find '${REMOTE_DIR}' -mindepth 1 -maxdepth 1 \
-        ! -name '.backups' \
-        ! -name '.agent-playground' \
-        ! -name '.agent-playground.env' \
-        ! -name '.env' \
-        -exec rm -rf {} +; \
-      tar -xf - -C '${REMOTE_DIR}'; \
-      if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi; \
-      chown -R deploy:deploy '${REMOTE_DIR}'; \
-      find '${REMOTE_DIR}' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
+  | ssh "${SSH_OPTS[@]}" "root@${HOST}" \
+      "REMOTE_DIR='${REMOTE_DIR}' PRESERVE_REMOTE_UI='${PRESERVE_REMOTE_UI}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+mkdir -p "$REMOTE_DIR"
+if [[ "$PRESERVE_REMOTE_UI" == "1" ]]; then
+  find "$REMOTE_DIR" -mindepth 1 -maxdepth 1 \
+    ! -name '.backups' \
+    ! -name '.agent-playground' \
+    ! -name '.agent-playground.env' \
+    ! -name '.env' \
+    ! -name 'ui' \
+    -exec rm -rf {} +
+else
+  find "$REMOTE_DIR" -mindepth 1 -maxdepth 1 \
+    ! -name '.backups' \
+    ! -name '.agent-playground' \
+    ! -name '.agent-playground.env' \
+    ! -name '.env' \
+    -exec rm -rf {} +
+fi
+
+tar -xf - -C "$REMOTE_DIR"
+if ! id -u deploy >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,docker deploy; fi
+chown -R deploy:deploy "$REMOTE_DIR"
+find "$REMOTE_DIR" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
+REMOTE
 
 cleanup_tmp
 trap - EXIT
 
 echo "[6/11] Sync bridge source to ${HOST}:${BRIDGE_DIR} (if available)..."
 if [[ -f "$ROOT_DIR/bridge/package.json" ]]; then
+  HAS_BRIDGE_PAYLOAD=1
   TMP_BRIDGE_SYNC_DIR="$(mktemp -d)"
   tar -C "$ROOT_DIR/bridge" \
     --exclude=.git \
@@ -209,7 +234,7 @@ if [[ -f "$ROOT_DIR/bridge/package.json" ]]; then
 
   rm -rf "$TMP_BRIDGE_SYNC_DIR"
 else
-  echo "bridge/ submodule not present in CI workspace; skipping bridge sync."
+  echo "WARN: bridge submodule missing in CI payload; skipping bridge source sync."
 fi
 
 echo "[7/11] Restart NightPay services..."
@@ -364,8 +389,9 @@ su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh docto
 REMOTE
 
 echo "[8/11] Build and restart bridge service (if available)..."
-ssh "${SSH_OPTS[@]}" "root@${HOST}" \
-  "BRIDGE_DIR='${BRIDGE_DIR}' bash -s" <<'REMOTE'
+if [[ "$HAS_BRIDGE_PAYLOAD" == "1" ]]; then
+  ssh "${SSH_OPTS[@]}" "root@${HOST}" \
+    "BRIDGE_DIR='${BRIDGE_DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 if [[ ! -f "$BRIDGE_DIR/package.json" ]]; then
@@ -415,6 +441,9 @@ bridge_port="${bridge_port:-4000}"
 curl -fsS -m 10 "http://127.0.0.1:${bridge_port}/health" >/dev/null
 echo "bridge_service=nohup:${bridge_port}"
 REMOTE
+else
+  echo "WARN: bridge payload missing in CI workspace; skipping bridge build/restart."
+fi
 
 if [[ "$SKIP_PROOF_RECREATE" == "1" ]]; then
   echo "[9/11] Skipping proof-server recreate (--skip-proof-recreate)."
