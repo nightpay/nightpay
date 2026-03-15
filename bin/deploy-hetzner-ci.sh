@@ -482,6 +482,33 @@ fi
 
 cd "$MASUMI_DIR"
 
+# SECURITY: force Postgres port bindings to loopback only so DB is not reachable from the public internet.
+python3 - <<'PY'
+from pathlib import Path
+import re
+import sys
+
+compose = Path("docker-compose.yml")
+text = compose.read_text()
+
+replacements = {
+    "5432:5432": "127.0.0.1:5432:5432",
+    "5433:5432": "127.0.0.1:5433:5432",
+    "15432:5432": "127.0.0.1:15432:5432",
+    "15433:5432": "127.0.0.1:15433:5432",
+}
+for src, dst in replacements.items():
+    text = text.replace(f'"{src}"', f'"{dst}"')
+    text = text.replace(f"'{src}'", f"'{dst}'")
+
+bad = re.findall(r'(?<!127\.0\.0\.1:)(?:5432|5433|15432|15433):5432', text)
+if bad:
+    print("ERROR: docker-compose.yml still contains non-loopback Postgres port mappings:", sorted(set(bad)), file=sys.stderr)
+    sys.exit(1)
+
+compose.write_text(text)
+PY
+
 # Keep DB volumes stable; only recreate API containers unless DB services are down.
 docker compose up -d postgres-payment postgres-registry
 docker compose pull payment-service registry-service || true
@@ -504,6 +531,21 @@ docker compose logs --tail 80 payment-service registry-service >&2
 exit 1
 REMOTE
 fi
+
+echo "[10.5/11] Verify Masumi DB ports are private..."
+run_ssh "\
+  set -euo pipefail; \
+  if [[ ! -f '${MASUMI_DIR}/docker-compose.yml' ]]; then \
+    echo 'masumi_db_ports=skipped'; \
+    exit 0; \
+  fi; \
+  exposed=\$(ss -ltn | awk 'NR>1 && \$4 ~ /:(5432|5433|15432|15433)\$/ && \$4 !~ /^127\\.0\\.0\\.1:/ {print \$4}'); \
+  if [[ -n \"\$exposed\" ]]; then \
+    echo 'ERROR: Masumi Postgres ports are publicly reachable:' >&2; \
+    echo \"\$exposed\" >&2; \
+    exit 1; \
+  fi; \
+  echo 'masumi_db_ports=private'"
 
 MIP_PORT_CHECK="${MIP_PORT:-8090}"
 UI_PORT_CHECK="${UI_PORT:-3333}"
