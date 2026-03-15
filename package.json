@@ -33,12 +33,11 @@
     "test:smoke": "node test/run-smoke-test.mjs"
   },
   "files": [
-    "bin/",
+    "bin/cli.js",
     "skills/",
     "README.md",
     "LICENSE",
     "nightpay_sdk.py",
-    "scripts/",
     "plugin.js",
     "openclaw.plugin.json"
   ],
