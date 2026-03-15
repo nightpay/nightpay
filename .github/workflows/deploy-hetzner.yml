@@ -23,6 +23,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Prepare SSH
         env:
@@ -45,6 +46,8 @@ jobs:
           NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.REPO_NIGHTPAY_BRIDGE_REPO_TOKEN || secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
         run: |
           set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          git config --local --unset-all http.https://github.com/.extraheader || true
           sanitize_token() {
             local token="$1"
             token="${token//$'\r'/}"
