@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// NightPay OpenClaw plugin entrypoint -- v0.3.9
+// NightPay OpenClaw plugin entrypoint -- v0.3.10
 // Fix: always rmSync+cpSync on gateway_start (v0.3.8 skipped real dirs)
 
 import { fileURLToPath } from "node:url";
@@ -76,7 +76,7 @@ const FULL_CONTEXT = [
 ].join("\n");
 
 const OPERATING_MODEL = [
-  "NightPay Operating Model -- v0.3.9",
+  "NightPay Operating Model -- v0.3.10",
   "=".repeat(50),
   "",
   "POOL CREATION",
