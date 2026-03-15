@@ -1,0 +1,21 @@
+{
+  "$comment": "Merge this into ~/.openclaw/openclaw.json under 'skills.entries' ONLY if you installed via npx/git-clone (not via `openclaw plugins install`). The plugin installer handles this automatically. Fill in MASUMI_API_KEY, OPERATOR_ADDRESS, and BRIDGE_URL before applying.",
+  "skills": {
+    "entries": {
+      "nightpay": {
+        "enabled": true,
+        "env": {
+          "MASUMI_API_KEY": "",
+          "OPERATOR_ADDRESS": "",
+          "MIDNIGHT_NETWORK": "preprod",
+          "OPERATOR_FEE_BPS": "200",
+          "RECEIPT_CONTRACT_ADDRESS": "",
+          "OPERATOR_SECRET_KEY": "",
+          "CONTENT_SAFETY_URL": "",
+          "BRIDGE_URL": "",
+          "NIGHTPAY_API_URL": "https://api.nightpay.dev"
+        }
+      }
+    }
+  }
+}

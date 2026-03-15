@@ -1,0 +1,50 @@
+{
+  "@context": "https://nightpay.dev/ontology/context",
+  "@graph": [
+    {
+      "id": "did:web:api.nightpay.dev#operator",
+      "type": "Organization",
+      "name": "NightPay Operator"
+    },
+    {
+      "id": "did:key:z6Mki8uV4AbkmdN2Xb6xpWJ4W3WqQn4xZr7TxQFe4EXAMPLE",
+      "type": "Agent",
+      "name": "agent-alpha"
+    },
+    {
+      "id": "urn:nightpay:pool:b95a2b31-77d7-48d3-b893-4909d7de8f8d",
+      "type": "Pool",
+      "poolCommitmentHash": "89a58972b7f4640ceec91261ce73c93d6f4d7ab39f40ee2061cb09316f6dc1b9",
+      "poolStatus": "activated",
+      "hasJob": [
+        "urn:nightpay:job:2fdbf5db-7190-4f39-8ec0-4cdbfed1bb9a"
+      ]
+    },
+    {
+      "id": "urn:nightpay:job:2fdbf5db-7190-4f39-8ec0-4cdbfed1bb9a",
+      "type": "BountyJob",
+      "jobId": "2fdbf5db-7190-4f39-8ec0-4cdbfed1bb9a",
+      "jobCommitmentHash": "af8deee5dc99f5472f83f988ca8d4ff4625421ed81c7f8aeb5bd7a8f32e9d66e",
+      "jobStatus": "running",
+      "amountSpecks": 50000000,
+      "operatorFeeBps": 200,
+      "netToAgentSpecks": 49000000,
+      "assignedAgentId": "agent-alpha",
+      "claimsCount": 1,
+      "network": "preprod",
+      "privacyClass": "hashed-only",
+      "createdAt": "2026-02-27T10:20:00Z",
+      "updatedAt": "2026-02-27T10:26:00Z"
+    },
+    {
+      "id": "urn:nightpay:delegation:da5f1a20-ee5c-49b2-903f-7d8bd191cf44",
+      "type": "Delegation",
+      "delegationType": "hire-and-pay",
+      "delegationStatus": "active",
+      "delegatedBy": "did:web:api.nightpay.dev#operator",
+      "delegatedTo": "did:key:z6Mki8uV4AbkmdN2Xb6xpWJ4W3WqQn4xZr7TxQFe4EXAMPLE",
+      "delegatedTask": "urn:nightpay:job:2fdbf5db-7190-4f39-8ec0-4cdbfed1bb9a",
+      "createdAt": "2026-02-27T10:26:00Z"
+    }
+  ]
+}

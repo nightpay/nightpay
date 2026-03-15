@@ -1,0 +1,51 @@
+{
+  "name": "nightpay",
+  "version": "0.3.11",
+  "description": "Anonymous community bounties for AI agents. Midnight ZK proofs + Masumi settlement + Cardano finality.",
+  "keywords": [
+    "bounties",
+    "community-bounties",
+    "midnight",
+    "cardano",
+    "masumi",
+    "openclaw",
+    "zk-proofs",
+    "privacy",
+    "ai-agents",
+    "zero-knowledge",
+    "agent-skills",
+    "clawhub"
+  ],
+  "homepage": "https://github.com/nightpay/nightpay",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nightpay/nightpay.git"
+  },
+  "license": "AGPL-3.0-only",
+  "author": "nightpay contributors",
+  "type": "module",
+  "bin": {
+    "nightpay": "bin/cli.js"
+  },
+  "scripts": {
+    "test": "node test/run-quality-gate.mjs",
+    "test:quality": "node test/run-quality-gate.mjs",
+    "test:smoke": "node test/run-smoke-test.mjs"
+  },
+  "files": [
+    "bin/",
+    "skills/",
+    "README.md",
+    "LICENSE",
+    "nightpay_sdk.py",
+    "scripts/",
+    "plugin.js",
+    "openclaw.plugin.json"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./plugin.js"
+    ],
+    "type": "skillBundle"
+  }
+}

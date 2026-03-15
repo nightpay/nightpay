@@ -1,0 +1,160 @@
+name: Deploy Hetzner Staging
+
+'on':
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hetzner-staging
+  cancel-in-progress: true
+
+jobs:
+  deploy-staging:
+    if: github.ref_name == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_STAGING_SSH_KEY: ${{ secrets.HETZNER_STAGING_SSH_KEY }}
+          HETZNER_KNOWN_HOSTS: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+          HETZNER_STAGING_KNOWN_HOSTS: ${{ secrets.HETZNER_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          KEY_CONTENT="${HETZNER_STAGING_SSH_KEY:-${HETZNER_SSH_KEY:-}}"
+          KNOWN_HOSTS_CONTENT="${HETZNER_STAGING_KNOWN_HOSTS:-${HETZNER_KNOWN_HOSTS:-}}"
+          test -n "${KEY_CONTENT:-}" || { echo "Missing HETZNER_STAGING_SSH_KEY or HETZNER_SSH_KEY"; exit 1; }
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$KEY_CONTENT" > "$HOME/.ssh/hetzner_deploy_key"
+          chmod 600 "$HOME/.ssh/hetzner_deploy_key"
+          if [ -n "${KNOWN_HOSTS_CONTENT:-}" ]; then
+            printf '%s\n' "$KNOWN_HOSTS_CONTENT" > "$HOME/.ssh/known_hosts"
+            chmod 644 "$HOME/.ssh/known_hosts"
+          fi
+
+      - name: Checkout Private Submodules (Required)
+        env:
+          NIGHTPAY_UI_REPO_TOKEN: ${{ secrets.REPO_NIGHTPAY_UI_REPO_TOKEN || secrets.NIGHTPAY_UI_REPO_TOKEN }}
+          NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.REPO_NIGHTPAY_BRIDGE_REPO_TOKEN || secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          sanitize_token() {
+            local token="$1"
+            token="${token//$'\r'/}"
+            token="${token//$'\n'/}"
+            token="${token#"${token%%[![:space:]]*}"}"
+            token="${token%"${token##*[![:space:]]}"}"
+            token="${token#\"}"
+            token="${token%\"}"
+            token="${token#\'}"
+            token="${token%\'}"
+            printf '%s' "$token"
+          }
+
+          UI_TOKEN="$(sanitize_token "${NIGHTPAY_UI_REPO_TOKEN:-${NIGHTPAY_BRIDGE_REPO_TOKEN:-}}")"
+          BRIDGE_TOKEN="$(sanitize_token "${NIGHTPAY_BRIDGE_REPO_TOKEN:-${NIGHTPAY_UI_REPO_TOKEN:-}}")"
+          if [ -z "${UI_TOKEN:-}" ] && [ -z "${BRIDGE_TOKEN:-}" ]; then
+            echo "::error::Missing submodule token. Set NIGHTPAY_UI_REPO_TOKEN (and optionally NIGHTPAY_BRIDGE_REPO_TOKEN)."
+            exit 1
+          fi
+          for module in ui bridge; do
+            case "$module" in
+              ui)
+                primary_token="$UI_TOKEN"
+                fallback_token="$BRIDGE_TOKEN"
+                ;;
+              bridge)
+                primary_token="$BRIDGE_TOKEN"
+                fallback_token="$UI_TOKEN"
+                ;;
+              *) echo "::error::Unexpected submodule '$module'"; exit 1 ;;
+            esac
+            url="$(git config -f .gitmodules --get "submodule.${module}.url" || true)"
+            if [ -z "${url:-}" ]; then
+              echo "::error::Missing URL for submodule '${module}' in .gitmodules."
+              exit 1
+            fi
+            module_checked=0
+            for token in "$primary_token" "$fallback_token"; do
+              [ -n "${token:-}" ] || continue
+              auth="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
+              echo "Checking token access for ${module} (${url})..."
+              if git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" HEAD >/dev/null 2>"/tmp/${module}-ls-remote.err"; then
+                git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- "$module"
+                git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- "$module"
+                module_checked=1
+                break
+              else
+                echo "ls-remote failed for ${module} with current token."
+                tail -n 3 "/tmp/${module}-ls-remote.err" || true
+              fi
+            done
+            if [ "$module_checked" != "1" ]; then
+              echo "::error::No configured token can read ${url}. Check NIGHTPAY_UI_REPO_TOKEN and NIGHTPAY_BRIDGE_REPO_TOKEN access."
+              exit 1
+            fi
+            if [ ! -f "${module}/package.json" ]; then
+              echo "::error::${module}/package.json missing after submodule checkout."
+              exit 1
+            fi
+          done
+
+      - name: Deploy To Hetzner (Staging)
+        env:
+          HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
+          HETZNER_STAGING_HOST: ${{ secrets.HETZNER_STAGING_HOST }}
+          HETZNER_SSH_PORT: ${{ secrets.HETZNER_SSH_PORT }}
+          HETZNER_STAGING_SSH_PORT: ${{ secrets.HETZNER_STAGING_SSH_PORT }}
+          HETZNER_STAGING_REMOTE_DIR: ${{ vars.HETZNER_STAGING_REMOTE_DIR }}
+          HETZNER_STAGING_UI_PORT: ${{ vars.HETZNER_STAGING_UI_PORT }}
+          HETZNER_STAGING_MIP_PORT: ${{ vars.HETZNER_STAGING_MIP_PORT }}
+        run: |
+          set -euo pipefail
+          DEPLOY_HOST="${HETZNER_STAGING_HOST:-${HETZNER_HOST:-}}"
+          DEPLOY_PORT="${HETZNER_STAGING_SSH_PORT:-${HETZNER_SSH_PORT:-22}}"
+          REMOTE_DIR="${HETZNER_STAGING_REMOTE_DIR:-/opt/nightpay-staging}"
+          UI_PORT="${HETZNER_STAGING_UI_PORT:-3334}"
+          MIP_PORT="${HETZNER_STAGING_MIP_PORT:-8091}"
+          test -n "${DEPLOY_HOST:-}" || { echo "Missing HETZNER_STAGING_HOST or HETZNER_HOST"; exit 1; }
+          chmod +x bin/deploy-hetzner-ci.sh
+          bash bin/deploy-hetzner-ci.sh \
+            --host "$DEPLOY_HOST" \
+            --ssh-key "$HOME/.ssh/hetzner_deploy_key" \
+            --ssh-port "$DEPLOY_PORT" \
+            --remote-dir "$REMOTE_DIR" \
+            --ui-port "$UI_PORT" \
+            --mip-port "$MIP_PORT" \
+            --skip-proof-recreate \
+            --skip-masumi-recreate
+
+      - name: Validate Web Endpoints (Staging Gate)
+        env:
+          HETZNER_STAGING_SITE_URL: ${{ vars.HETZNER_STAGING_SITE_URL }}
+          HETZNER_STAGING_BOARD_URL: ${{ vars.HETZNER_STAGING_BOARD_URL }}
+          HETZNER_STAGING_API_URL: ${{ vars.HETZNER_STAGING_API_URL }}
+          HETZNER_STAGING_BRIDGE_URL: ${{ vars.HETZNER_STAGING_BRIDGE_URL }}
+        run: |
+          set -euo pipefail
+          site_url="${HETZNER_STAGING_SITE_URL:-https://staging.nightpay.dev/}"
+          board_url="${HETZNER_STAGING_BOARD_URL:-https://staging.nightpay.dev/}"
+          api_url="${HETZNER_STAGING_API_URL:-https://api.staging.nightpay.dev/availability}"
+          bridge_url="${HETZNER_STAGING_BRIDGE_URL:-https://bridge.nightpay.dev/health}"
+          bash bin/validate-web-endpoints.sh \
+            --env-name staging \
+            --site-url "$site_url" \
+            --board-url "$board_url" \
+            --api-url "$api_url" \
+            --bridge-url "$bridge_url"
