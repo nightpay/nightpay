@@ -45,8 +45,21 @@ jobs:
           NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          UI_TOKEN="${NIGHTPAY_UI_REPO_TOKEN:-${NIGHTPAY_BRIDGE_REPO_TOKEN:-}}"
-          BRIDGE_TOKEN="${NIGHTPAY_BRIDGE_REPO_TOKEN:-${NIGHTPAY_UI_REPO_TOKEN:-}}"
+          sanitize_token() {
+            local token="$1"
+            token="${token//$'\r'/}"
+            token="${token//$'\n'/}"
+            token="${token#"${token%%[![:space:]]*}"}"
+            token="${token%"${token##*[![:space:]]}"}"
+            token="${token#\"}"
+            token="${token%\"}"
+            token="${token#\'}"
+            token="${token%\'}"
+            printf '%s' "$token"
+          }
+
+          UI_TOKEN="$(sanitize_token "${NIGHTPAY_UI_REPO_TOKEN:-${NIGHTPAY_BRIDGE_REPO_TOKEN:-}}")"
+          BRIDGE_TOKEN="$(sanitize_token "${NIGHTPAY_BRIDGE_REPO_TOKEN:-${NIGHTPAY_UI_REPO_TOKEN:-}}")"
           if [ -z "${UI_TOKEN:-}" ] && [ -z "${BRIDGE_TOKEN:-}" ]; then
             echo "::error::Missing submodule token. Set NIGHTPAY_UI_REPO_TOKEN (and optionally NIGHTPAY_BRIDGE_REPO_TOKEN)."
             exit 1
