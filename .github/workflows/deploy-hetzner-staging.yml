@@ -70,16 +70,6 @@ jobs:
             echo "::error::Missing submodule token. Set NIGHTPAY_UI_REPO_TOKEN (and optionally NIGHTPAY_BRIDGE_REPO_TOKEN)."
             exit 1
           fi
-          for label in UI_TOKEN BRIDGE_TOKEN; do
-            token="${!label}"
-            if [ -z "${token:-}" ]; then
-              echo "::warning::${label} is empty after normalization."
-              continue
-            fi
-            ui_code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/nightpay/nightpay-ui")"
-            bridge_code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/nightpay/nightpay-bridge")"
-            echo "${label}: ui_repo_http=${ui_code} bridge_repo_http=${bridge_code}"
-          done
           for module in ui bridge; do
             case "$module" in
               ui)
