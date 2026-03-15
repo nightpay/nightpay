@@ -16,7 +16,7 @@
     "agent-skills",
     "clawhub"
   ],
-  "homepage": "https://github.com/nightpay/nightpay",
+  "homepage": "https://nightpay.dev",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nightpay/nightpay.git"
