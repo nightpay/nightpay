@@ -419,6 +419,8 @@ fi
 # Fallback for hosts without a systemd unit: run bridge as deploy user with .env.
 pkill -u deploy -f "$BRIDGE_DIR/dist/server.js" || true
 pkill -u deploy -f "node dist/server.js" || true
+pkill -u deploy -f "$BRIDGE_DIR/src/server.ts" || true
+pkill -u deploy -f "tsx" || true
 su - deploy -c "cd '$BRIDGE_DIR' && bash -lc '
   set -euo pipefail
   if [[ -f .bridge.pid ]]; then
@@ -434,7 +436,18 @@ su - deploy -c "cd '$BRIDGE_DIR' && bash -lc '
 
 bridge_port="$(awk -F= '/^BRIDGE_PORT=/{print $2}' "$BRIDGE_DIR/.env" 2>/dev/null | tail -n 1 | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
 bridge_port="${bridge_port:-4000}"
-curl -fsS -m 10 "http://127.0.0.1:${bridge_port}/health" >/dev/null
+for i in $(seq 1 30); do
+  if curl -fsS -m 5 "http://127.0.0.1:${bridge_port}/health" >/dev/null; then
+    echo "bridge_health=ok"
+    break
+  fi
+  if [[ "$i" == "30" ]]; then
+    echo "ERROR: bridge health check failed after restart." >&2
+    tail -n 120 "$BRIDGE_DIR/bridge.log" >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
 echo "bridge_service=nohup:${bridge_port}"
 REMOTE
 else
