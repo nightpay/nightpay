@@ -148,13 +148,13 @@ jobs:
           HETZNER_STAGING_BRIDGE_URL: ${{ vars.HETZNER_STAGING_BRIDGE_URL }}
         run: |
           set -euo pipefail
-          test -n "${HETZNER_STAGING_SITE_URL:-}" || { echo "Missing var HETZNER_STAGING_SITE_URL"; exit 1; }
-          test -n "${HETZNER_STAGING_BOARD_URL:-}" || { echo "Missing var HETZNER_STAGING_BOARD_URL"; exit 1; }
-          test -n "${HETZNER_STAGING_API_URL:-}" || { echo "Missing var HETZNER_STAGING_API_URL"; exit 1; }
-          test -n "${HETZNER_STAGING_BRIDGE_URL:-}" || { echo "Missing var HETZNER_STAGING_BRIDGE_URL"; exit 1; }
+          site_url="${HETZNER_STAGING_SITE_URL:-https://staging.nightpay.dev/}"
+          board_url="${HETZNER_STAGING_BOARD_URL:-https://staging.nightpay.dev/}"
+          api_url="${HETZNER_STAGING_API_URL:-https://api.staging.nightpay.dev/availability}"
+          bridge_url="${HETZNER_STAGING_BRIDGE_URL:-https://bridge.nightpay.dev/health}"
           bash bin/validate-web-endpoints.sh \
             --env-name staging \
-            --site-url "$HETZNER_STAGING_SITE_URL" \
-            --board-url "$HETZNER_STAGING_BOARD_URL" \
-            --api-url "$HETZNER_STAGING_API_URL" \
-            --bridge-url "$HETZNER_STAGING_BRIDGE_URL"
+            --site-url "$site_url" \
+            --board-url "$board_url" \
+            --api-url "$api_url" \
+            --bridge-url "$bridge_url"

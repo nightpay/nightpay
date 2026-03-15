@@ -75,10 +75,10 @@ Optional staging variables:
 - `HETZNER_STAGING_REMOTE_DIR` (default `/opt/nightpay-staging`)
 - `HETZNER_STAGING_UI_PORT` (default `3334`)
 - `HETZNER_STAGING_MIP_PORT` (default `8091`)
-- `HETZNER_STAGING_SITE_URL` (**required** for staging web gate)
-- `HETZNER_STAGING_BOARD_URL` (**required** for staging web gate)
-- `HETZNER_STAGING_API_URL` (**required** for staging web gate)
-- `HETZNER_STAGING_BRIDGE_URL` (**required** for staging web gate)
+- `HETZNER_STAGING_SITE_URL` (optional; default `https://staging.nightpay.dev/`)
+- `HETZNER_STAGING_BOARD_URL` (optional; default `https://staging.nightpay.dev/`)
+- `HETZNER_STAGING_API_URL` (optional; default `https://api.staging.nightpay.dev/availability`)
+- `HETZNER_STAGING_BRIDGE_URL` (optional; default `https://bridge.nightpay.dev/health`)
 
 Staging now has a mandatory web gate: deploy fails unless all four staging URLs return healthy responses.
 
