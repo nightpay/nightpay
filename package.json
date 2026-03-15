@@ -38,6 +38,14 @@
     "README.md",
     "LICENSE",
     "nightpay_sdk.py",
-    "scripts/"
-  ]
+    "scripts/",
+    "plugin.js",
+    "openclaw.plugin.json"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./plugin.js"
+    ],
+    "type": "skillBundle"
+  }
 }

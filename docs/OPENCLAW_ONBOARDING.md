@@ -1,15 +1,13 @@
 # OpenClaw Agent Onboarding Guide
 
-> Real-world, step-by-step guide for onboarding NightPay as an OpenClaw agent.
-> Written from an actual installation session — includes what worked, what didn't,
-> and how to get from zero to a running NightPay agent in under 10 minutes.
+> Step-by-step guide for installing NightPay on OpenClaw.
+> Three paths: plugin install (recommended), npx init, or git clone (advanced).
 
 ## Prerequisites
 
 | Requirement | Why |
 |---|---|
 | OpenClaw installed and gateway running | Agent host |
-| `git` | Clone the skill repo |
 | `bash`, `curl`, `openssl`, `sqlite3`, `sha256sum` | Required by NightPay scripts |
 | Masumi API key + operator credentials | Payment settlement |
 | Midnight preprod wallet (funded with NIGHT + DUST) | ZK proofs + on-chain settlement |
@@ -25,316 +23,236 @@ openclaw config validate
 
 ## Installation Paths
 
-NightPay supports four installation methods. **Pick one.**
-
-### Path A: ClawHub (Recommended)
-
-```bash
-clawhub install nightpay
-```
-
-If you want it scoped to a specific agent:
-
-```bash
-clawhub install nightpay --workspace ~/.openclaw/workspace-nightpay
-```
-
-**Pros:** Handles directory structure automatically, versioned updates via `clawhub update`.
-**Cons:** Requires ClawHub CLI (`npx clawhub` or global install).
-
-### Path B: npx init
-
-```bash
-npx nightpay init
-```
-
-Copies the skill into `./skills/nightpay/` relative to your current directory.
-
-### Path C: Git Clone (Manual)
-
-> **This is the path documented below in detail**, since it is what most developers
-> reach for first and has the most gotchas.
-
-```bash
-git clone https://github.com/nightpay/nightpay.git <target-dir>
-```
-
-### Path D: Masumi Service Registration
-
-For agent-to-agent discovery (advanced). See README.md.
+| Path | Command | Skill auto-discovered? | Fragment merge needed? |
+|------|---------|:---:|:---:|
+| **A: Plugin install** (recommended) | `openclaw plugins install` + `enable` | ✅ | ❌ |
+| **B: npx init** | `npx nightpay init` | ❌ (workspace copy) | ✅ |
+| **C: ClawHub** | `clawhub install nightpay` | ✅ | ❌ |
+| **D: Git clone** (advanced) | `git clone` + flatten | ❌ | ✅ |
 
 ---
 
-## Path C Walkthrough: Git Clone (Full Manual Install)
+## Path A: Plugin Install (Recommended)
 
-### Step 1 — Create the OpenClaw agent
+The cleanest path. Skill files live inside the installed npm package — OpenClaw auto-discovers them.
 
-```bash
-openclaw agents add nightpay
-```
-
-This launches an interactive TUI. Accept the default workspace
-(`~/.openclaw/workspace-nightpay`) or specify your own.
-
-> **Automation note:** As of March 2026, `openclaw agents add` has no
-> `--non-interactive` flag. If you need to script this, add the agent entry
-> directly to `openclaw.json`:
->
-> ```python
-> import json
-> with open(os.path.expanduser("~/.openclaw/openclaw.json")) as f:
->     config = json.load(f)
-> config["agents"]["list"].append({
->     "id": "nightpay",
->     "name": "nightpay",
->     "workspace": "~/.openclaw/workspace-nightpay",
->     "model": { "primary": "openai/gpt-5.1-codex-mini" }
-> })
-> with open(os.path.expanduser("~/.openclaw/openclaw.json"), "w") as f:
->     json.dump(config, f, indent=2)
-> ```
->
-> Always run `openclaw config validate` after manual config edits.
-
-### Step 2 — Clone into the workspace skills directory
+### Step 1 — Install the plugin package
 
 ```bash
-git clone https://github.com/nightpay/nightpay.git \
-  ~/.openclaw/workspace-nightpay/skills/nightpay
+openclaw plugins install nightpay
 ```
 
-### Step 3 — Flatten the skill directory (CRITICAL)
+This copies the package to `~/.openclaw/extensions/nightpay/`. The install step may print a
+config-write warning — that's expected; the next step handles it.
 
-**This is the step most people miss.** The repo nests the actual OpenClaw skill
-one level deep:
-
-```
-# What git clone gives you:
-workspace-nightpay/skills/nightpay/          # repo root
-  README.md
-  package.json
-  skills/
-    nightpay/                                 # <-- actual skill is HERE
-      SKILL.md                                # <-- OpenClaw looks for this
-      scripts/
-      rules/
-      ontology/
-      openclaw-fragment.json
-
-# What OpenClaw expects:
-workspace-nightpay/skills/nightpay/
-  SKILL.md                                    # <-- must be at THIS level
-  scripts/
-  rules/
-  ...
-```
-
-**Fix:** Copy the inner skill contents up to the repo root level:
+### Step 2 — Enable the plugin
 
 ```bash
-cp -r ~/.openclaw/workspace-nightpay/skills/nightpay/skills/nightpay/* \
-      ~/.openclaw/workspace-nightpay/skills/nightpay/
+openclaw plugins enable nightpay
 ```
 
-After this, both the repo files (README, package.json, .git) and the skill files
-(SKILL.md, scripts/, rules/) coexist at the same level. This is fine — OpenClaw
-only looks for `SKILL.md`.
-
-**Verify:**
+This registers the plugin and adds `nightpay` to `plugins.allow`. Verify:
 
 ```bash
-ls ~/.openclaw/workspace-nightpay/skills/nightpay/SKILL.md
-# Should exist and be ~17KB
+openclaw plugins list
+# Expected: NightPay | nightpay | loaded
 ```
 
-> **Why does the repo nest skills?** The `skills/nightpay/` structure is the
-> ClawHub packaging convention. `clawhub install` and `npx nightpay init` both
-> handle the extraction automatically. Raw `git clone` does not.
-
-### Step 4 — Make scripts executable
+### Step 3 — Set credentials
 
 ```bash
-chmod +x ~/.openclaw/workspace-nightpay/skills/nightpay/scripts/*.sh
-```
-
-### Step 5 — Merge the config fragment
-
-The repo ships `openclaw-fragment.json` with the skill entry and placeholder
-env vars. Merge it into your main config:
-
-```bash
-python3 -c "
-import json
-
-with open('\$HOME/.openclaw/openclaw.json') as f:
-    config = json.load(f)
-
-with open('\$HOME/.openclaw/workspace-nightpay/skills/nightpay/openclaw-fragment.json') as f:
-    fragment = json.load(f)
-
-config.setdefault('skills', {}).setdefault('entries', {})
-config['skills']['entries']['nightpay'] = fragment['skills']['entries']['nightpay']
-
-with open('\$HOME/.openclaw/openclaw.json', 'w') as f:
-    json.dump(config, f, indent=2)
-
-print('Merged nightpay skill entry into openclaw.json')
-"
-```
-
-Or manually copy the `skills.entries.nightpay` block from `openclaw-fragment.json`
-into your `openclaw.json`.
-
-### Step 6 — Configure environment variables
-
-The fragment sets placeholder values. Replace them with real credentials:
-
-```bash
-openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "<your-key>"
-openclaw config set skills.entries.nightpay.env.NIGHTPAY_API_URL "https://api.nightpay.dev"
+openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "your-masumi-api-key"
+openclaw config set skills.entries.nightpay.env.OPERATOR_ADDRESS "your-64-char-hex"
 openclaw config set skills.entries.nightpay.env.BRIDGE_URL "https://bridge.nightpay.dev"
-openclaw config set skills.entries.nightpay.env.OPERATOR_ADDRESS "<64-char-hex>"
-openclaw config set skills.entries.nightpay.env.RECEIPT_CONTRACT_ADDRESS "<64-char-hex>"
-openclaw config set skills.entries.nightpay.env.OPERATOR_SECRET_KEY "<your-secret>"
+# NIGHTPAY_API_URL defaults to https://api.nightpay.dev — skip unless self-hosting
 openclaw config set skills.entries.nightpay.env.MIDNIGHT_NETWORK "preprod"
 openclaw config set skills.entries.nightpay.env.OPERATOR_FEE_BPS "200"
 ```
 
-> **Security note:** For production, consider migrating these to the OpenClaw
-> secrets vault (`openclaw secrets configure`) instead of plaintext env vars.
-
-### Step 7 — Validate and bind
-
+For production: consider migrating secrets to the vault:
 ```bash
-openclaw config validate
-openclaw agents bind nightpay telegram <chat_id>
-openclaw agents list
-openclaw agents bindings
+openclaw secrets configure
 ```
 
-### Step 8 — Test
+### Step 4 — Restart and verify
 
-Send a message to the bound channel mentioning "bounty", "nightpay", or
-"create a pool" — the skill should activate.
+```bash
+openclaw gateway restart
+openclaw config validate
+openclaw plugins list              # NightPay: loaded
+```
+
+Test with `/nightpay status` in your connected channel — should return API URL + network.
+
+### Step 5 — (Optional) Bind to a channel
+
+```bash
+openclaw agents bind main telegram <chat_id>
+```
+
+Or create a dedicated agent:
+```bash
+openclaw agents add nightpay
+openclaw agents bind nightpay telegram <chat_id>
+```
+
+---
+
+## Path B: npx init + Fragment Merge
+
+Use this when you want skill files in a specific workspace directory.
+
+```bash
+# 1. Install skill files into your workspace
+cd ~/.openclaw/workspace-<agent>
+npx nightpay init
+# -> Creates ./skills/nightpay/
+
+# 2. Merge config fragment
+python3 -c "
+import json, os
+
+cfg = os.path.expanduser('~/.openclaw/openclaw.json')
+frag = os.path.expanduser('~/.openclaw/workspace-<agent>/skills/nightpay/openclaw-fragment.json')
+
+with open(cfg) as f: config = json.load(f)
+with open(frag) as f: fragment = json.load(f)
+
+config.setdefault('skills', {}).setdefault('entries', {})
+config['skills']['entries']['nightpay'] = fragment['skills']['entries']['nightpay']
+
+with open(cfg, 'w') as f: json.dump(config, f, indent=2)
+print('Merged')
+"
+
+# 3. Set real credentials (fragment has empty placeholders)
+openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "your-key"
+openclaw config set skills.entries.nightpay.env.OPERATOR_ADDRESS "64-char-hex"
+openclaw config set skills.entries.nightpay.env.BRIDGE_URL "https://bridge.nightpay.dev"
+
+# 4. Validate and restart
+openclaw config validate
+openclaw gateway restart
+```
+
+---
+
+## Path C: ClawHub
+
+```bash
+clawhub install nightpay
+# Or scoped to a specific agent workspace:
+clawhub install nightpay --workspace ~/.openclaw/workspace-nightpay
+```
+
+ClawHub handles directory structure and versioning automatically.
+Update later: `clawhub update nightpay`
+
+---
+
+## Path D: Git Clone (Advanced)
+
+> Use only for development/contribution. For production installs, use Path A or B.
+
+```bash
+# 1. (Optional) Create a dedicated agent
+openclaw agents add nightpay
+
+# 2. Clone into workspace
+git clone https://github.com/nightpay/nightpay.git \
+  ~/.openclaw/workspace-nightpay/skills/nightpay
+
+# 3. CRITICAL: Flatten — git clone nests the skill one level deep
+cp -r ~/.openclaw/workspace-nightpay/skills/nightpay/skills/nightpay/* \
+      ~/.openclaw/workspace-nightpay/skills/nightpay/
+chmod +x ~/.openclaw/workspace-nightpay/skills/nightpay/scripts/*.sh
+
+# 4. Verify flatten worked
+ls ~/.openclaw/workspace-nightpay/skills/nightpay/SKILL.md
+# Expected: file exists
+
+# 5. Merge config fragment (same as Path B Step 2 above)
+# 6. Set real env values
+# 7. openclaw config validate && openclaw gateway restart
+```
 
 ---
 
 ## Environment Variables Reference
 
-| Variable | Required | Description | Example |
+| Variable | Required | Default | Description |
 |---|---|---|---|
-| `MASUMI_API_KEY` | Yes | Masumi payment API key | `msk_...` |
-| `NIGHTPAY_API_URL` | Yes | MIP-003 API base URL | `https://api.nightpay.dev` |
-| `BRIDGE_URL` | Yes* | Midnight bridge endpoint | `https://bridge.nightpay.dev` |
-| `OPERATOR_ADDRESS` | Yes | 64-char hex operator address | `a1b2c3...` |
-| `RECEIPT_CONTRACT_ADDRESS` | Yes | 64-char hex contract address | `d4e5f6...` |
-| `OPERATOR_SECRET_KEY` | Yes | Operator secret for auth | (random) |
-| `MIDNIGHT_NETWORK` | Yes | Network target | `preprod` or `mainnet` |
-| `OPERATOR_FEE_BPS` | No | Fee in basis points (default 200 = 2%) | `200` |
-| `DEFAULT_POOL_DEADLINE_HOURS` | No | Pool funding window (default 72h) | `72` |
-| `CONTENT_SAFETY_URL` | No | External content safety API | (optional) |
-| `JOB_TOKEN_SECRET` | No | Secret for signing job tokens | (random) |
-| `UNCLAIMED_REFUND_HOURS` | No | Hours before unclaimed refunds sweep | `24` |
-| `MIP003_MODE` | No | `compat` (default) or `strict` | `compat` |
-| `ONTOLOGY_DIR` | No | Path to ontology files | `./skills/nightpay/ontology` |
+| `MASUMI_API_KEY` | Yes | — | Masumi payment API key |
+| `NIGHTPAY_API_URL` | Yes | `https://api.nightpay.dev` | MIP-003 API base URL |
+| `BRIDGE_URL` | Yes* | — | Midnight bridge endpoint |
+| `OPERATOR_ADDRESS` | Yes | — | 64-char hex operator address |
+| `RECEIPT_CONTRACT_ADDRESS` | No | — | 64-char hex contract address |
+| `OPERATOR_SECRET_KEY` | No | — | Operator secret for auth |
+| `MIDNIGHT_NETWORK` | No | `preprod` | `preprod` or `mainnet` |
+| `OPERATOR_FEE_BPS` | No | `200` | Fee in basis points (default 2%) |
+| `DEFAULT_POOL_DEADLINE_HOURS` | No | `72` | Pool funding window |
+| `CONTENT_SAFETY_URL` | No | — | External content safety API |
 
 *`BRIDGE_URL` can be empty for stub mode (no on-chain transactions).
 
 ---
 
-## Post-Install Verification Checklist
+## Verification Checklist
 
 ```bash
-# 1. Config is valid
+# 1. Config valid
 openclaw config validate
-# Expected: "Config valid"
 
-# 2. Agent is registered
-openclaw agents list --json | python3 -c "
-import sys, json
-agents = json.load(sys.stdin)
-np = [a for a in agents if a['id'] == 'nightpay']
-print('PASS' if np else 'FAIL: nightpay agent not found')
-if np: print(json.dumps(np[0], indent=2))
-"
+# 2. Plugin loaded (Path A/C)
+openclaw plugins list | grep nightpay
+# Expected: NightPay | nightpay | loaded
 
-# 3. SKILL.md is at the right path
-ls -la ~/.openclaw/workspace-nightpay/skills/nightpay/SKILL.md
-# Expected: file exists, ~17KB
+# 3. Skill active (Path B/D)
+ls ~/.openclaw/workspace-<agent>/skills/nightpay/SKILL.md
 
-# 4. Scripts are executable
-ls -la ~/.openclaw/workspace-nightpay/skills/nightpay/scripts/gateway.sh
-# Expected: -rwxr-xr-x
+# 4. Env configured
+openclaw config get skills.entries.nightpay.env.MASUMI_API_KEY
+# Expected: non-empty, not placeholder
 
-# 5. Config fragment merged
-openclaw config get skills.entries.nightpay.enabled
-# Expected: true
+# 5. API reachable
+curl -sf "${NIGHTPAY_API_URL:-https://api.nightpay.dev}/availability" | python3 -m json.tool
 
-# 6. Channel binding exists (after binding)
-openclaw agents bindings | grep nightpay
+# 6. /nightpay status command works (in connected channel)
+# Expected: "✅ NightPay ready — API: https://api.nightpay.dev"
 ```
 
 ---
 
 ## Common Issues
 
-### "SKILL.md not found" / Skill not activating
-
-**Cause:** Git clone nests the skill at `skills/nightpay/skills/nightpay/SKILL.md`.
-**Fix:** Run the flatten step (Step 3 above).
-
-### Agent added but not visible in `openclaw agents list`
-
-**Cause:** Manual JSON edit had a syntax error.
-**Fix:** `openclaw config validate` — fix any reported errors, or restore from backup:
-```bash
-cp ~/.openclaw/openclaw.json.bak.1 ~/.openclaw/openclaw.json
-```
-
-### Env vars are placeholder strings, not real values
-
-**Cause:** `openclaw-fragment.json` sets `"MASUMI_API_KEY": "MASUMI_API_KEY"` as
-a placeholder. If you merged without replacing, the skill gets the literal string.
-**Fix:** Set each var with `openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "<real-value>"`
-
-### `openclaw agents add` hangs in CI/scripts
-
-**Cause:** Interactive TUI with no `--non-interactive` flag.
-**Fix:** Add the agent entry via direct JSON manipulation (see Step 1 automation note).
-
-### Permission denied on gateway.sh
-
-**Cause:** Scripts not marked executable after clone.
-**Fix:** `chmod +x ~/.openclaw/workspace-nightpay/skills/nightpay/scripts/*.sh`
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `plugins install` prints config-write warning | Expected — the allowlist write fails before enable runs | Run `openclaw plugins enable nightpay` immediately after |
+| `SKILL.md not found` / skill not activating | Git clone nests skill at wrong depth | Run the flatten step (Path D Step 3) |
+| Env vars are placeholder strings | `openclaw-fragment.json` applied without setting real values | `openclaw config set skills.entries.nightpay.env.<KEY> "real-value"` |
+| `openclaw agents add` hangs | Interactive TUI, no `--non-interactive` flag | Add agent entry via direct JSON edit + `openclaw config validate` |
+| Permission denied on gateway.sh | Scripts not executable | `chmod +x ~/.openclaw/workspace-.../skills/nightpay/scripts/*.sh` |
 
 ---
 
 ## Updating
 
-### Via ClawHub (if installed that way)
-
 ```bash
-# Update the installed copy (latest published version)
+# Plugin path (A)
+openclaw plugins uninstall nightpay
+openclaw plugins install nightpay
+openclaw plugins enable nightpay
+
+# npx path (B)
+cd ~/.openclaw/workspace-<agent>
+npx nightpay init   # re-runs init, updates skill files in place
+
+# ClawHub path (C)
 clawhub update nightpay
 
-# Inspect published history / files without installing
-clawhub inspect nightpay --versions
-clawhub inspect nightpay --version 0.3.3 --files
-clawhub inspect nightpay --tag latest --files
-```
-
-Versioning notes:
-- Use semver publish (`clawhub publish ... --version X.Y.Z`) for every release.
-- `clawhub install` resolves latest; use `clawhub inspect` to audit exact versions/tags.
-- For emergency takedown, `clawhub delete <slug>` soft-hides the skill entry.
-- Keep `skills/nightpay/SKILL.md` `version` and `metadata.version` aligned with root `package.json` `version`.
-
-### Via Git (if cloned manually)
-
-```bash
+# Git clone path (D)
 cd ~/.openclaw/workspace-nightpay/skills/nightpay
 git pull origin main
-# Re-flatten if the inner skill structure changed:
 cp -r skills/nightpay/* .
 chmod +x scripts/*.sh
 ```
@@ -344,12 +262,15 @@ chmod +x scripts/*.sh
 ## Uninstalling
 
 ```bash
-# Remove agent
-openclaw agents delete nightpay
-
-# Remove skill entry from config
+# Plugin path
+openclaw plugins disable nightpay
+openclaw plugins uninstall nightpay
 openclaw config unset skills.entries.nightpay
 
-# Remove workspace (optional — keeps data if you want to reinstall later)
-rm -rf ~/.openclaw/workspace-nightpay
+# Workspace path
+openclaw config unset skills.entries.nightpay
+rm -rf ~/.openclaw/workspace-<agent>/skills/nightpay
+
+# Remove dedicated agent (if created)
+openclaw agents delete nightpay
 ```

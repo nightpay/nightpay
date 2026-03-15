@@ -1,1 +1,21 @@
-{"$comment":"Merge this into your ~/.openclaw/openclaw.json under 'skills.entries' to enable the nightpay skill. OpenClaw discovers the skill automatically once it is installed into ./skills/nightpay — this fragment just supplies the required env vars.","skills":{"entries":{"nightpay":{"enabled":true,"env":{"MASUMI_API_KEY":"MASUMI_API_KEY","OPERATOR_ADDRESS":"OPERATOR_ADDRESS","MIDNIGHT_NETWORK":"MIDNIGHT_NETWORK","OPERATOR_FEE_BPS":"OPERATOR_FEE_BPS","RECEIPT_CONTRACT_ADDRESS":"RECEIPT_CONTRACT_ADDRESS","CONTENT_SAFETY_URL":"CONTENT_SAFETY_URL","BRIDGE_URL":"BRIDGE_URL","NIGHTPAY_API_URL":"NIGHTPAY_API_URL"}}}}}
+{
+  "$comment": "Merge this into ~/.openclaw/openclaw.json under 'skills.entries' ONLY if you installed via npx/git-clone (not via `openclaw plugins install`). The plugin installer handles this automatically. Fill in MASUMI_API_KEY, OPERATOR_ADDRESS, and BRIDGE_URL before applying.",
+  "skills": {
+    "entries": {
+      "nightpay": {
+        "enabled": true,
+        "env": {
+          "MASUMI_API_KEY": "",
+          "OPERATOR_ADDRESS": "",
+          "MIDNIGHT_NETWORK": "preprod",
+          "OPERATOR_FEE_BPS": "200",
+          "RECEIPT_CONTRACT_ADDRESS": "",
+          "OPERATOR_SECRET_KEY": "",
+          "CONTENT_SAFETY_URL": "",
+          "BRIDGE_URL": "",
+          "NIGHTPAY_API_URL": "https://api.nightpay.dev"
+        }
+      }
+    }
+  }
+}

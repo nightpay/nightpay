@@ -214,8 +214,16 @@ function validate() {
       execSync(`which ${bin}`, { stdio: "ignore" });
       console.log(`  ${OK} ${bin} found`);
     } catch {
-      console.log(`  ${FAIL} ${bin} not found`);
-      errors++;
+      if (bin === "sqlite3") {
+        // sqlite3 is only needed for local receipt caching — downgrade to warning
+        console.log(`  ${WARN} ${bin} not found ${C.dim}(optional — needed for local receipt caching only)${C.reset}`);
+        console.log(`       ${C.dim}Fix (Debian/Ubuntu): sudo apt-get install sqlite3${C.reset}`);
+        console.log(`       ${C.dim}Fix (macOS):         brew install sqlite3${C.reset}`);
+        warnings++;
+      } else {
+        console.log(`  ${FAIL} ${bin} not found`);
+        errors++;
+      }
     }
   }
 
@@ -232,10 +240,20 @@ function validate() {
   else console.log(`  ${INFO} python3 not found ${C.dim}(optional — needed for Python SDK)${C.reset}`);
 
   console.log(`\n${C.bold}Environment variables${C.reset}`);
+  // Apply defaults before validation
+  const DEFAULTS = {
+    NIGHTPAY_API_URL: "https://api.nightpay.dev",
+    MIDNIGHT_NETWORK: "preprod",
+    OPERATOR_FEE_BPS: "200",
+  };
+  for (const [key, def] of Object.entries(DEFAULTS)) {
+    if (!process.env[key]) process.env[key] = def;
+  }
+
   const required = {
     MASUMI_API_KEY: "Masumi payment API key",
     OPERATOR_ADDRESS: "Midnight operator address (64-char hex)",
-    NIGHTPAY_API_URL: "Deployed MIP-003 API URL",
+    NIGHTPAY_API_URL: "MIP-003 API URL",
     BRIDGE_URL: "Midnight bridge URL",
   };
 
@@ -482,8 +500,28 @@ function setup() {
       console.log(`  ${INFO} No .github/copilot-instructions.md — skipping Copilot config`);
     }
   } else if (platform === "openclaw") {
-    console.log(`  ${OK} OpenClaw auto-discovers skills from ./skills/nightpay/`);
-    console.log(`  ${C.dim}  Tip: merge openclaw-fragment.json into your openclaw.json${C.reset}`);
+    // Check if already installed as plugin
+    let pluginInstalled = false;
+    try {
+      const result = spawnSync("openclaw", ["plugins", "list", "--json"], { encoding: "utf8", stdio: "pipe" });
+      if (result.stdout && result.stdout.includes('"nightpay"')) pluginInstalled = true;
+    } catch {}
+
+    if (pluginInstalled) {
+      console.log(`  ${OK} NightPay plugin already installed in OpenClaw`);
+      console.log(`  ${C.dim}  Run: openclaw plugins enable nightpay${C.reset}`);
+    } else {
+      console.log(`  ${INFO} Installing NightPay as OpenClaw plugin...`);
+      const installResult = spawnSync("openclaw", ["plugins", "install", "nightpay"], { encoding: "utf8", stdio: "inherit" });
+      if (installResult.status === 0) {
+        console.log(`  ${OK} Installed! Run: ${C.cyan}openclaw plugins enable nightpay${C.reset}`);
+      } else {
+        console.log(`  ${WARN} Plugin install failed — falling back to skill files`);
+        console.log(`  ${C.dim}  Skill files are at ./skills/nightpay/ (already installed above)${C.reset}`);
+        console.log(`  ${C.dim}  Merge ./skills/nightpay/openclaw-fragment.json into openclaw.json${C.reset}`);
+      }
+    }
+    console.log(`  ${C.dim}  Set env: openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "your-key"${C.reset}`);
   } else {
     console.log(`  ${INFO} Raw platform — no config file needed`);
     console.log(`  ${C.dim}  Use: bash skills/nightpay/scripts/gateway.sh <command>${C.reset}`);
