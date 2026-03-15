@@ -42,8 +42,13 @@ Configure these in GitHub before relying on auto-deploy:
   - `HETZNER_REMOTE_DIR` (default `/opt/nightpay`)
   - `HETZNER_BRIDGE_DIR` (default `/opt/nightpay-bridge`)
   - `HETZNER_MASUMI_DIR` (default `/opt/masumi-services-dev-quickstart`)
+  - `HETZNER_SITE_URL` (default `https://nightpay.dev/`)
+  - `HETZNER_BOARD_URL` (default `https://board.nightpay.dev/`)
+  - `HETZNER_API_URL` (default `https://api.nightpay.dev/availability`)
+  - `HETZNER_BRIDGE_URL` (default `https://bridge.nightpay.dev/health`)
 
 After these are set, every push to `master` (or `main`) triggers deploy + Docker recreate + health checks.
+Production now has a mandatory web gate: deploy fails unless site/board/api/bridge URLs are healthy.
 
 ## 2.2) Optional staging auto-deploy (`staging` branch)
 
@@ -66,6 +71,12 @@ Optional staging variables:
 - `HETZNER_STAGING_REMOTE_DIR` (default `/opt/nightpay-staging`)
 - `HETZNER_STAGING_UI_PORT` (default `3334`)
 - `HETZNER_STAGING_MIP_PORT` (default `8091`)
+- `HETZNER_STAGING_SITE_URL` (**required** for staging web gate)
+- `HETZNER_STAGING_BOARD_URL` (**required** for staging web gate)
+- `HETZNER_STAGING_API_URL` (**required** for staging web gate)
+- `HETZNER_STAGING_BRIDGE_URL` (**required** for staging web gate)
+
+Staging now has a mandatory web gate: deploy fails unless all four staging URLs return healthy responses.
 
 ## 3) Manual deploy fallback (SSH server)
 

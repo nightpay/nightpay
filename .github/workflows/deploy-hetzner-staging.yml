@@ -92,3 +92,22 @@ jobs:
             --mip-port "$MIP_PORT" \
             --skip-proof-recreate \
             --skip-masumi-recreate
+
+      - name: Validate Web Endpoints (Staging Gate)
+        env:
+          HETZNER_STAGING_SITE_URL: ${{ vars.HETZNER_STAGING_SITE_URL }}
+          HETZNER_STAGING_BOARD_URL: ${{ vars.HETZNER_STAGING_BOARD_URL }}
+          HETZNER_STAGING_API_URL: ${{ vars.HETZNER_STAGING_API_URL }}
+          HETZNER_STAGING_BRIDGE_URL: ${{ vars.HETZNER_STAGING_BRIDGE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "${HETZNER_STAGING_SITE_URL:-}" || { echo "Missing var HETZNER_STAGING_SITE_URL"; exit 1; }
+          test -n "${HETZNER_STAGING_BOARD_URL:-}" || { echo "Missing var HETZNER_STAGING_BOARD_URL"; exit 1; }
+          test -n "${HETZNER_STAGING_API_URL:-}" || { echo "Missing var HETZNER_STAGING_API_URL"; exit 1; }
+          test -n "${HETZNER_STAGING_BRIDGE_URL:-}" || { echo "Missing var HETZNER_STAGING_BRIDGE_URL"; exit 1; }
+          bash bin/validate-web-endpoints.sh \
+            --env-name staging \
+            --site-url "$HETZNER_STAGING_SITE_URL" \
+            --board-url "$HETZNER_STAGING_BOARD_URL" \
+            --api-url "$HETZNER_STAGING_API_URL" \
+            --bridge-url "$HETZNER_STAGING_BRIDGE_URL"

@@ -89,5 +89,24 @@ jobs:
           if [ -n "${HETZNER_MASUMI_DIR:-}" ]; then
             args+=(--masumi-dir "$HETZNER_MASUMI_DIR")
           fi
-          args+=(--skip-masumi-recreate)
+            args+=(--skip-masumi-recreate)
           bash bin/deploy-hetzner-ci.sh "${args[@]}"
+
+      - name: Validate Web Endpoints (Production Gate)
+        env:
+          HETZNER_SITE_URL: ${{ vars.HETZNER_SITE_URL }}
+          HETZNER_BOARD_URL: ${{ vars.HETZNER_BOARD_URL }}
+          HETZNER_API_URL: ${{ vars.HETZNER_API_URL }}
+          HETZNER_BRIDGE_URL: ${{ vars.HETZNER_BRIDGE_URL }}
+        run: |
+          set -euo pipefail
+          site_url="${HETZNER_SITE_URL:-https://nightpay.dev/}"
+          board_url="${HETZNER_BOARD_URL:-https://board.nightpay.dev/}"
+          api_url="${HETZNER_API_URL:-https://api.nightpay.dev/availability}"
+          bridge_url="${HETZNER_BRIDGE_URL:-https://bridge.nightpay.dev/health}"
+          bash bin/validate-web-endpoints.sh \
+            --env-name production \
+            --site-url "$site_url" \
+            --board-url "$board_url" \
+            --api-url "$api_url" \
+            --bridge-url "$bridge_url"
