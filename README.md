@@ -400,4 +400,9 @@ See [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) for the full compatibil
 
 ## License
 
-Apache-2.0
+This project is dual-licensed:
+
+- **Open-source:** [GNU Affero General Public License v3 (AGPL-3.0)](https://github.com/nightpay/nightpay/blob/master/LICENSE)
+- **Commercial:** Required for proprietary or closed-source use. Contact [hello@nightpay.dev](mailto:hello@nightpay.dev)
+
+See [LICENSE](https://github.com/nightpay/nightpay/blob/master/LICENSE) for the full license text.
