@@ -380,7 +380,9 @@ fi
 # Clear Vite caches to avoid stale file metadata and permission drift after sync.
 rm -rf "$REMOTE_DIR/ui/.vite" "$REMOTE_DIR/ui/node_modules/.vite" || true
 
-su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start"
+if ! su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start"; then
+  echo "WARN: startup script exited non-zero; continuing with doctor retries."
+fi
 
 doctor_ok=0
 for attempt in $(seq 1 12); do
