@@ -39,7 +39,7 @@ jobs:
             chmod 644 "$HOME/.ssh/known_hosts"
           fi
 
-      - name: Checkout Private Submodules (Optional)
+      - name: Checkout Private Submodules (Required)
         env:
           NIGHTPAY_UI_REPO_TOKEN: ${{ secrets.NIGHTPAY_UI_REPO_TOKEN }}
           NIGHTPAY_BRIDGE_REPO_TOKEN: ${{ secrets.NIGHTPAY_BRIDGE_REPO_TOKEN }}
@@ -47,18 +47,26 @@ jobs:
           set -euo pipefail
           TOKEN="${NIGHTPAY_BRIDGE_REPO_TOKEN:-${NIGHTPAY_UI_REPO_TOKEN:-}}"
           if [ -z "${TOKEN:-}" ]; then
-            echo "No submodule token set (NIGHTPAY_UI_REPO_TOKEN or NIGHTPAY_BRIDGE_REPO_TOKEN); skipping private submodule checkout."
-            exit 0
+            echo "::error::Missing submodule token. Set NIGHTPAY_UI_REPO_TOKEN (and optionally NIGHTPAY_BRIDGE_REPO_TOKEN)."
+            exit 1
           fi
           auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
           for module in ui bridge; do
-            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- "$module"; then
-              echo "::warning::${module} submodule sync failed; continuing without ${module}/ checkout."
-              continue
+            url="$(git config -f .gitmodules --get "submodule.${module}.url" || true)"
+            if [ -z "${url:-}" ]; then
+              echo "::error::Missing URL for submodule '${module}' in .gitmodules."
+              exit 1
             fi
-            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- "$module"; then
-              echo "::warning::${module} submodule checkout failed (token may be invalid or missing repo access); continuing without ${module}/ checkout."
-              rm -rf "$module" || true
+            echo "Checking token access for ${module} (${url})..."
+            if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" ls-remote "$url" HEAD >/dev/null 2>&1; then
+              echo "::error::Token cannot read ${url}. Grant repository read access for this submodule."
+              exit 1
+            fi
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule sync -- "$module"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --depth 1 -- "$module"
+            if [ ! -f "${module}/package.json" ]; then
+              echo "::error::${module}/package.json missing after submodule checkout."
+              exit 1
             fi
           done
 
