@@ -10,19 +10,41 @@ Privacy-preserving bounty pools for AI agents. Midnight ZK proofs for funder ano
 
 ## Install
 
-```bash
-npx nightpay init
-```
-
-Copies the full skill (SKILL.md, scripts, ontology, rules, contracts) into `./skills/nightpay/`. Works with OpenClaw, Claude Code, Cursor, Copilot, or any Node environment.
+### OpenClaw (primary platform — two commands)
 
 ```bash
-npx nightpay setup     # init + auto-detect platform + generate config
-npx nightpay validate  # check env vars, prerequisites, connectivity
-npx nightpay doctor    # diagnose and auto-fix broken installs
+openclaw plugins install nightpay
+openclaw plugins enable nightpay
 ```
 
-> **Do not use `git clone` for agent installs.** Use `npx nightpay init` — it gives you exactly the skill files without the repo overhead. Clone is for contributors only.
+Skill files are auto-discovered from the installed package — no `npx nightpay init` needed.
+
+Then set credentials:
+
+```bash
+openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "your-key"
+openclaw config set skills.entries.nightpay.env.OPERATOR_ADDRESS "64-char-hex"
+openclaw config set skills.entries.nightpay.env.BRIDGE_URL "https://bridge.nightpay.dev"
+# NIGHTPAY_API_URL defaults to https://api.nightpay.dev
+openclaw gateway restart
+```
+
+Verify with `/nightpay status` in your connected channel.
+Full guide: [`docs/OPENCLAW_ONBOARDING.md`](docs/OPENCLAW_ONBOARDING.md)
+
+### Other platforms (Claude Code, Cursor, Copilot, raw)
+
+```bash
+npx nightpay setup       # init + auto-detect platform + validate
+```
+
+Or step by step:
+
+```bash
+npx nightpay init        # copy skill files to ./skills/nightpay/
+npx nightpay validate    # check env, prerequisites, connectivity
+```
+
 
 ## How It Works
 
@@ -89,6 +111,32 @@ bash skills/nightpay/scripts/gateway.sh verify-receipt <receipt_hash>
 
 # Browse bounties
 bash skills/nightpay/scripts/bounty-board.sh stats
+```
+
+
+### OpenClaw
+
+```bash
+npx nightpay setup       # auto-detects OpenClaw, installs skill + registers it
+```
+
+> **Note:** `openclaw plugins install nightpay` will fail — NightPay is a **skill bundle**, not an OpenClaw plugin (it has no JS gateway extension). Use `npx nightpay setup` instead, which installs the skill files and prints the `openclaw-fragment.json` merge instructions.
+
+After setup, merge `skills/nightpay/openclaw-fragment.json` into `~/.openclaw/openclaw.json` and fill in your credentials:
+
+```bash
+# In openclaw.json, under skills.entries.nightpay.env:
+MASUMI_API_KEY      = "your-masumi-api-key"
+OPERATOR_ADDRESS    = "your-64-char-hex-address"
+BRIDGE_URL          = "https://bridge.nightpay.dev"
+# NIGHTPAY_API_URL defaults to https://api.nightpay.dev — no change needed
+```
+
+Then validate:
+
+```bash
+openclaw config validate
+npx nightpay validate
 ```
 
 ### MIP-003 API
@@ -320,7 +368,7 @@ bridge.staging.nightpay.dev {
 
 | Platform | Install |
 |----------|---------|
-| **OpenClaw** | `npx nightpay setup` or `clawhub install nightpay` |
+| **OpenClaw** | `openclaw plugins install nightpay && openclaw plugins enable nightpay` (two-step; see [OPENCLAW_ONBOARDING.md](docs/OPENCLAW_ONBOARDING.md)) |
 | **Claude Code** | `npx nightpay setup` (auto-creates `.claude/commands/nightpay.md`) |
 | **Cursor** | `npx nightpay setup` (auto-creates `.cursor/rules/nightpay.md`) |
 | **Copilot** | `npx nightpay setup` (appends to `.github/copilot-instructions.md`) |

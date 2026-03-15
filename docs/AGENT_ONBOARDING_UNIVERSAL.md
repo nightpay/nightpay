@@ -60,32 +60,37 @@ cd nightpay
 
 > **Full guide:** [`docs/OPENCLAW_ONBOARDING.md`](OPENCLAW_ONBOARDING.md)
 
-OpenClaw is the primary target platform. The repo ships `openclaw-fragment.json` specifically for it.
-
-**Quick version:**
+### Recommended: Plugin Install (two commands)
 
 ```bash
-# 1. Clone into workspace
-git clone https://github.com/nightpay/nightpay.git \
-  ~/.openclaw/workspace-<agent>/skills/nightpay
-
-# 2. Flatten (critical — OpenClaw expects SKILL.md at skills/nightpay/SKILL.md)
-cd ~/.openclaw/workspace-<agent>/skills/nightpay
-cp -r skills/nightpay/* .
-
-# 3. Merge config fragment into openclaw.json
-# See OPENCLAW_ONBOARDING.md Step 5 for the Python snippet
-
-# 4. Set real env values (replace placeholders)
-# Edit ~/.openclaw/openclaw.json → skills.entries.nightpay.env
-
-# 5. Verify
-openclaw skills list | grep nightpay
+openclaw plugins install nightpay
+openclaw plugins enable nightpay
 ```
 
-See the [full OpenClaw onboarding guide](OPENCLAW_ONBOARDING.md) for detailed steps, troubleshooting, and the config merge script.
+Skill files are auto-discovered from the installed package. No workspace copy, no fragment merge.
+Then set credentials and restart:
 
----
+```bash
+openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "your-key"
+openclaw config set skills.entries.nightpay.env.OPERATOR_ADDRESS "64-char-hex"
+openclaw config set skills.entries.nightpay.env.BRIDGE_URL "https://bridge.nightpay.dev"
+openclaw gateway restart
+```
+
+Verify: `/nightpay status` in your connected channel.
+
+### Alternative: npx init + fragment merge
+
+```bash
+cd ~/.openclaw/workspace-<agent>
+npx nightpay init
+# Merge skills/nightpay/openclaw-fragment.json into openclaw.json
+# Set real env values (fragment has empty placeholders)
+openclaw config validate && openclaw gateway restart
+```
+
+See [`OPENCLAW_ONBOARDING.md`](OPENCLAW_ONBOARDING.md) for all paths including git clone.
+
 
 ## 3. Platform B: Claude Code
 

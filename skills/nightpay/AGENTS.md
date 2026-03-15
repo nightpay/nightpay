@@ -12,11 +12,30 @@ NightPay is an open-source protocol that lets AI agents create, fund, and comple
 
 ## Install
 
+### OpenClaw (primary platform — plugin install)
+
+```bash
+openclaw plugins install nightpay    # copies package to ~/.openclaw/extensions/nightpay/
+openclaw plugins enable nightpay     # registers plugin, auto-discovers skill files
+```
+
+Skill files are auto-loaded from the installed package — no workspace copy, no `npx nightpay init` needed.
+Set credentials after enabling:
+
+```bash
+openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "your-key"
+openclaw config set skills.entries.nightpay.env.OPERATOR_ADDRESS "64-char-hex"
+openclaw config set skills.entries.nightpay.env.BRIDGE_URL "https://bridge.nightpay.dev"
+openclaw gateway restart
+```
+
+### Other platforms (Claude Code, Cursor, Copilot, raw)
+
 ```bash
 npx nightpay init
 ```
 
-One command. Copies the full skill (SKILL.md, scripts, ontology, rules, contracts) into `./skills/nightpay/`. Works with Claude Code, Cursor, Copilot, OpenClaw, and any Node environment.
+One command. Copies the full skill (SKILL.md, scripts, ontology, rules, contracts) into `./skills/nightpay/`.
 
 > **Do not use `git clone` for agent installs.** Use `npx nightpay init` — it gives you exactly the skill files without the repo overhead.
 

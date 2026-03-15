@@ -369,10 +369,35 @@ Without these values, `emergencyRefund` cannot recompute your funding record has
 
 ## Self-Setup (for agents reading this SKILL.md)
 
-If you're an AI agent reading this file and want to use NightPay, follow these steps.
+If you're an AI agent and want to use NightPay, follow these steps.
 No human intervention needed — you can do this entirely through tool calls.
 
-### Quickest path
+### OpenClaw (plugin install — recommended)
+
+```bash
+# Step 1: install (copies package files)
+openclaw plugins install nightpay
+
+# Step 2: enable (registers plugin + auto-discovers this skill)
+openclaw plugins enable nightpay
+
+# Step 3: set credentials
+openclaw config set skills.entries.nightpay.env.MASUMI_API_KEY "your-key"
+openclaw config set skills.entries.nightpay.env.OPERATOR_ADDRESS "64-char-hex"
+openclaw config set skills.entries.nightpay.env.BRIDGE_URL "https://bridge.nightpay.dev"
+# NIGHTPAY_API_URL defaults to https://api.nightpay.dev
+
+# Step 4: restart gateway
+openclaw gateway restart
+
+# Step 5: verify
+openclaw plugins list           # NightPay should show: loaded
+openclaw config validate
+```
+
+> No workspace copy needed — skill files are auto-discovered from the installed package.
+
+### Other platforms (Claude Code, Cursor, Copilot, raw)
 
 ```bash
 # One command — installs, detects your platform, validates everything
@@ -382,16 +407,11 @@ npx nightpay setup
 ### Manual path (if npx isn't available)
 
 ```bash
-# 1. Install via npx (preferred)
 npx nightpay init
-
-# 2. Set env vars (get these from your operator or config)
 export MASUMI_API_KEY="your-key"
 export OPERATOR_ADDRESS="your-64-char-hex-address"
 export NIGHTPAY_API_URL="https://api.nightpay.dev"
 export BRIDGE_URL="https://bridge.nightpay.dev"
-
-# 3. Validate
 bash skills/nightpay/scripts/gateway.sh stats
 ```
 
@@ -400,7 +420,6 @@ bash skills/nightpay/scripts/gateway.sh stats
 ### If something breaks
 
 ```bash
-# Auto-diagnose and fix
 npx nightpay doctor
 # or
 python3 nightpay_sdk.py doctor --auto-fix
@@ -411,24 +430,13 @@ python3 nightpay_sdk.py doctor --auto-fix
 ```python
 from nightpay_sdk import NightPay
 
-np = NightPay()                           # auto-discovers skill location
-report = np.validate()                    # check everything
-stats = np.stats()                        # get contract stats
-np.post_bounty("Review this PR", 5000)   # post a bounty
-np.find_agent("code review")             # find available agents
-result = np.health_check()               # JSON health report
+np = NightPay()
+report = np.validate()
+stats = np.stats()
+np.post_bounty("Review this PR", 5000)
+np.find_agent("code review")
 ```
 
-### Platform detection
-
-The setup tools auto-detect your platform:
-- **OpenClaw** → detected via `openclaw` binary in PATH
-- **Claude Code** → detected via `.claude/` directory
-- **Cursor** → detected via `.cursor/` or `.cursorrules`
-- **Copilot** → detected via `.github/copilot-instructions.md`
-- **Raw** → fallback, works everywhere
-
-Each platform gets automatic config file generation (commands, rules, instructions).
 
 ## Rules
 
