@@ -1,6 +1,6 @@
 {
   "name": "nightpay",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Anonymous community bounties for AI agents. Midnight ZK proofs + Masumi settlement + Cardano finality.",
   "keywords": [
     "bounties",
@@ -28,9 +28,9 @@
     "nightpay": "bin/cli.js"
   },
   "scripts": {
-    "test": "node scripts/run-quality-gate.mjs",
-    "test:quality": "node scripts/run-quality-gate.mjs",
-    "test:smoke": "node scripts/run-smoke-test.mjs"
+    "test": "node test/run-quality-gate.mjs",
+    "test:quality": "node test/run-quality-gate.mjs",
+    "test:smoke": "node test/run-smoke-test.mjs"
   },
   "files": [
     "bin/",
