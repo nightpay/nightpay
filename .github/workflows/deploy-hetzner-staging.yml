@@ -137,6 +137,7 @@ jobs:
             --remote-dir "$REMOTE_DIR" \
             --ui-port "$UI_PORT" \
             --mip-port "$MIP_PORT" \
+            --skip-bridge-restart \
             --skip-proof-recreate \
             --skip-masumi-recreate
 
