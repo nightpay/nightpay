@@ -245,10 +245,35 @@ generate_nonce() {
   openssl rand -hex 32 | tr -d '[:space:]'
 }
 
-# SECURITY: rate limiter — prevents bounty spam and Masumi flooding.
-# Creates a per-command lockfile; rejects calls within RATE_LIMIT_SECONDS of last call.
+# SECURITY: rate limiter — enforced server-side by bridge /decision/rate-check.
+# Local lockfile is a secondary fallback when bridge is unreachable.
 rate_limit() {
   local cmd="$1"
+
+  # ── Primary: bridge-enforced rate limit (per operator, server-side) ──────────
+  if [[ -n "$BRIDGE_URL" ]]; then
+    local rl_payload; rl_payload=$(python3 -c "import sys,json; print(json.dumps({'command': sys.argv[1]}))" "$cmd")
+    local rl_status
+    rl_status=$(curl -sf --max-time 5 -w '%{http_code}' -o /tmp/_nightpay_rl.$$ \
+      -X POST -H 'Content-Type: application/json' \
+      -d "$rl_payload" \
+      "${BRIDGE_URL}/decision/rate-check" 2>/dev/null) || rl_status="000"
+    local rl_body; rl_body=$(cat /tmp/_nightpay_rl.$$ 2>/dev/null); rm -f /tmp/_nightpay_rl.$$
+
+    if [[ "$rl_status" == "429" ]]; then
+      local retry_after decision_id
+      retry_after=$(echo "$rl_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('retry_after',30))" 2>/dev/null || echo "30")
+      decision_id=$(echo "$rl_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('decision_id',''))" 2>/dev/null || echo "")
+      echo -e "${RED}ERROR${RESET}: Rate limit — wait ${BOLD}${retry_after}s${RESET} before calling ${CYAN}$cmd${RESET} again (decision: ${decision_id})" >&2
+      exit 1
+    fi
+    # 200 = allowed; any other non-000 status = bridge error, fall through to local
+    if [[ "$rl_status" == "200" ]]; then
+      return 0
+    fi
+  fi
+
+  # ── Fallback: local lockfile (bridge unreachable or not configured) ────────
   mkdir -p "$RATE_LIMIT_DIR"
   chmod 700 "$RATE_LIMIT_DIR"
   local lockfile="${RATE_LIMIT_DIR}/${cmd}.last"
@@ -419,115 +444,64 @@ require_operator_auth() {
 
 # ─── Content Safety ────────────────────────────────────────────────────────────
 # SAFETY: classify-then-forget — checks job description in-memory, never logs it.
-# Three layers: live rules file > hardcoded fallback > external moderation API.
-# Rules auto-updated by update-blocklist.sh (cron). See rules/content-safety.md.
-
-CONTENT_SAFETY_URL="${CONTENT_SAFETY_URL:-}"
-SAFETY_RULES_FILE="${SAFETY_RULES_FILE:-${HOME}/.nightpay/safety/safety-rules.json}"
+# Content safety: delegated to bridge /decision/content-check.
+# Rules and patterns are private — only the signed verdict is returned here.
+# See rules/content-safety.md for the public policy description.
 
 safety_check() {
   local text="$1"
 
-  local rejected_category
-  rejected_category=$(python3 -c "
-import sys, re, json, os
-
-text = sys.argv[1].lower()
-rules_file = sys.argv[2]
-
-# ─── Layer 1: load live rules file if available (updated by update-blocklist.sh)
-rules = []
-if os.path.exists(rules_file):
-    try:
-        with open(rules_file) as f:
-            data = json.load(f)
-        rules = [(r['category'], r['pattern']) for r in data.get('rules', [])
-                 if 'category' in r and 'pattern' in r]
-    except (json.JSONDecodeError, KeyError):
-        pass  # fall through to hardcoded
-
-# ─── Layer 2: hardcoded fallback if no rules file or it failed to load
-if not rules:
-    rules = [
-        ('csam',                  r'\b(child|minor|underage|kid|teen)\b.{0,100}?\b(sex|porn|nude|naked|exploit)\b'),
-        ('csam',                  r'\b(sex|porn|nude|naked|exploit)\b.{0,100}?\b(child|minor|underage|kid|teen)\b'),
-        ('violence',              r'\b(kill|assassinate|murder|execute)\b.{0,100}?\b(person|people|someone|him|her|them|target)\b'),
-        ('violence',              r'\b(hire|find|pay).{0,100}?\b(hitman|killer|assassin)\b'),
-        ('violence',              r'\bhit\s*man\b'),
-        ('weapons_of_mass_destruction', r'\b(synthe|build|make|create|assemble)\b.{0,100}?\b(bomb|bioweapon|chemical weapon|nerve agent|sarin|anthrax|ricin|nuclear|dirty bomb|explosive device)\b'),
-        ('human_trafficking',     r'\b(traffic|smuggle|exploit|enslave)\b.{0,100}?\b(person|people|human|worker|organ|women|children)\b'),
-        ('terrorism',             r'\b(fund|finance|recruit|plan|support)\b.{0,100}?\b(terror|jihad|extremis|insurrection|attack on)\b'),
-        ('ncii',                  r'\b(deepfake|revenge porn|sextortion|non.?consensual)\b.{0,100}?\b(nude|naked|intimate|image|video|photo)\b'),
-        ('financial_fraud',       r'\b(launder|counterfeit|forge)\b.{0,100}?\b(money|currency|documents|passport|identity)\b'),
-        ('financial_fraud',       r'\b(evade|bypass|circumvent)\b.{0,100}?\b(sanction|embargo|aml|kyc)\b'),
-        ('infrastructure_attack', r'\b(attack|hack|disrupt|destroy|sabotage)\b.{0,100}?\b(power grid|water supply|hospital|election|pipeline|dam)\b'),
-        ('doxxing',               r'\b(doxx|stalk|track|surveil|locate)\b.{0,100}?\b(person|address|home|family|where .{0,100}? live)\b'),
-        ('drug_manufacturing',    r'\b(synthe|cook|manufacture|produce)\b.{0,100}?\b(meth|fentanyl|heroin|cocaine|mdma|lsd)\b'),
-    ]
-
-for category, pattern in rules:
-    try:
-        if re.search(pattern, text):
-            print(category)
-            sys.exit(0)
-    except re.error:
-        continue  # skip malformed patterns from feeds
-
-print('safe')
-" "$text" "$SAFETY_RULES_FILE" 2>/dev/null) || rejected_category="safe"
-
-  # ─── Layer 3: external moderation API (catches what regex misses)
-  if [[ "$rejected_category" == "safe" && -n "$CONTENT_SAFETY_URL" ]]; then
-    local api_payload
-    api_payload=$(python3 -c "
-import sys, json
-print(json.dumps({'text': sys.argv[1]}))
-" "$text")
-    local response
-    response=$(curl -sf --max-time 5 -X POST \
-      -H 'Content-Type: application/json' \
-      -d "$api_payload" \
-      "$CONTENT_SAFETY_URL" 2>/dev/null) || response=""
-
-    if [[ -n "$response" ]]; then
-      rejected_category=$(echo "$response" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    if not d.get('safe', True):
-        print(d.get('category', 'unsafe'))
-    else:
-        print('safe')
-except: print('safe')
-" 2>/dev/null) || rejected_category="safe"
-    fi
+  if [[ -z "$BRIDGE_URL" ]]; then
+    # No bridge configured — fail open with a warning.
+    echo -e "  ${YELLOW}WARNING${RESET}: BRIDGE_URL not set — content safety check skipped" >&2
+    return 0
   fi
 
-  if [[ "$rejected_category" != "safe" ]]; then
+  local payload
+  payload=$(python3 -c "import sys,json; print(json.dumps({'text': sys.argv[1]}))" "$text")
+
+  local response http_status
+  http_status=$(curl -sf --max-time 10 -w '%{http_code}' -o /tmp/_nightpay_safety.$$ \
+    -X POST -H 'Content-Type: application/json' \
+    -d "$payload" \
+    "${BRIDGE_URL}/decision/content-check" 2>/dev/null) || http_status="000"
+  response=$(cat /tmp/_nightpay_safety.$$ 2>/dev/null); rm -f /tmp/_nightpay_safety.$$
+
+  if [[ "$http_status" == "000" || -z "$response" ]]; then
+    echo -e "  ${YELLOW}WARNING${RESET}: Bridge content-check unreachable — proceeding with caution" >&2
+    return 0
+  fi
+
+  local is_safe category decision_id policy_version
+  is_safe=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('safe','true'))" 2>/dev/null || echo "true")
+  category=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('category',''))" 2>/dev/null || echo "")
+  decision_id=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('decision_id',''))" 2>/dev/null || echo "")
+  policy_version=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('policy_version',''))" 2>/dev/null || echo "")
+
+  if [[ "$is_safe" != "True" && "$is_safe" != "true" ]]; then
     python3 -c "
 import sys, json
 print(json.dumps({
     'status': 'REJECTED',
     'reason': 'content_safety',
     'category': sys.argv[1],
+    'decision_id': sys.argv[2],
+    'policy_version': sys.argv[3],
     'message': 'This bounty description was rejected by the content safety gate. See rules/content-safety.md.'
 }, indent=2))
-" "$rejected_category"
+" "$category" "$decision_id" "$policy_version"
     exit 2
   fi
 }
 
-# ─── Optimistic delivery & multisig env vars ──────────────────────────────────
+# ─── Optimistic delivery env vars ─────────────────────────────────────────────
+# Multisig keys/threshold/M/N are now private to the bridge (APPROVER_KEYS,
+# MULTISIG_M, MULTISIG_THRESHOLD_SPECKS env vars on the bridge process).
+# This script forwards approval blobs to /decision/approve-completion; bridge verifies.
 OPTIMISTIC_WINDOW_HOURS="${OPTIMISTIC_WINDOW_HOURS:-48}"
-MULTISIG_THRESHOLD_SPECKS="${MULTISIG_THRESHOLD_SPECKS:-1000000}"
-MULTISIG_M="${MULTISIG_M:-2}"
-MULTISIG_N="${MULTISIG_N:-3}"
 OPTIMISTIC_SWEEP_PAGE_SIZE="${OPTIMISTIC_SWEEP_PAGE_SIZE:-200}"   # capped to <= 500
 UNCLAIMED_REFUND_HOURS="${UNCLAIMED_REFUND_HOURS:-24}"
 UNCLAIMED_SWEEP_PAGE_SIZE="${UNCLAIMED_SWEEP_PAGE_SIZE:-200}"     # capped to <= 500
-# APPROVER_KEYS: comma-separated HMAC secrets, one per approver
-# e.g. APPROVER_KEYS="key1secret,key2secret,key3secret"
-APPROVER_KEYS="${APPROVER_KEYS:-}"
 MIP003_PORT="${MIP003_PORT:-8090}"
 MIP003_URL="${MIP003_URL:-http://localhost:${MIP003_PORT}}"
 # Optional x402 passthrough for MIP-003 APIs that enforce PAYMENT-SIGNATURE.
@@ -746,73 +720,51 @@ except: print(0)
 " 2>/dev/null || echo 0)
     fi
 
-    if (( JOB_AMOUNT >= MULTISIG_THRESHOLD_SPECKS )); then
-      if [[ -z "$APPROVALS_RAW" || "$APPROVALS_FLAG" != "--approvals" ]]; then
-        echo -e "${RED}ERROR${RESET}: job amount ${BOLD}${JOB_AMOUNT} specks${RESET} >= threshold ${MULTISIG_THRESHOLD_SPECKS}" >&2
-        echo -e "${YELLOW}Multisig required.${RESET} Each approver runs:" >&2
-        echo -e "  ${CYAN}gateway.sh approve-multisig${RESET} $JOB_ID <output_hash> <approver_key>" >&2
-        echo -e "Then collect M approval_blobs and run:" >&2
-        echo -e "  ${CYAN}gateway.sh complete${RESET} $JOB_ID $COMMITMENT --approvals blob1,blob2" >&2
+    # ── Payout gate: bridge /decision/approve-completion ────────────────────────
+    # Approval keys and threshold are private to the bridge; this script only
+    # forwards the job_id, output_hash, amount, and any collected approval blobs.
+    if [[ -n "$BRIDGE_URL" ]]; then
+      APPROVE_PAYLOAD=$(python3 -c "
+import sys, json
+d = {'job_id': sys.argv[1], 'output_hash': sys.argv[2], 'amount_specks': int(sys.argv[3] or 0)}
+if sys.argv[4]:
+    d['approvals'] = sys.argv[4]
+print(json.dumps(d))
+" "$JOB_ID" "$COMMITMENT" "$JOB_AMOUNT" "${APPROVALS_RAW:-}")
+
+      APPROVE_STATUS=$(curl -sf --max-time 10 -w '%{http_code}' -o /tmp/_nightpay_approve.$$ \
+        -X POST -H 'Content-Type: application/json' \
+        -d "$APPROVE_PAYLOAD" \
+        "${BRIDGE_URL}/decision/approve-completion" 2>/dev/null) || APPROVE_STATUS="000"
+      APPROVE_BODY=$(cat /tmp/_nightpay_approve.$$ 2>/dev/null); rm -f /tmp/_nightpay_approve.$$
+
+      if [[ "$APPROVE_STATUS" == "403" ]]; then
+        APPROVE_REASON=$(echo "$APPROVE_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('reason_code','unknown'))" 2>/dev/null || echo "unknown")
+        APPROVE_DID=$(echo "$APPROVE_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('decision_id',''))" 2>/dev/null || echo "")
+        if [[ "$APPROVE_REASON" == "multisig_required" ]]; then
+          REQ_M=$(echo "$APPROVE_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('required_m',2))" 2>/dev/null || echo "2")
+          REQ_N=$(echo "$APPROVE_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('required_n',3))" 2>/dev/null || echo "3")
+          echo -e "${RED}ERROR${RESET}: job amount ${BOLD}${JOB_AMOUNT} specks${RESET} requires multisig (${REQ_M}-of-${REQ_N})" >&2
+          echo -e "${YELLOW}Each approver runs:${RESET}" >&2
+          echo -e "  ${CYAN}gateway.sh approve-multisig${RESET} $JOB_ID <output_hash> <approver_key>" >&2
+          echo -e "Then collect M approval_blobs and run:" >&2
+          echo -e "  ${CYAN}gateway.sh complete${RESET} $JOB_ID $COMMITMENT --approvals blob1,blob2" >&2
+          echo -e "  ${DIM}(decision: ${APPROVE_DID})${RESET}" >&2
+        else
+          APPROVE_ERR=$(echo "$APPROVE_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','multisig verification failed'))" 2>/dev/null || echo "multisig verification failed")
+          echo -e "${RED}SECURITY ERROR${RESET}: completion not approved — ${APPROVE_ERR} (decision: ${APPROVE_DID})" >&2
+        fi
         exit 1
       fi
 
-      # Verify M-of-N approvals using Python stdlib only (no new deps)
-      VERIFY_OK=$(python3 -c "
-import sys, json, hmac, hashlib, time
-
-job_id        = sys.argv[1]
-output_hash   = sys.argv[2]
-approvals_raw = sys.argv[3]
-approver_keys = [k for k in sys.argv[4].split(',') if k] if sys.argv[4] else []
-required_m    = int(sys.argv[5])
-max_age_secs  = 86400   # approvals expire after 24h — prevents replay attacks
-
-# Parse: each entry is sig:ts:nonce
-approvals = []
-for entry in approvals_raw.split(','):
-    parts = entry.split(':')
-    if len(parts) != 3:
-        print(f'ERROR: malformed approval blob (expected sig:ts:nonce): {entry}', file=sys.stderr)
-        sys.exit(1)
-    try:
-        approvals.append({'sig': parts[0], 'ts': int(parts[1]), 'nonce': parts[2]})
-    except ValueError:
-        print(f'ERROR: non-integer timestamp in approval: {entry}', file=sys.stderr)
-        sys.exit(1)
-
-now         = int(time.time())
-valid_count = 0
-used_keys   = set()   # SECURITY: each key index counts once — no double-counting
-
-for approval in approvals:
-    age = now - approval['ts']
-    if age > max_age_secs:
-        print(f'WARN: approval ts={approval[\"ts\"]} is too old (age={age}s > {max_age_secs}s)', file=sys.stderr)
-        continue
-    if age < -300:  # 5-min future clock skew tolerance
-        print(f'WARN: approval ts={approval[\"ts\"]} is too far in future (age={age}s)', file=sys.stderr)
-        continue
-
-    payload = f'{job_id}:{output_hash}:{approval[\"ts\"]}:{approval[\"nonce\"]}'
-    for i, key in enumerate(approver_keys):
-        if i in used_keys:
-            continue
-        expected = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        if hmac.compare_digest(expected, approval['sig']):
-            used_keys.add(i)
-            valid_count += 1
-            break
-
-if valid_count >= required_m:
-    print(f'ok:{valid_count}')
-else:
-    print(f'ERROR: only {valid_count} valid approvals, need {required_m}', file=sys.stderr)
-    sys.exit(1)
-" "$JOB_ID" "$COMMITMENT" "$APPROVALS_RAW" "$APPROVER_KEYS" "$MULTISIG_M" 2>&1) || {
-        echo -e "${RED}SECURITY ERROR${RESET}: multisig verification failed — $VERIFY_OK" >&2
-        exit 1
-      }
-      echo -e "  ${GREEN}Multisig${RESET}: $VERIFY_OK approvals verified" >&2
+      if [[ "$APPROVE_STATUS" == "200" ]]; then
+        APPROVE_DID=$(echo "$APPROVE_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('decision_id',''))" 2>/dev/null || echo "")
+        APPROVE_VALID=$(echo "$APPROVE_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('valid_count',''))" 2>/dev/null || echo "")
+        if [[ -n "$APPROVE_VALID" ]]; then
+          echo -e "  ${GREEN}Multisig${RESET}: ok:${APPROVE_VALID} approvals verified (decision: ${APPROVE_DID})" >&2
+        fi
+      fi
+      # On bridge error (000, 5xx) fall through — let the ZK circuit be the final gate
     fi
 
     RESULT_DATA=$(masumi_get "/purchases/$JOB_ID/result")
@@ -951,6 +903,32 @@ print(json.dumps({
     if [[ -n "$REFUND_ADDRESS" ]] && ! [[ "$REFUND_ADDRESS" =~ ^[0-9a-f]{64}$ ]]; then
       echo "ERROR: refund_address must be a 64-character lowercase hex string" >&2
       exit 1
+    fi
+
+    # ── Authorization gate: bridge /decision/initiate-refund ─────────────────
+    # Requires operator Bearer token (OPERATOR_SECRET_KEY) verified by bridge.
+    if [[ -n "$BRIDGE_URL" ]]; then
+      REFUND_AUTH_PAYLOAD=$(python3 -c "import sys,json; print(json.dumps({'job_id':sys.argv[1],'commitment_hash':sys.argv[2]}))" "$JOB_ID" "$COMMITMENT")
+      REFUND_AUTH_STATUS=$(curl -sf --max-time 10 -w '%{http_code}' -o /tmp/_nightpay_refundauth.$$ \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${OPERATOR_SECRET_KEY:-}" \
+        -d "$REFUND_AUTH_PAYLOAD" \
+        "${BRIDGE_URL}/decision/initiate-refund" 2>/dev/null) || REFUND_AUTH_STATUS="000"
+      REFUND_AUTH_BODY=$(cat /tmp/_nightpay_refundauth.$$ 2>/dev/null); rm -f /tmp/_nightpay_refundauth.$$
+
+      if [[ "$REFUND_AUTH_STATUS" == "401" || "$REFUND_AUTH_STATUS" == "403" ]]; then
+        REFUND_AUTH_ERR=$(echo "$REFUND_AUTH_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','unauthorized'))" 2>/dev/null || echo "unauthorized")
+        echo -e "${RED}SECURITY ERROR${RESET}: refund not authorized — ${REFUND_AUTH_ERR}" >&2
+        echo -e "${DIM}Ensure OPERATOR_SECRET_KEY is set and BRIDGE_ADMIN_TOKEN matches on the bridge.${RESET}" >&2
+        exit 1
+      fi
+
+      if [[ "$REFUND_AUTH_STATUS" == "200" ]]; then
+        REFUND_DID=$(echo "$REFUND_AUTH_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('decision_id',''))" 2>/dev/null || echo "")
+        echo -e "  ${GREEN}Refund authorized${RESET} (decision: ${REFUND_DID})" >&2
+      fi
+      # On bridge error (000, 5xx) — fall through; Masumi cancel is idempotent-safe
     fi
 
     # Step 1: Cancel Masumi escrow on Cardano
