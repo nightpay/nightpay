@@ -4,7 +4,7 @@
 
 **Public repo:** This repo is public. What must stay private (and never be committed) is defined in `.gitignore`; the rationale for each category is in the section **"Public vs private (what goes in .gitignore)"** below.
 
-Last updated: 2026-02-28
+Last updated: 2026-03-16
 
 ---
 
@@ -109,7 +109,7 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 
 | Component | What it does |
 |-----------|----------------|
-| **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. |
+| **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. Delegates all policy decisions (content safety, rate limits, multisig, refund authorization) to the bridge's private `/decision/*` layer — no sensitive heuristics in this script. |
 | **mip003-server.sh** | Exposes MIP-003 job endpoints (start, claim, submit, vote, select winner, status), optional x402 payment handshake (`/x402`, `PAYMENT-REQUIRED`/`PAYMENT-SIGNATURE`), plus public ontology routes (`/ontology`, `/ontology/context`, `/ontology/examples`). |
 | **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
 | **skills/nightpay/HEARTBEAT.md** | OpenClaw periodic checklist: checks `/availability`, optional bridge `/health`, workload deltas, and returns `HEARTBEAT_OK` when no action is needed. |
@@ -174,6 +174,12 @@ All consumers (gateway, UI, agents via SKILL) rely on this contract. Any impleme
 | GET | `/jobEconomics/<jobId>` | agents (SKILL) | Amount, fee, net, status |
 | POST | `/deploy` | operator tooling | Requires `Authorization: Bearer <BRIDGE_ADMIN_TOKEN>`; deploys contract and returns `{ contractAddress, txId, stub }` |
 | GET | `/operator-address` | gateway setup | Returns operator shielded address `{ address, network }` |
+| POST | `/decision/content-check` | gateway (private) | Classify job description; returns `{ safe, category?, decision_id, policy_version, sig }` |
+| POST | `/decision/rate-check` | gateway (private) | Rate-limit gate; returns 200 or 429 with signed receipt |
+| POST | `/decision/approve-completion` | gateway (private) | M-of-N multisig gate for payouts; returns `{ approved, valid_count, ... }` with signed receipt |
+| POST | `/decision/initiate-refund` | gateway (private) | Authorization gate before refund; requires `Authorization: Bearer` |
+
+The `/decision/*` endpoints are **bridge-internal** — called by the gateway but not part of the public trust surface. All responses include a signed decision receipt `{ decision_id, policy_version, reason_code, timestamp, sig }` for auditability.
 
 **Stub mode:** When the proof server or the chain is unavailable, transaction endpoints still return `stub: true` payloads where possible. `POST /deploy` is exception-safe and returns explicit non-200 errors on failure (no fake-success contract address).
 
@@ -193,7 +199,7 @@ All consumers (gateway, UI, agents via SKILL) rely on this contract. Any impleme
 ## Dispute resolution and arbitration
 
 - **Dispute today:** Job can move to `disputed` from `awaiting_approval` or `multisig_pending`. Either the job_token holder (agent) or the operator (X-Operator-Sig) may call `POST /dispute/<job_id>` with a reason. No third-party arbitrator yet.
-- **M-of-N multisig:** For bounties at or above `MULTISIG_THRESHOLD_SPECKS`, completion requires M-of-N approvals. `APPROVER_KEYS` can include both operator and community arbitrator keys — same `approve-multisig` flow; arbitrators sign the same payload (job_id, output_hash, ts, nonce). No separate arbitrator list; extend by adding arbitrator secrets to `APPROVER_KEYS` and setting M/N as needed.
+- **M-of-N multisig:** For high-value bounties, completion requires M-of-N HMAC approvals before the bridge will authorize payout. The threshold, key material, and M/N values are **private to the bridge** (never in the public repo or gateway environment). The gateway forwards signed approval blobs to `POST /decision/approve-completion`; the bridge verifies them and returns a signed decision receipt. Arbitrators sign the payload `job_id:output_hash:ts:nonce` using their private HMAC key; no separate arbitrator registry is exposed publicly.
 - **Masumi:** Integrate Masumi’s dispute-resolution API when available (Payment Service references dispute handling; hook in once the API is public). Until then, disputes are bilateral only.
 
 ---
