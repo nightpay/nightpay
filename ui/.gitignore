@@ -1,0 +1,7 @@
+# Dependencies and build output — do not commit
+node_modules/
+dist/
+.env
+.env.*
+*.log
+.DS_Store

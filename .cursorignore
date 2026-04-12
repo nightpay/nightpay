@@ -1,0 +1,17 @@
+# Local SSH / key material
+/hetzner_*
+/id_rsa
+/id_rsa.pub
+/id_ed25519
+/id_ed25519.pub
+/*.pem
+/*.p12
+/*.pk8
+
+# Local secret env files
+.env
+.env.*
+.agent-playground.env
+
+# Local-only private automation/scripts
+.private/
