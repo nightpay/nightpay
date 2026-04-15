@@ -4,7 +4,48 @@
 
 **Public repo:** This repo is public. What must stay private (and never be committed) is defined in `.gitignore`; the rationale for each category is in the section **"Public vs private (what goes in .gitignore)"** below.
 
-Last updated: 2026-03-16
+Last updated: 2026-04-15
+
+---
+
+## VPS / Hetzner (canonical layout)
+
+**Goal:** one production NightPay stack per machine so ports and systemd units do not fight each other.
+
+| Path / unit | Role |
+|-------------|------|
+| `/opt/nightpay` | Public repo sync target; MIP-003 + gateway skill tree |
+| `/opt/nightpay-bridge` | Private bridge checkout; **`ExecStart=/usr/bin/node dist/server.js`** (not `npm run dev` / `tsx`) |
+| `/opt/nightpay/.agent-playground.env` | MIP-003 env for production; set **`ENABLE_UI=0`** when Caddy serves `ui/dist` so `server-sync-start.sh` / `agent-playground-setup.sh start` does not spawn a redundant Vite on **3333**. |
+| `/opt/nightpay-bridge/.env` | Bridge env (`WALLET_SEED`, contract, proof server URL, etc.) |
+| `nightpay-mip003.service` | `mip003-server.sh` on **8090** |
+| `nightpay-ui.service` | **Optional / off on canonical VPS:** UI is **`npm run build`** output in `ui/dist` served by **Caddy** (`try_files` + `file_server`). Disable this unit when Caddy serves static files so **3333** stays free. |
+| `nightpay-bridge.service` | Bridge on **4000**; **`Restart=on-failure`** and sane `RestartSec` to avoid CPU storms on misconfig |
+| Host **`caddy.service`** | **Single TLS entrypoint** on **80/443** for every public hostname on the box (see multisite table below). |
+
+**Avoid:** a second copy under `/opt/nightpay-staging` (or any second tree) listening on **8091/3334** unless you intentionally run staging and accept extra RAM/CPU. **Never** run two bridge processes on **4000** (systemd + manual `node dist/server.js` + `tsx`).
+
+**Docker:** Do not run a second Caddy container bound to **80/443** if the host already runs Caddy (port bind fight + restart loops).
+
+Details for your operator machine belong in the private runbook `docs/HETZNER_X86_RUNBOOK.md` (gitignored).
+
+### One Caddy, many sites (host-based routing)
+
+**Capisce:** you run **exactly one** Caddy process (`systemd` unit `caddy.service`). It listens on **80** and **443** once. Each **site block** in `/etc/caddy/Caddyfile` lists one or more hostnames; Caddy matches **SNI** (HTTPS) or **Host** (HTTP→HTTPS redirect), then applies that block’s handlers (`reverse_proxy`, `file_server`, `handle_path`, etc.). Backends stay on **localhost** (or Docker-published ports on the host); nothing else binds **443**.
+
+| Public hostname(s) | What users get | Typical backend (loopback) |
+|--------------------|----------------|----------------------------|
+| **nightpay.dev**, **www.nightpay.dev**, **board.nightpay.dev** | NightPay SPA + same-origin **`/api`**, **`/mip`**, **`/ontology`** | Static **`/opt/nightpay/ui/dist`**; **4000** (bridge); **8090** (MIP) |
+| **ceo.nightpay.dev** | Same app build, CEO landing route (client uses hostname) | Same as row above |
+| **api.nightpay.dev** | MIP-003 API only | **8090** |
+| **bridge.nightpay.dev** | Bridge HTTP API only | **4000** |
+| **procureai.tech**, **www.procureai.tech** | ProcureAI site | **127.0.0.1:5178** (or whatever that stack uses) |
+| **aiprocurement.club**, **www.aiprocurement.club**, **aiprocurement.ai**, **www.aiprocurement.ai** (one Caddy block) | Next.js app | **127.0.0.1:3008** (Docker); DNS for all four should point at the same host IP (e.g. **89.167.94.187**) |
+| **taskzilla.ai**, **www.taskzilla.ai** | Static/Taskzilla routes + optional path proxies | **`/var/www/taskzilla`** + relays as configured in Caddyfile |
+
+Optional raw-hostname blocks (e.g. Hetzner reverse DNS) can mirror **board** behavior for testing without extra domains.
+
+Add a new product on this VPS: **do not** start a second Caddy. Add another **`{ ... }`** site block (or comma-separated hostnames) and point `reverse_proxy` / `root` at the new service’s port or directory, then **`caddy validate`** and **`systemctl reload caddy`**.
 
 ---
 
@@ -109,10 +150,11 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 
 | Component | What it does |
 |-----------|----------------|
-| **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. Delegates all policy decisions (content safety, rate limits, multisig, refund authorization) to the bridge's private `/decision/*` layer — no sensitive heuristics in this script. |
+| **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. **Agent discovery** (`find-agent`) prefers Masumi registry **POST** `/registry-entry-search` + `/registry-entry` (works with direct registry API or SaaS `/registry/api/v1/*`), then falls back across legacy GET routes and optional SaaS public `/api/v1/agents`. Supports `Authorization`, `x-api-key`, and `token` auth header variants. Delegates policy decisions (content safety, rate limits, multisig, refund authorization) to the bridge's private `/decision/*` layer — no sensitive heuristics in this script. |
 | **mip003-server.sh** | Exposes MIP-003 job endpoints (start, claim, submit, vote, select winner, status), optional x402 payment handshake (`/x402`, `PAYMENT-REQUIRED`/`PAYMENT-SIGNATURE`), plus public ontology routes (`/ontology`, `/ontology/context`, `/ontology/examples`). |
-| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
-| **skills/nightpay/HEARTBEAT.md** | OpenClaw periodic checklist: checks `/availability`, optional bridge `/health`, workload deltas, and returns `HEARTBEAT_OK` when no action is needed. |
+| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token). **`/for-agents`** — orientation for autonomous agents (stack layout, setup, do/don’t, ontology link). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
+| **skills/nightpay/HEARTBEAT.md** | OpenClaw periodic checklist: checks `/availability`, `/ontology`, optional bridge `/health`, workload deltas, daily remote `SKILL.md` version; returns `HEARTBEAT_OK` when clear. |
+| **skills/nightpay/scripts/heartbeat.py** (+ `heartbeat.sh`) | Implements HEARTBEAT.md with JSON state under `XDG_STATE_HOME` (or `NIGHTPAY_HEARTBEAT_STATE`). Invoked via `npx nightpay heartbeat` or bash wrapper. |
 | **Bridge** | Only component that talks to the proof server and Midnight; implements the HTTP API below. |
 | **Proof server** | Generates ZK proofs from circuit inputs; bridge sends inputs, gets proofs, then submits to the node. |
 | **receipt.compact** | Defines the on-chain logic (commitments, nullifiers, receipt minting) that the bridge executes via compiled JS. |
@@ -217,7 +259,11 @@ See `docs/ECOSYSTEM.md` for version table and `docs/MIDNIGHT_JS_INTEGRATION.md` 
 
 | Variable | Format | Where to get it | Used by |
 |----------|--------|----------------|---------|
-| `MASUMI_API_KEY` | string | `ADMIN_KEY` in Masumi `.env` | gateway, mip003 |
+| `MASUMI_API_KEY` | string | `ADMIN_KEY` in Masumi `.env`; `init --dummy` emits random hex until replaced | gateway, mip003 |
+| `MASUMI_SAAS_URL` | HTTP URL | Optional SaaS base (example `https://<saas-host>`) | gateway (derives proxy bases) |
+| `MASUMI_PAYMENT_URL` | HTTP URL | Explicit override; default `http://127.0.0.1:3001/api/v1`, or `${MASUMI_SAAS_URL}/pay/api/v1` when SaaS base is set | gateway |
+| `MASUMI_REGISTRY_URL` | HTTP URL | Explicit override; default `http://127.0.0.1:3000/api/v1`, or `${MASUMI_SAAS_URL}/registry/api/v1` when SaaS base is set | gateway |
+| `MASUMI_PUBLIC_URL` | HTTP URL | Optional public discovery base; defaults to `${MASUMI_SAAS_URL}/api/v1` | gateway (`find-agent` fallback) |
 | `OPERATOR_ADDRESS` | 64-char hex | Bridge `GET /operator-address` or Lace wallet | gateway (initialize, withdraw-fees) |
 | `RECEIPT_CONTRACT_ADDRESS` | 64-char hex | Bridge `POST /deploy` response | gateway (all commands) |
 | `JOB_TOKEN_SECRET` | 64-char hex | Auto-generated by `agent-playground-setup.sh init` | mip003-server |
@@ -227,6 +273,8 @@ See `docs/ECOSYSTEM.md` for version table and `docs/MIDNIGHT_JS_INTEGRATION.md` 
 | `X402_VERIFY_MODE` | `none`/`facilitator` | Operator-defined | mip003 x402 proof verification mode |
 | `X402_FACILITATOR_URL` | HTTP URL | x402 facilitator deployment | mip003 `/verify` + `/settle` calls in facilitator mode |
 | `BRIDGE_URL` | HTTP URL | Your bridge host | gateway (optional — stub mode if absent) |
+| `NIGHTPAY_API_URL` | HTTP URL | Deployed MIP base (OpenClaw env) | gateway default for `MIP003_URL` when unset |
+| `MIP003_URL` | HTTP URL | Optional explicit override | gateway MIP calls (status, completion sync, sweep jobs) |
 | `BRIDGE_ADMIN_TOKEN` | string | Operator-defined secret in bridge env | bridge `POST /deploy` bearer auth |
 | `ALLOW_LOCAL_URLS` | `"1"` | Set for dev | gateway (bypasses SSRF for localhost) |
 

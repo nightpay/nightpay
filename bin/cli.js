@@ -10,7 +10,7 @@ const PKG_ROOT = resolve(__dirname, "..");
 const SKILL_SRC = resolve(PKG_ROOT, "skills", "nightpay");
 const SDK_SRC = resolve(PKG_ROOT, "nightpay_sdk.py");
 const SETUP_SRC = resolve(PKG_ROOT, "scripts", "setup.sh");
-const COMMANDS = ["init", "add", "setup", "validate", "doctor", "list", "help"];
+const COMMANDS = ["init", "add", "setup", "validate", "doctor", "heartbeat", "list", "help"];
 
 const command = process.argv[2] || "help";
 
@@ -52,6 +52,7 @@ ${C.bold}COMMANDS${C.reset}
   npx nightpay ${C.cyan}setup${C.reset}       Full onboarding: install + validate + platform config
   npx nightpay ${C.cyan}validate${C.reset}    Check env vars, prerequisites, and connectivity
   npx nightpay ${C.cyan}doctor${C.reset}      Diagnose and auto-fix common issues
+  npx nightpay ${C.cyan}heartbeat${C.reset}   Run HEARTBEAT.md checks (OpenClaw / cron)
   npx nightpay ${C.cyan}list${C.reset}        Show skill info
   npx nightpay ${C.cyan}help${C.reset}        This message
 
@@ -281,6 +282,8 @@ function validate() {
   const fileChecks = [
     { path: join(dest, "SKILL.md"), label: "SKILL.md", required: true },
     { path: join(dest, "scripts", "gateway.sh"), label: "gateway.sh", required: true },
+    { path: join(dest, "scripts", "heartbeat.py"), label: "heartbeat.py", required: true },
+    { path: join(dest, "scripts", "heartbeat.sh"), label: "heartbeat.sh", required: true },
     { path: join(dest, "scripts", "setup.sh"), label: "setup.sh", required: false },
     { path: join(dest, "sdk", "nightpay_sdk.py"), label: "Python SDK (sdk/)", required: false },
   ];
@@ -338,6 +341,35 @@ function validate() {
   }
 
   return { errors, warnings };
+}
+
+// ─── Heartbeat (HEARTBEAT.md runner) ─────────────────────────────────────────
+function runHeartbeat() {
+  const pyCwd = resolve(process.cwd(), "skills", "nightpay", "scripts", "heartbeat.py");
+  const pyPkg = resolve(PKG_ROOT, "skills", "nightpay", "scripts", "heartbeat.py");
+  const py = existsSync(pyCwd) ? pyCwd : pyPkg;
+  if (!existsSync(py)) {
+    console.error(`${FAIL} heartbeat.py not found — run: ${C.cyan}npx nightpay init${C.reset}`);
+    process.exit(1);
+  }
+  const env = { ...process.env };
+  if (!env.NIGHTPAY_SKILL_ROOT) {
+    const cwdSkill = resolve(process.cwd(), "skills", "nightpay");
+    env.NIGHTPAY_SKILL_ROOT = existsSync(join(cwdSkill, "SKILL.md"))
+      ? cwdSkill
+      : resolve(PKG_ROOT, "skills", "nightpay");
+  }
+  const python = process.env.PYTHON || "python3";
+  const extra = process.argv.slice(3);
+  const run = spawnSync(python, [py, ...extra], {
+    stdio: "inherit",
+    env,
+    cwd: process.cwd(),
+  });
+  if (typeof run.status === "number") {
+    process.exit(run.status);
+  }
+  process.exit(1);
 }
 
 // ─── Doctor (diagnose + auto-fix) ────────────────────────────────────────────
@@ -556,4 +588,6 @@ if (command === "init" || command === "add") {
   process.exit(errors > 0 ? 1 : 0);
 } else if (command === "doctor") {
   doctor();
+} else if (command === "heartbeat") {
+  runHeartbeat();
 }

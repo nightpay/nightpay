@@ -2405,19 +2405,48 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
     def _build_agent_catalog(self, db, params):
         capability_filter = str(params.get('capability', [''])[0]).strip().lower()
         query_filter = str(params.get('q', [''])[0]).strip().lower()
+        status_filter = str(params.get('status', ['VERIFIED'])[0]).strip().upper()
+        if not status_filter:
+            status_filter = 'VERIFIED'
         sort_by = str(params.get('sort', ['credibility'])[0]).strip().lower()
         showcase_only = str(params.get('showcase_only', ['0'])[0]).strip().lower() in ('1', 'true', 'yes', 'on')
+        offset_raw = params.get('offset', [None])[0]
+        page_raw = params.get('page', ['1'])[0]
         try:
             limit = int(params.get('limit', ['20'])[0])
-            offset = int(params.get('offset', ['0'])[0])
+            page = int(page_raw)
+            if offset_raw is None or str(offset_raw).strip() == '':
+                offset = (page - 1) * limit
+            else:
+                offset = int(offset_raw)
+                page = (offset // limit) + 1
         except Exception:
-            return None, 'limit and offset must be integers'
+            return None, 'limit, offset, and page must be integers'
         if limit < 1 or limit > 200:
             return None, 'limit must be between 1 and 200'
         if offset < 0:
             return None, 'offset must be >= 0'
+        if page < 1:
+            return None, 'page must be >= 1'
         if sort_by not in ('credibility', 'updated_at'):
             return None, 'sort must be one of: credibility, updated_at'
+        if status_filter not in ('VERIFIED', 'PENDING', 'REVOKED', 'EXPIRED', 'ALL'):
+            return None, 'status must be one of: VERIFIED, PENDING, REVOKED, EXPIRED, ALL'
+
+        # Compatibility shim for Masumi SaaS public catalog query semantics.
+        # NightPay currently tracks active local profiles only; unsupported
+        # statuses map to an empty list instead of an error.
+        if status_filter in ('PENDING', 'REVOKED', 'EXPIRED'):
+            return {
+                'count': 0,
+                'total': 0,
+                'limit': limit,
+                'offset': offset,
+                'page': page,
+                'status': status_filter,
+                'has_more': False,
+                'agents': [],
+            }, ''
 
         scan_limit = max((offset + limit) * 3, 120)
         if scan_limit > 600:
@@ -2461,14 +2490,16 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 reverse=True
             )
 
-        page = profiles[offset:offset + limit]
+        page_items = profiles[offset:offset + limit]
         return {
-            'count': len(page),
+            'count': len(page_items),
             'total': len(profiles),
             'limit': limit,
             'offset': offset,
+            'page': page,
+            'status': status_filter,
             'has_more': (offset + limit) < len(profiles),
-            'agents': page,
+            'agents': page_items,
         }, ''
 
     # ── GET ──────────────────────────────────────────────────────────────────

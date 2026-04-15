@@ -4,7 +4,7 @@ description: Primarily for OpenClaw agents. Anonymous community bounty pools —
 license: AGPL-3.0-only
 compatibility: "openclaw, acp, claude-code, cursor, copilot"
 allowed-tools: Bash
-metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.4.0"}
+metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.4.5"}
 ---
 
 # nightpay
@@ -46,6 +46,7 @@ NightPay includes `HEARTBEAT.md` for scheduled OpenClaw heartbeat runs.
 
 - Heartbeat contract: return `HEARTBEAT_OK` when nothing needs attention.
 - Default focus: API `/availability`, bridge `/health` (when `BRIDGE_URL` is set), work-queue deltas, and daily skill version freshness.
+- **Runner:** `bash skills/nightpay/scripts/heartbeat.sh` or `npx nightpay heartbeat` — implements the checklist with persisted state (consecutive failures, job deltas, daily GitHub `SKILL.md` version compare).
 - Keep heartbeat delivery silent by default or route to last active channel via `openclaw.json`.
 
 Example:

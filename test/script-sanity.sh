@@ -49,6 +49,7 @@ shell_files=(
   "scripts/server-sync-start.sh"
   "skills/nightpay/scripts/bounty-board.sh"
   "skills/nightpay/scripts/gateway.sh"
+  "skills/nightpay/scripts/heartbeat.sh"
   "skills/nightpay/scripts/mip003-server.sh"
   "skills/nightpay/scripts/update-blocklist.sh"
   "test/smoke.sh"
@@ -70,6 +71,7 @@ echo
 echo "== Python syntax checks =="
 python_files=(
   "nightpay_sdk.py"
+  "skills/nightpay/scripts/heartbeat.py"
   "test/chaos_stress_suite.py"
 )
 
@@ -115,6 +117,12 @@ then
   fi
 else
   fail "extract embedded python from mip003-server.sh"
+fi
+
+if "$PYTHON_BIN" "$ROOT_DIR/skills/nightpay/scripts/heartbeat.py" --selftest >/dev/null 2>&1; then
+  pass "heartbeat.py --selftest"
+else
+  fail "heartbeat.py --selftest"
 fi
 
 echo

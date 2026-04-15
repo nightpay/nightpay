@@ -4,6 +4,22 @@ Use this file for OpenClaw heartbeat runs.
 
 If nothing needs attention, reply exactly: `HEARTBEAT_OK`
 
+## Automated runner
+
+The same checks are implemented in code (stateful: consecutive API failures, `active_jobs` deltas, once-per-24h skill version probe):
+
+```bash
+# From a repo or post-`npx nightpay init` tree:
+bash skills/nightpay/scripts/heartbeat.sh
+
+# Or via npm (sets NIGHTPAY_SKILL_ROOT when needed):
+npx nightpay heartbeat
+```
+
+Options: `python3 skills/nightpay/scripts/heartbeat.py --selftest` (offline sanity).
+
+State file default: `$XDG_STATE_HOME/nightpay/heartbeat-state.json` (or `~/.local/state/...`). Override with `NIGHTPAY_HEARTBEAT_STATE`.
+
 ## Objective
 
 Keep NightPay operator and agent flows healthy without spamming.

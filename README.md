@@ -226,6 +226,11 @@ export OPERATOR_FEE_BPS="200"              # 2%, max 500 (5%)
 export DEFAULT_POOL_DEADLINE_HOURS="72"
 export JOB_TOKEN_SECRET="<random>"
 export MIP003_MODE="compat"                # compat | strict
+export MASUMI_SAAS_URL=""                  # optional: https://<masumi-saas-host> (auto-derives /pay/api/v1 + /registry/api/v1)
+export MASUMI_PAYMENT_URL=""               # optional explicit override (legacy/local default: http://localhost:3001/api/v1)
+export MASUMI_REGISTRY_URL=""              # optional explicit override (legacy/local default: http://localhost:3000/api/v1)
+export MASUMI_PUBLIC_URL=""                # optional public discovery override (defaults to ${MASUMI_SAAS_URL}/api/v1)
+export MIP003_URL=""                       # optional explicit MIP endpoint (defaults to NIGHTPAY_API_URL, then localhost:${MIP003_PORT})
 export X402_ENABLED="0"                    # 1 => enforce x402 on paid routes
 export X402_REQUIRE_ROUTES="/start_job"    # comma list, '*' suffix supported
 export X402_ACCEPT_AMOUNT="1000"           # atomic units in PAYMENT-REQUIRED
@@ -235,6 +240,11 @@ export MIP003_PAYMENT_SIGNATURE=""          # optional gateway passthrough for h
 export OPENSHART_BIN="openshart"            # optional: override OpenShart command path
 export MIDNIGHT_WALLET_CLI_BIN="midnight"   # optional: override midnight-wallet-cli command
 ```
+
+`gateway.sh` now resolves Masumi and MIP bases in this order:
+1. Explicit `MASUMI_PAYMENT_URL` / `MASUMI_REGISTRY_URL` / `MIP003_URL`
+2. Derived from `MASUMI_SAAS_URL` (`/pay/api/v1`, `/registry/api/v1`, and public `/api/v1`)
+3. Legacy local defaults (`localhost:3001`, `localhost:3000`, `localhost:${MIP003_PORT}`)
 
 ### MIP-003 Modes
 

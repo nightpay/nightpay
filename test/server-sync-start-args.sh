@@ -53,7 +53,8 @@ run_capture() {
   local out_file="$TMP_DIR/cmd.out"
   local err_file="$TMP_DIR/cmd.err"
   set +e
-  "$@" >"$out_file" 2>"$err_file"
+  # Avoid inheriting npm/Node stdin (never closed) — it would block mock `ssh` scripts that drain stdin.
+  "$@" >"$out_file" 2>"$err_file" </dev/null
   LAST_RC=$?
   set -e
   LAST_OUT="$(cat "$out_file")"
@@ -112,9 +113,8 @@ dest="${@: -2:1}"
 cmd="${@: -1}"
 printf 'dest=%s\tcmd=%s\n' "$dest" "$cmd" >>"$log_file"
 
-if [[ -p /dev/stdin ]]; then
-  cat >/dev/null
-fi
+# Drain stdin: tar|ssh binary stream, or `ssh ... bash -s <<HEREDOC` (parent blocks until ssh reads).
+cat >/dev/null 2>/dev/null || true
 
 if [[ "$cmd" == *"uname -m"* ]]; then
   echo "$mock_arch"

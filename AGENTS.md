@@ -19,7 +19,7 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 | Resource | URL | Use for |
 |---|---|---|
 | Compact language reference | https://docs.midnight.network/develop/reference/compact/lang-ref | Syntax, types, circuit rules — ground truth |
-| Compact stdlib | https://docs.midnight.network/develop/reference/compact/compact-std-library/exports | MerkleTree, hash, effects, send, receive |
+| Compact stdlib | https://docs.midnight.network/compact/compact-std-library | MerkleTree, hash, effects, send, receive |
 | Compact overview + DSL | https://docs.midnight.network/compact | Circuits, witnesses, public/private state model |
 | Midnight concepts | https://docs.midnight.network/concepts | Ledgers, UTXO, ZK proofs, Kachina, Compact — align terminology |
 | Compact tools release notes | https://docs.midnight.network/relnotes/compact-tools | Compiler version changes, `compact fixup` notes |
@@ -157,6 +157,7 @@ plaintext conversation history, agent logs, or LLM provider telemetry.
 - `receipt.compact` — ZK contract, touch carefully, run `compact fixup --check` then `compact fixup` after
 - `gateway.sh` — bounty lifecycle, main integration point between Masumi and Midnight
 - `mip003-server.sh` — MIP-003 HTTP server (Python inside bash), job lifecycle + idempotency
+- `heartbeat.py` / `heartbeat.sh` — OpenClaw HEARTBEAT.md runner (`npx nightpay heartbeat`); update with `HEARTBEAT.md` when checks change
 - `bridge/src/` — TypeScript SDK integration, follows example-bboard patterns (not example-counter — we have witnesses)
 - `SKILL.md` — agent discovery, strict format rules (see OpenClaw section above)
 - `openclaw-fragment.json` — merge into `~/.openclaw/openclaw.json` to activate skill with env vars

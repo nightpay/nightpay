@@ -46,8 +46,27 @@ else
 fi
 
 # ─── Required env vars ────────────────────────────────────────────────────────
+# Masumi endpoint resolution:
+# 1) explicit MASUMI_PAYMENT_URL / MASUMI_REGISTRY_URL (highest priority)
+# 2) MASUMI_SAAS_URL-derived proxy paths (/pay/api/v1 + /registry/api/v1)
+# 3) legacy local defaults (masumi-services-dev-quickstart)
+MASUMI_SAAS_URL="${MASUMI_SAAS_URL:-}"
+MASUMI_SAAS_BASE="${MASUMI_SAAS_URL%/}"
+MASUMI_PAYMENT_URL="${MASUMI_PAYMENT_URL:-}"
+MASUMI_REGISTRY_URL="${MASUMI_REGISTRY_URL:-}"
+if [[ -z "$MASUMI_PAYMENT_URL" && -n "$MASUMI_SAAS_BASE" ]]; then
+  MASUMI_PAYMENT_URL="${MASUMI_SAAS_BASE}/pay/api/v1"
+fi
+if [[ -z "$MASUMI_REGISTRY_URL" && -n "$MASUMI_SAAS_BASE" ]]; then
+  MASUMI_REGISTRY_URL="${MASUMI_SAAS_BASE}/registry/api/v1"
+fi
 MASUMI_PAYMENT_URL="${MASUMI_PAYMENT_URL:-http://localhost:3001/api/v1}"
 MASUMI_REGISTRY_URL="${MASUMI_REGISTRY_URL:-http://localhost:3000/api/v1}"
+# Optional explicit public discovery surface (Masumi SaaS /api/v1/*).
+MASUMI_PUBLIC_URL="${MASUMI_PUBLIC_URL:-}"
+if [[ -z "$MASUMI_PUBLIC_URL" && -n "$MASUMI_SAAS_BASE" ]]; then
+  MASUMI_PUBLIC_URL="${MASUMI_SAAS_BASE}/api/v1"
+fi
 MASUMI_API_KEY="${MASUMI_API_KEY:?SECURITY: Set MASUMI_API_KEY}"
 # Keep preprod default until Midnight mainnet is live.
 MIDNIGHT_NETWORK="${MIDNIGHT_NETWORK:-preprod}"
@@ -173,6 +192,7 @@ _masumi_request_with_auth_fallback() {
   local payload="${4:-}"
   local auth_headers=(
     "Authorization: Bearer $MASUMI_API_KEY"
+    "x-api-key: $MASUMI_API_KEY"
     "token: $MASUMI_API_KEY"
   )
   local hdr out
@@ -195,7 +215,7 @@ _masumi_request_with_auth_fallback() {
     fi
   done
 
-  echo "ERROR: Masumi request failed after trying Authorization and token headers (${method} ${endpoint})" >&2
+  echo "ERROR: Masumi request failed after trying Authorization/x-api-key/token headers (${method} ${endpoint})" >&2
   return 1
 }
 
@@ -207,25 +227,53 @@ masumi_post() {
   _masumi_request_with_auth_fallback "POST" "$MASUMI_PAYMENT_URL" "$1" "$2"
 }
 
+# Masumi registry service (port 3000) — distinct from payment POSTs.
+masumi_registry_post() {
+  _masumi_request_with_auth_fallback "POST" "$MASUMI_REGISTRY_URL" "$1" "$2"
+}
+
 # Best-effort compatibility layer for registry endpoint changes.
+# Masumi registry-service (current): POST /api/v1/registry-entry-search and
+# POST /api/v1/registry-entry (see masumi-registry-service routes). Legacy GET
+# /agents paths are kept as fallback for older deployments.
 find_agents() {
   local encoded="$1"
+  local decoded net out
+  decoded="$(python3 -c "import urllib.parse,sys; print(urllib.parse.unquote(sys.argv[1]))" "$encoded")"
+  net="$(python3 -c "import sys
+m = (sys.argv[1] or 'preprod').strip().lower()
+print({'preprod': 'Preprod', 'mainnet': 'Mainnet', 'preview': 'Preview'}.get(m, 'Preprod'))" "${MIDNIGHT_NETWORK:-preprod}")"
+
+  local payload_search payload_filter
+  payload_search="$(python3 -c "import json,sys; print(json.dumps({'network': sys.argv[1], 'limit': 5, 'query': sys.argv[2]}))" "$net" "$decoded")"
+  local reg_post_ep
+  for reg_post_ep in "/registry-entry-search" "/registry-entry-search/"; do
+    if out="$(masumi_registry_post "$reg_post_ep" "$payload_search" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  done
+
+  payload_filter="$(python3 -c "import json,sys; print(json.dumps({'network': sys.argv[1], 'limit': 5, 'filter': {'capability': {'name': sys.argv[2]}}}))" "$net" "$decoded")"
+  for reg_post_ep in "/registry-entry" "/registry-entry/"; do
+    if out="$(masumi_registry_post "$reg_post_ep" "$payload_filter" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  done
+
   local base_urls=("$MASUMI_REGISTRY_URL" "$MASUMI_PAYMENT_URL")
   local endpoints=(
     "/agents?capability=${encoded}&limit=5"
     "/registry/agents?capability=${encoded}&limit=5"
     "/services/agents?capability=${encoded}&limit=5"
     "/search/agents?capability=${encoded}&limit=5"
+    "/api/v1/agents?status=VERIFIED&limit=5&q=${encoded}"
   )
-  local base ep
-  local auth_headers=(
-    "Authorization: Bearer $MASUMI_API_KEY"
-    "token: $MASUMI_API_KEY"
-  )
+  local base ep hdr
   for base in "${base_urls[@]}"; do
     for ep in "${endpoints[@]}"; do
-      local hdr
-      for hdr in "${auth_headers[@]}"; do
+      for hdr in "Authorization: Bearer $MASUMI_API_KEY" "x-api-key: $MASUMI_API_KEY" "token: $MASUMI_API_KEY"; do
         if out="$(_ssrf_safe_curl "${base}${ep}" -H "$hdr" 2>/dev/null)"; then
           printf '%s\n' "$out"
           return 0
@@ -233,6 +281,15 @@ find_agents() {
       done
     done
   done
+
+  # Last resort: Masumi SaaS public discovery API (no auth required).
+  if [[ -n "$MASUMI_PUBLIC_URL" ]]; then
+    if out="$(_ssrf_safe_curl "${MASUMI_PUBLIC_URL}/agents?status=VERIFIED&limit=5&q=${encoded}" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+
   echo "ERROR: agent discovery failed on all known endpoints and auth headers" >&2
   return 1
 }
@@ -495,17 +552,155 @@ print(json.dumps({
 }
 
 # ─── Optimistic delivery env vars ─────────────────────────────────────────────
-# Multisig keys/threshold/M/N are now private to the bridge (APPROVER_KEYS,
-# MULTISIG_M, MULTISIG_THRESHOLD_SPECKS env vars on the bridge process).
-# This script forwards approval blobs to /decision/approve-completion; bridge verifies.
+# Bridge decision endpoint is the primary multisig verifier. In no-bridge/stub mode,
+# gateway enforces a local fallback verifier using the same approval blob format.
 OPTIMISTIC_WINDOW_HOURS="${OPTIMISTIC_WINDOW_HOURS:-48}"
 OPTIMISTIC_SWEEP_PAGE_SIZE="${OPTIMISTIC_SWEEP_PAGE_SIZE:-200}"   # capped to <= 500
 UNCLAIMED_REFUND_HOURS="${UNCLAIMED_REFUND_HOURS:-24}"
 UNCLAIMED_SWEEP_PAGE_SIZE="${UNCLAIMED_SWEEP_PAGE_SIZE:-200}"     # capped to <= 500
 MIP003_PORT="${MIP003_PORT:-8090}"
+# OpenClaw env compatibility: NIGHTPAY_API_URL should drive gateway->MIP calls
+# unless MIP003_URL is explicitly set.
+NIGHTPAY_API_URL="${NIGHTPAY_API_URL:-}"
+if [[ -z "${MIP003_URL:-}" && -n "$NIGHTPAY_API_URL" ]]; then
+  MIP003_URL="$NIGHTPAY_API_URL"
+fi
 MIP003_URL="${MIP003_URL:-http://localhost:${MIP003_PORT}}"
+MIP003_URL="${MIP003_URL%/}"
 # Optional x402 passthrough for MIP-003 APIs that enforce PAYMENT-SIGNATURE.
 MIP003_PAYMENT_SIGNATURE="${MIP003_PAYMENT_SIGNATURE:-}"
+MULTISIG_THRESHOLD_SPECKS="${MULTISIG_THRESHOLD_SPECKS:-1000000}"
+MULTISIG_M="${MULTISIG_M:-2}"
+MULTISIG_N="${MULTISIG_N:-3}"
+APPROVER_KEYS="${APPROVER_KEYS:-}"
+MAX_APPROVAL_AGE_SECONDS="${MAX_APPROVAL_AGE_SECONDS:-86400}"
+
+# Local fallback verifier for high-value completion in no-bridge mode.
+# Input blob format must match approve-multisig output: sig:ts:nonce
+verify_multisig_local() {
+  local job_id="$1"
+  local output_hash="$2"
+  local amount_specks="$3"
+  local approvals_raw="$4"
+  python3 - "$job_id" "$output_hash" "$amount_specks" "$approvals_raw" \
+    "$MULTISIG_THRESHOLD_SPECKS" "$MULTISIG_M" "$MULTISIG_N" "$APPROVER_KEYS" "$MAX_APPROVAL_AGE_SECONDS" <<'PY'
+import hashlib
+import hmac
+import json
+import sys
+import time
+
+job_id, output_hash, amount_raw, approvals_raw, threshold_raw, m_raw, n_raw, keys_raw, max_age_raw = sys.argv[1:10]
+
+def to_int(v, default):
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+amount = to_int(amount_raw, 0)
+threshold = to_int(threshold_raw, 1_000_000)
+required_m = max(1, to_int(m_raw, 2))
+configured_n = max(required_m, to_int(n_raw, 3))
+max_age_seconds = max(1, to_int(max_age_raw, 86_400))
+keys = [k.strip() for k in keys_raw.split(',') if k.strip()]
+required_n = len(keys) if keys else configured_n
+
+if amount < threshold:
+    print(json.dumps({
+        "required": False,
+        "ok": True,
+        "valid_count": 0,
+        "required_m": required_m,
+        "required_n": required_n
+    }))
+    raise SystemExit(0)
+
+if not keys:
+    print(json.dumps({
+        "required": True,
+        "ok": False,
+        "valid_count": 0,
+        "required_m": required_m,
+        "required_n": required_n,
+        "error": "APPROVER_KEYS is not configured for local multisig verification"
+    }))
+    raise SystemExit(0)
+
+entries = [x for x in approvals_raw.split(',') if x]
+if not entries:
+    print(json.dumps({
+        "required": True,
+        "ok": False,
+        "valid_count": 0,
+        "required_m": required_m,
+        "required_n": len(keys),
+        "error": "no approvals provided"
+    }))
+    raise SystemExit(0)
+
+now_ms = int(time.time() * 1000)
+used_key_indices = set()
+used_nonces = set()
+valid_count = 0
+
+for entry in entries:
+    parts = entry.split(':')
+    if len(parts) != 3:
+        print(json.dumps({
+            "required": True,
+            "ok": False,
+            "valid_count": valid_count,
+            "required_m": required_m,
+            "required_n": len(keys),
+            "error": f"malformed blob: {entry}"
+        }))
+        raise SystemExit(0)
+
+    sig, ts_str, nonce = parts
+    if nonce in used_nonces:
+        continue
+    used_nonces.add(nonce)
+
+    try:
+        ts_ms = int(ts_str) * 1000
+    except Exception:
+        print(json.dumps({
+            "required": True,
+            "ok": False,
+            "valid_count": valid_count,
+            "required_m": required_m,
+            "required_n": len(keys),
+            "error": f"non-integer ts in blob: {entry}"
+        }))
+        raise SystemExit(0)
+
+    age = now_ms - ts_ms
+    if age > max_age_seconds * 1000 or age < -300_000:
+        continue
+
+    payload = f"{job_id}:{output_hash}:{ts_str}:{nonce}".encode()
+    sig_bytes = sig.encode()
+    for idx, key in enumerate(keys):
+        if idx in used_key_indices:
+            continue
+        expected = hmac.new(key.encode(), payload, hashlib.sha256).hexdigest().encode()
+        if len(sig_bytes) == len(expected) and hmac.compare_digest(sig_bytes, expected):
+            used_key_indices.add(idx)
+            valid_count += 1
+            break
+
+ok = valid_count >= required_m
+print(json.dumps({
+    "required": True,
+    "ok": ok,
+    "valid_count": valid_count,
+    "required_m": required_m,
+    "required_n": len(keys),
+    "error": None if ok else f"only {valid_count} valid approvals, need {required_m}"
+}))
+PY
+}
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -718,6 +913,29 @@ try:
     print(d.get('amount_specks') or 0)
 except: print(0)
 " 2>/dev/null || echo 0)
+    fi
+
+    # ── Multisig verification (fallback when bridge decision endpoint is absent) ──
+    if [[ -z "$BRIDGE_URL" ]]; then
+      LOCAL_MULTI=$(verify_multisig_local "$JOB_ID" "$COMMITMENT" "$JOB_AMOUNT" "${APPROVALS_RAW:-}")
+      LOCAL_REQUIRED=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('required') else 'false')" 2>/dev/null || echo "false")
+      LOCAL_OK=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('ok') else 'false')" 2>/dev/null || echo "true")
+      if [[ "$LOCAL_REQUIRED" == "true" && "$LOCAL_OK" != "true" ]]; then
+        REQ_M=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('required_m',2))" 2>/dev/null || echo "2")
+        REQ_N=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('required_n',3))" 2>/dev/null || echo "3")
+        MULTI_ERR=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','multisig verification failed'))" 2>/dev/null || echo "multisig verification failed")
+        echo -e "${RED}ERROR${RESET}: Multisig required for job amount ${BOLD}${JOB_AMOUNT} specks${RESET} (${REQ_M}-of-${REQ_N})" >&2
+        echo -e "  ${DIM}${MULTI_ERR}${RESET}" >&2
+        echo -e "${YELLOW}Each approver runs:${RESET}" >&2
+        echo -e "  ${CYAN}gateway.sh approve-multisig${RESET} $JOB_ID <output_hash> <approver_key>" >&2
+        echo -e "Then collect M approval_blobs and run:" >&2
+        echo -e "  ${CYAN}gateway.sh complete${RESET} $JOB_ID $COMMITMENT --approvals blob1,blob2" >&2
+        exit 1
+      fi
+      LOCAL_VALID=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('valid_count',''))" 2>/dev/null || echo "")
+      if [[ "$LOCAL_REQUIRED" == "true" && -n "$LOCAL_VALID" ]]; then
+        echo -e "  ${GREEN}Multisig${RESET}: ok:${LOCAL_VALID} approvals verified ${CYAN}(local fallback)${RESET}" >&2
+      fi
     fi
 
     # ── Payout gate: bridge /decision/approve-completion ────────────────────────
@@ -1002,8 +1220,8 @@ print(json.dumps({
     DRY_RUN=0
     [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-    MIP003_URL="http://localhost:${MIP003_PORT}"
-    echo -e "${CYAN}Scanning for auto-approvable jobs${RESET} ${DIM}(window=${OPTIMISTIC_WINDOW_HOURS}h, url=${MIP003_URL}, pageSize=${OPTIMISTIC_SWEEP_PAGE_SIZE})${RESET}..." >&2
+    MIP_SWEEP_URL="${MIP003_SWEEP_URL:-$MIP003_URL}"
+    echo -e "${CYAN}Scanning for auto-approvable jobs${RESET} ${DIM}(window=${OPTIMISTIC_WINDOW_HOURS}h, url=${MIP_SWEEP_URL}, pageSize=${OPTIMISTIC_SWEEP_PAGE_SIZE})${RESET}..." >&2
 
     # Fetch one paginated slice of jobs ready for optimistic completion.
     NOW_ISO=$(python3 -c "
@@ -1014,7 +1232,7 @@ print(datetime.now(timezone.utc).isoformat())
     if [[ -n "${OPERATOR_SECRET_KEY:-}" ]]; then
       MIP_SWEEP_AUTH_ARGS=(-H "Authorization: Bearer ${OPERATOR_SECRET_KEY}")
     fi
-    JOBS_JSON=$(curl -sf --max-time 10 "${MIP_SWEEP_AUTH_ARGS[@]}" "${MIP003_URL}/jobs?status=awaiting_approval&visibility=all&approved_before=${NOW_ISO}&limit=${OPTIMISTIC_SWEEP_PAGE_SIZE}&offset=0" 2>/dev/null || echo '{"jobs":[]}')
+    JOBS_JSON=$(curl -sf --max-time 10 "${MIP_SWEEP_AUTH_ARGS[@]}" "${MIP_SWEEP_URL}/jobs?status=awaiting_approval&visibility=all&approved_before=${NOW_ISO}&limit=${OPTIMISTIC_SWEEP_PAGE_SIZE}&offset=0" 2>/dev/null || echo '{"jobs":[]}')
 
     # Filter for expired windows and auto-complete each
     python3 -c "
@@ -1321,8 +1539,8 @@ print(json.dumps({
     #   - commitmentHash present in input_data
     DRY_RUN=0
     [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
-    MIP003_URL="http://localhost:${MIP003_PORT}"
-    echo -e "${CYAN}Scanning for unclaimed refunds${RESET} ${DIM}(age=${UNCLAIMED_REFUND_HOURS}h, url=${MIP003_URL}, pageSize=${UNCLAIMED_SWEEP_PAGE_SIZE})${RESET}..." >&2
+    MIP_REFUND_URL="${MIP003_REFUND_URL:-$MIP003_URL}"
+    echo -e "${CYAN}Scanning for unclaimed refunds${RESET} ${DIM}(age=${UNCLAIMED_REFUND_HOURS}h, url=${MIP_REFUND_URL}, pageSize=${UNCLAIMED_SWEEP_PAGE_SIZE})${RESET}..." >&2
 
     python3 -c "
 import json, subprocess, sys, urllib.request, urllib.error
@@ -1425,7 +1643,7 @@ while True:
     offset += page_size
 
 print(f'Unclaimed refund sweep: scanned={scanned}, candidates={candidates}, refunded={done}, errors={errors}.', file=sys.stderr)
-" "$MIP003_URL" "$0" "$DRY_RUN" "$UNCLAIMED_REFUND_HOURS" "$UNCLAIMED_SWEEP_PAGE_SIZE" "${OPERATOR_SECRET_KEY:-}"
+" "$MIP_REFUND_URL" "$0" "$DRY_RUN" "$UNCLAIMED_REFUND_HOURS" "$UNCLAIMED_SWEEP_PAGE_SIZE" "${OPERATOR_SECRET_KEY:-}"
     ;;
 
   *)

@@ -1,0 +1,2 @@
+# POSIX shell on Linux/VPS; CRLF breaks shebang and set -o pipefail on deploy.
+*.sh text eol=lf
