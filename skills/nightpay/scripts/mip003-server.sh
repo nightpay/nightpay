@@ -158,7 +158,7 @@ def _normalize_x402_routes(raw):
         # "/C:/Program Files/Git/route". Recover the intended API route.
         if re.match(r'^/?[A-Za-z]:/', item):
             recovered = re.search(
-                r'/(availability|x402|use_cases|agents|ontology|input_schema|start_job|status|claim_job|provide_input|provide_result|complete_job|dispute|jobs|submissions|vote_result|vote_submission|select_winner|management|agent|demo)(?:/.*)?$',
+                r'/(availability|x402|use_cases|agents|ontology|input_schema|start_job|status|claim_job|provide_input|provide_result|complete_job|dispute|jobs|submissions|vote_result|vote_submission|select_winner|split_contest|management|agent|demo)(?:/.*)?$',
                 item,
                 flags=re.IGNORECASE,
             )
@@ -1370,6 +1370,9 @@ def validate_contest_config(raw):
     return cfg, None
 
 def ensure_voting_session(db, job_id, contest_cfg, now_dt, fallback_voter_id=None):
+    # fallback_voter_id is accepted for backward compatibility but NEVER added to the snapshot;
+    # the snapshot is strictly the set of agents with a row in job_claims. This prevents a first
+    # submitter from expanding the voter pool by submitting before claiming.
     row = db.execute(
         'SELECT voting_started_at, voting_ends_at, voter_snapshot FROM jobs WHERE job_id = ?',
         (job_id,)
@@ -1398,14 +1401,18 @@ def ensure_voting_session(db, job_id, contest_cfg, now_dt, fallback_voter_id=Non
         seen.add(actor_id)
         voter_snapshot.append(actor_id)
 
-    if fallback_voter_id:
-        actor_id = str(fallback_voter_id or '').strip()
-        if validate_actor_id(actor_id) and actor_id not in seen:
-            seen.add(actor_id)
-            voter_snapshot.append(actor_id)
-
     if not voter_snapshot:
-        return None, None, [], 'no eligible voters available; agents must claim the job before voting'
+        return None, None, [], 'no eligible voters available; agents must claim the job before voting starts'
+
+    # Enforce the same floor as validate_contest_config: when contest is enabled and agent_voting_only=true,
+    # require the claimed agent set to meet contest.min_agents before voting can start.
+    if bool(contest_cfg.get('agent_voting_only', True)):
+        required_min = int(contest_cfg.get('min_agents', 1) or 1)
+        if len(voter_snapshot) < required_min:
+            return None, None, [], (
+                f'voting cannot start yet: only {len(voter_snapshot)} eligible voter(s) claimed; '
+                f'contest.min_agents={required_min} required'
+            )
 
     vote_window_hours = int(contest_cfg.get('vote_window_hours', 24) or 24)
     started_at = now_dt.isoformat()
@@ -2215,6 +2222,30 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 
         return True, ''
 
+    def _authorize_voter(self, db, job_id, claimed_voter_id):
+        # Shared auth for /submissions read, /vote_submission, /vote_result.
+        # Returns (role, actor_id, err). role in {'creator', 'operator', 'agent'}.
+        # - creator: Authorization: Bearer <job_token>   (can read/write as bounty owner)
+        # - operator: Authorization: Bearer <operator_secret or session token>
+        # - agent: X-Agent-Token for claimed_voter_id, and voter_id MUST equal the token's agent_id
+        auth_header = str(self.headers.get('Authorization', '')).strip()
+        if auth_header.startswith('Bearer '):
+            token = auth_header[len('Bearer '):].strip()
+            if token and verify_job_token(job_id, token):
+                return 'creator', None, None
+            if self._operator_bearer_ok():
+                return 'operator', None, None
+
+        agent_token = str(self.headers.get('X-Agent-Token', '')).strip()
+        if agent_token:
+            expected_id = claimed_voter_id if claimed_voter_id else None
+            identity, err = self._verify_agent_identity_token(db, agent_token, expected_agent_id=expected_id)
+            if identity and not err:
+                return 'agent', str(identity.get('agent_id') or expected_id or '').strip(), None
+            if err:
+                return None, None, err
+        return None, None, 'authentication required (Authorization: Bearer <job_token|operator>, or X-Agent-Token matching voter_id)'
+
     def _status_payload(self, db, job):
         latest = latest_status_event(db, job['job_id'])
         if latest is None:
@@ -2405,19 +2436,48 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
     def _build_agent_catalog(self, db, params):
         capability_filter = str(params.get('capability', [''])[0]).strip().lower()
         query_filter = str(params.get('q', [''])[0]).strip().lower()
+        status_filter = str(params.get('status', ['VERIFIED'])[0]).strip().upper()
+        if not status_filter:
+            status_filter = 'VERIFIED'
         sort_by = str(params.get('sort', ['credibility'])[0]).strip().lower()
         showcase_only = str(params.get('showcase_only', ['0'])[0]).strip().lower() in ('1', 'true', 'yes', 'on')
+        offset_raw = params.get('offset', [None])[0]
+        page_raw = params.get('page', ['1'])[0]
         try:
             limit = int(params.get('limit', ['20'])[0])
-            offset = int(params.get('offset', ['0'])[0])
+            page = int(page_raw)
+            if offset_raw is None or str(offset_raw).strip() == '':
+                offset = (page - 1) * limit
+            else:
+                offset = int(offset_raw)
+                page = (offset // limit) + 1
         except Exception:
-            return None, 'limit and offset must be integers'
+            return None, 'limit, offset, and page must be integers'
         if limit < 1 or limit > 200:
             return None, 'limit must be between 1 and 200'
         if offset < 0:
             return None, 'offset must be >= 0'
+        if page < 1:
+            return None, 'page must be >= 1'
         if sort_by not in ('credibility', 'updated_at'):
             return None, 'sort must be one of: credibility, updated_at'
+        if status_filter not in ('VERIFIED', 'PENDING', 'REVOKED', 'EXPIRED', 'ALL'):
+            return None, 'status must be one of: VERIFIED, PENDING, REVOKED, EXPIRED, ALL'
+
+        # Compatibility shim for Masumi SaaS public catalog query semantics.
+        # NightPay currently tracks active local profiles only; unsupported
+        # statuses map to an empty list instead of an error.
+        if status_filter in ('PENDING', 'REVOKED', 'EXPIRED'):
+            return {
+                'count': 0,
+                'total': 0,
+                'limit': limit,
+                'offset': offset,
+                'page': page,
+                'status': status_filter,
+                'has_more': False,
+                'agents': [],
+            }, ''
 
         scan_limit = max((offset + limit) * 3, 120)
         if scan_limit > 600:
@@ -2461,14 +2521,16 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 reverse=True
             )
 
-        page = profiles[offset:offset + limit]
+        page_items = profiles[offset:offset + limit]
         return {
-            'count': len(page),
+            'count': len(page_items),
             'total': len(profiles),
             'limit': limit,
             'offset': offset,
+            'page': page,
+            'status': status_filter,
             'has_more': (offset + limit) < len(profiles),
-            'agents': page,
+            'agents': page_items,
         }, ''
 
     # ── GET ──────────────────────────────────────────────────────────────────
@@ -2795,18 +2857,15 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'invalid job_id format'})
                 return
 
-            # Submissions are only available to the bounty creator (job_token) or operator.
-            auth_header = self.headers.get('Authorization', '')
-            if not auth_header or not auth_header.startswith('Bearer '):
-                self.respond(401, {'error': 'Authorization: Bearer <job_token> required to list submissions (bounty creator only)'})
-                return
-            provided_token = auth_header[len('Bearer '):].strip()
-            token_valid = verify_job_token(job_id, provided_token) if provided_token else False
-            if not token_valid and not self._operator_bearer_ok():
-                self.respond(403, {'error': 'invalid job_token or not authorized to view this job\'s submissions'})
+            db = get_db()
+            # voter_id query hint lets an agent authenticate as a voter to read contest submissions.
+            claimed_voter_id = str(params.get('voter_id', [''])[0] or '').strip() or None
+            role, actor_id, auth_err = self._authorize_voter(db, job_id, claimed_voter_id)
+            if not role:
+                self.respond(401 if not str(self.headers.get('Authorization', '')).strip() and not str(self.headers.get('X-Agent-Token', '')).strip() else 403,
+                             {'error': auth_err or 'not authorized to view submissions'})
                 return
 
-            db = get_db()
             job = db.execute(
                 'SELECT contest_config, voting_started_at, voting_ends_at, voter_snapshot FROM jobs WHERE job_id = ?',
                 (job_id,)
@@ -2814,6 +2873,13 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if not job:
                 self.respond(404, {'error': 'job not found'})
                 return
+
+            # Agents may only read submissions for contests they are snapshotted into.
+            if role == 'agent':
+                voter_snapshot_check = parse_voter_snapshot(job['voter_snapshot'])
+                if not voter_snapshot_check or actor_id not in set(voter_snapshot_check):
+                    self.respond(403, {'error': 'agent is not eligible (not in voter snapshot for this job)'})
+                    return
 
             contest_cfg = parse_contest_config(job['contest_config'])
             voter_snapshot = parse_voter_snapshot(job['voter_snapshot'])
@@ -3818,6 +3884,15 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             db = get_db()
+            role, actor_id, auth_err = self._authorize_voter(db, job_id, voter_id)
+            if not role:
+                self.respond(401 if not str(self.headers.get('Authorization', '')).strip() and not str(self.headers.get('X-Agent-Token', '')).strip() else 403,
+                             {'error': auth_err or 'authentication required to vote'})
+                return
+            if role == 'agent' and actor_id != voter_id:
+                self.respond(403, {'error': 'X-Agent-Token agent_id does not match voter_id'})
+                return
+
             exists = db.execute('SELECT job_id FROM jobs WHERE job_id = ?', (job_id,)).fetchone()
             if not exists:
                 self.respond(404, {'error': 'job not found'})
@@ -3879,6 +3954,17 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             db = get_db()
+            role, actor_id, auth_err = self._authorize_voter(db, job_id, voter_id)
+            if not role:
+                self.respond(401 if not str(self.headers.get('Authorization', '')).strip() and not str(self.headers.get('X-Agent-Token', '')).strip() else 403,
+                             {'error': auth_err or 'authentication required to vote'})
+                return
+            # Creator/operator may cast votes only on behalf of a voter already in the snapshot.
+            # Agents must vote as themselves (token's agent_id == voter_id).
+            if role == 'agent' and actor_id != voter_id:
+                self.respond(403, {'error': 'X-Agent-Token agent_id does not match voter_id'})
+                return
+
             job = db.execute(
                 'SELECT contest_config, status, voting_started_at, voting_ends_at, voter_snapshot FROM jobs WHERE job_id = ?',
                 (job_id,)
@@ -3921,6 +4007,15 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 return
             if sub['agent_id'] == voter_id:
                 self.respond(409, {'error': 'self-voting is not allowed'})
+                return
+            # Fix #7: per-job self-vote guard — a voter who also submitted for this job
+            # cannot vote on any submission (not even a peer's).
+            own_submission = db.execute(
+                'SELECT 1 FROM job_submissions WHERE job_id = ? AND agent_id = ?',
+                (job_id, voter_id)
+            ).fetchone()
+            if own_submission:
+                self.respond(409, {'error': 'agents that submitted work for this job cannot vote on any submission'})
                 return
 
             now = now_dt.isoformat()
@@ -4019,15 +4114,16 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             eligible_voters_count = len(voter_snapshot)
 
             submissions = db.execute(
-                '''SELECT s.submission_id, s.agent_id, s.payload, s.updated_at,
+                '''SELECT s.submission_id, s.agent_id, s.payload, s.created_at, s.updated_at,
                           COALESCE(SUM(CASE WHEN v.vote = 'approve' THEN 1 ELSE 0 END), 0) AS approve_votes,
                           COALESCE(SUM(CASE WHEN v.vote = 'reject' THEN 1 ELSE 0 END), 0) AS reject_votes
                    FROM job_submissions s
                    LEFT JOIN submission_votes v
                      ON v.job_id = s.job_id AND v.submission_id = s.submission_id
                    WHERE s.job_id = ?
-                   GROUP BY s.submission_id, s.agent_id, s.payload, s.updated_at
-                   ORDER BY (approve_votes - reject_votes) DESC, approve_votes DESC, s.updated_at ASC''',
+                   GROUP BY s.submission_id, s.agent_id, s.payload, s.created_at, s.updated_at
+                   ORDER BY (approve_votes - reject_votes) DESC, approve_votes DESC,
+                            s.created_at ASC, s.submission_id ASC''',
                 (job_id,)
             ).fetchall()
             if not submissions:
@@ -4060,6 +4156,14 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                         'current': {'approve': approve_votes, 'reject': reject_votes}
                     })
                     return
+                # Fix #8: rejects must not outnumber approves even for early selection.
+                if approve_votes <= reject_votes:
+                    self.respond(409, {
+                        'error': 'early selection requires approve > reject',
+                        'voting_ends_at': voting_ends_at,
+                        'current': {'approve': approve_votes, 'reject': reject_votes}
+                    })
+                    return
             else:
                 if total_votes < min_votes:
                     self.respond(409, {
@@ -4074,17 +4178,9 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                         'current': {'approve': approve_votes, 'reject': reject_votes}
                     })
                     return
-                if not selected_submission_id and len(submissions) > 1:
-                    top = submissions[0]
-                    second = submissions[1]
-                    top_score = int(top['approve_votes']) - int(top['reject_votes'])
-                    second_score = int(second['approve_votes']) - int(second['reject_votes'])
-                    if top_score == second_score and int(top['approve_votes']) == int(second['approve_votes']):
-                        self.respond(409, {
-                            'error': 'top submissions are tied after vote window; move to dispute or manual selection',
-                            'voting_ends_at': voting_ends_at
-                        })
-                        return
+                # Fix #5: deterministic tie-break. If caller didn't specify, and the top two
+                # submissions tie on (score, approve_votes), fall back to earliest created_at,
+                # then submission_id ASC (already the SQL order). We just stop failing.
 
             now = now_dt.isoformat()
             amount_specks = row['amount_specks'] or 0
@@ -4175,6 +4271,155 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     if next_status == 'awaiting_approval'
                     else 'winner selected, awaiting multisig approval'
                 )
+            })
+
+        elif path_only.startswith('/split_contest/') or path_only == '/split_contest':
+            # Feature: 7-day no-selection split.
+            # When a contest has >=1 submission but no winner was selected within
+            # SPLIT_CONTEST_GRACE_HOURS (default 168h = 7 days) after voting_ends_at,
+            # the bounty is split evenly among all submitters after operator fee.
+            # Operator keeps any rounding remainder.
+            job_id = path_only.split('/')[-1] if path_only.startswith('/split_contest/') else params.get('job_id', [None])[0]
+            if not job_id:
+                self.respond(400, {'error': 'job_id query parameter required'})
+                return
+            if not self._validate_job_id(job_id):
+                self.respond(400, {'error': 'invalid job_id format'})
+                return
+            if not self._operator_bearer_ok():
+                self.respond(403, {'error': 'operator bearer auth required'})
+                return
+
+            db = get_db()
+            row = db.execute(
+                'SELECT status, contest_config, amount_specks, voting_ends_at, result FROM jobs WHERE job_id = ?',
+                (job_id,)
+            ).fetchone()
+            if not row:
+                self.respond(404, {'error': 'job not found'})
+                return
+
+            contest_cfg_split = parse_contest_config(row['contest_config'])
+            if not contest_cfg_split.get('enabled'):
+                self.respond(409, {'error': 'split_contest requires contest mode'})
+                return
+            if str(row['status']) != 'running':
+                self.respond(409, {'error': f'job is not running (status: {row["status"]})'})
+                return
+
+            voting_ends_at = row['voting_ends_at']
+            voting_ends_dt = parse_iso8601(voting_ends_at) if voting_ends_at else None
+            if not voting_ends_dt:
+                self.respond(409, {'error': 'voting window has not been established; no submissions to split'})
+                return
+
+            grace_hours = int(os.environ.get('SPLIT_CONTEST_GRACE_HOURS', '168') or 168)
+            if grace_hours < 1:
+                grace_hours = 1
+            now_dt = datetime.now(timezone.utc)
+            eligible_at = voting_ends_dt + timedelta(hours=grace_hours)
+            if now_dt < eligible_at:
+                self.respond(409, {
+                    'error': f'split not yet eligible; wait until {eligible_at.isoformat()} ({grace_hours}h after voting_ends_at)',
+                    'voting_ends_at': voting_ends_at,
+                    'eligible_at': eligible_at.isoformat()
+                })
+                return
+
+            winner_row = db.execute(
+                'SELECT 1 FROM job_submissions WHERE job_id = ? AND is_winner = 1 LIMIT 1',
+                (job_id,)
+            ).fetchone()
+            if winner_row:
+                self.respond(409, {'error': 'winner already selected; use /complete_job, not /split_contest'})
+                return
+
+            submitters = db.execute(
+                '''SELECT submission_id, agent_id, created_at
+                   FROM job_submissions
+                   WHERE job_id = ?
+                   ORDER BY created_at ASC, submission_id ASC''',
+                (job_id,)
+            ).fetchall()
+            if not submitters:
+                self.respond(409, {'error': 'no submissions to split; use refund flow instead'})
+                return
+
+            amount_specks = int(row['amount_specks'] or 0)
+            fee_bps = int(os.environ.get('OPERATOR_FEE_BPS', '200'))
+            fee = amount_specks * fee_bps // 10000
+            pool_net = amount_specks - fee
+            n = len(submitters)
+            per_agent = pool_net // n if n > 0 else 0
+            remainder = pool_net - (per_agent * n)
+            fee_with_remainder = fee + remainder
+
+            shares = [
+                {
+                    'submission_id': s['submission_id'],
+                    'agent_id': s['agent_id'],
+                    'net_to_agent': per_agent,
+                }
+                for s in submitters
+            ]
+
+            now_iso = now_dt.isoformat()
+            existing_result = safe_json_loads(row['result'], {})
+            if not isinstance(existing_result, dict):
+                existing_result = {}
+            settlement = dict(existing_result.get('settlement') or {})
+            settlement['mode'] = 'contest_split'
+            settlement['completed_at'] = now_iso
+            settlement['source'] = 'split_contest'
+            settlement['split'] = {
+                'reason': 'no_winner_selected_within_grace',
+                'grace_hours': grace_hours,
+                'voting_ends_at': voting_ends_at,
+                'amount_specks': amount_specks,
+                'fee': fee_with_remainder,
+                'fee_bps': fee_bps,
+                'per_agent_specks': per_agent,
+                'remainder_to_operator': remainder,
+                'submitter_count': n,
+                'shares': shares,
+            }
+            existing_result['settlement'] = settlement
+
+            db.execute(
+                '''UPDATE jobs
+                   SET result = ?, status = 'completed', approved_at = COALESCE(approved_at, ?), updated_at = ?
+                   WHERE job_id = ?''',
+                (json.dumps(existing_result), now_iso, now_iso, job_id)
+            )
+            status_event_id = record_status_event(
+                db,
+                job_id,
+                'completed',
+                result={
+                    'internal_status': 'completed',
+                    'settlement_mode': 'contest_split',
+                    'submitter_count': n,
+                    'per_agent_specks': per_agent,
+                }
+            )
+            db.commit()
+
+            self.respond(200, {
+                'job_id': job_id,
+                'status': 'completed',
+                'internal_status': 'completed',
+                'status_id': status_event_id,
+                'settlement_mode': 'contest_split',
+                'economics': {
+                    'amount_specks': amount_specks,
+                    'fee': fee_with_remainder,
+                    'fee_bps': fee_bps,
+                    'per_agent_specks': per_agent,
+                    'remainder_to_operator': remainder,
+                    'submitter_count': n,
+                },
+                'shares': shares,
+                'message': f'bounty split evenly among {n} submitters; operator keeps fee ({fee_bps} bps) plus remainder ({remainder} specks)'
             })
 
         elif path_only.startswith('/provide_input/') or path_only == '/provide_input':
@@ -4415,7 +4660,18 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if len(artifact_paths) > 128:
                 self.respond(400, {'error': 'artifact_file_paths must contain at most 128 entries'})
                 return
+            # Fix #6: artifact_sha256 accompanies artifact_file_paths so voters and operator can
+            # verify the delivered bytes match what was reviewed. Required 1:1 with paths when any
+            # artifact is declared. Each entry is 64-char lowercase hex SHA-256 of the file bytes.
+            artifact_hashes_raw = body.get('artifact_sha256', [])
+            if not isinstance(artifact_hashes_raw, list):
+                self.respond(400, {'error': 'artifact_sha256 must be an array of 64-char lowercase hex strings'})
+                return
+            if artifact_paths and len(artifact_hashes_raw) != len(artifact_paths):
+                self.respond(400, {'error': 'artifact_sha256 length must match artifact_file_paths length'})
+                return
             normalized_artifact_paths = []
+            normalized_artifact_hashes = []
             for idx, item in enumerate(artifact_paths):
                 if not isinstance(item, str):
                     self.respond(400, {'error': f'artifact_file_paths[{idx}] must be a string'})
@@ -4431,7 +4687,18 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     self.respond(400, {'error': f'artifact_file_paths[{idx}] must not contain control characters'})
                     return
                 normalized_artifact_paths.append(path)
+                # Validate paired hash
+                raw_hash = artifact_hashes_raw[idx] if artifact_paths else None
+                if not isinstance(raw_hash, str):
+                    self.respond(400, {'error': f'artifact_sha256[{idx}] must be a string'})
+                    return
+                h = raw_hash.strip().lower()
+                if not re.match(r'^[0-9a-f]{64}$', h):
+                    self.respond(400, {'error': f'artifact_sha256[{idx}] must be 64-char lowercase hex sha256'})
+                    return
+                normalized_artifact_hashes.append(h)
             artifact_paths = normalized_artifact_paths
+            artifact_hashes = normalized_artifact_hashes
 
             submit_agent_id = str(body.get('agent_id', '')).strip()
             verified_identity = None
@@ -4471,6 +4738,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             payload = {
                 'work_output':      work_output[:500],  # store truncated — full output is agent-side
                 'artifact_paths':   artifact_paths,
+                'artifact_sha256':  artifact_hashes,
                 'artifact_count':   len(artifact_paths),
             }
 
@@ -4509,8 +4777,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     db,
                     job_id,
                     contest_cfg,
-                    now,
-                    fallback_voter_id=agent_id
+                    now
                 )
                 if voting_err:
                     self.respond(409, {'error': voting_err})
@@ -4628,7 +4895,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 
             db = get_db()
             row = db.execute(
-                'SELECT status, result, amount_specks, approved_at FROM jobs WHERE job_id = ?',
+                'SELECT status, result, amount_specks, approved_at, assigned_agent_id, contest_config FROM jobs WHERE job_id = ?',
                 (job_id,)
             ).fetchone()
             if not row:
@@ -4639,6 +4906,26 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if current_status not in ('running', 'awaiting_approval', 'multisig_pending', 'completed'):
                 self.respond(409, {'error': f'job cannot be completed in current state (status: {current_status})'})
                 return
+
+            # Fix #9: when contest mode is enabled, the job's assigned_agent_id must equal the
+            # winning submission's agent_id at completion time. This blocks any upstream race that
+            # moved assigned_agent_id out of sync with the selected winner.
+            contest_cfg_complete = parse_contest_config(row['contest_config'])
+            if contest_cfg_complete.get('enabled'):
+                winner_row = db.execute(
+                    'SELECT agent_id FROM job_submissions WHERE job_id = ? AND is_winner = 1 LIMIT 1',
+                    (job_id,)
+                ).fetchone()
+                if not winner_row:
+                    self.respond(409, {'error': 'contest job has no selected winner; call /select_winner first'})
+                    return
+                if not row['assigned_agent_id'] or row['assigned_agent_id'] != winner_row['agent_id']:
+                    self.respond(409, {
+                        'error': 'assigned_agent_id does not match selected winner; refusing to settle',
+                        'assigned_agent_id': row['assigned_agent_id'],
+                        'winner_agent_id': winner_row['agent_id']
+                    })
+                    return
 
             receipt_hash = str(body.get('receiptHash') or body.get('receipt_hash') or '').strip()
             output_hash = str(body.get('outputHash') or body.get('output_hash') or '').strip()
@@ -4813,7 +5100,7 @@ print(f'[nightpay] Idempotency TTL: {IDEMPOTENCY_TTL_SECONDS}s (X-Idempotency-Ke
 print(f'[nightpay] Agent identity enforce: {AGENT_IDENTITY_ENFORCE} | challenge TTL: {AGENT_CHALLENGE_TTL_SECONDS}s | token TTL: {AGENT_VERIFIED_TOKEN_TTL_SECONDS}s')
 print(f'[nightpay] Management LLM: enabled={MANAGEMENT_LLM_ENABLED} | url={MANAGEMENT_LLM_URL} | model={MANAGEMENT_LLM_MODEL} | timeout={MANAGEMENT_LLM_TIMEOUT_SECONDS}s')
 print(f'[nightpay] x402: enabled={X402_ENABLED} | routes={",".join(X402_REQUIRE_ROUTES)} | verify_mode={X402_VERIFY_MODE} | settle_on_success={X402_SETTLE_ON_SUCCESS}')
-endpoints = '/availability /x402 /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /complete_job/<id> /complete_job?job_id= /dispute/<id> /jobs?status=&limit=&offset=&cursor=&approved_before=&search=&visibility='
+endpoints = '/availability /x402 /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /split_contest/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /complete_job/<id> /complete_job?job_id= /dispute/<id> /jobs?status=&limit=&offset=&cursor=&approved_before=&search=&visibility='
 print(f'[nightpay] Endpoints: {endpoints}')
 httpd.serve_forever()
 PYCODE

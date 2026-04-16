@@ -66,7 +66,8 @@ TASK_AGENT_COUNT=100
 WORKER_AGENT_COUNT=300
 VOTER_AGENT_COUNT=300
 CLAIM_ATTEMPTS_PER_JOB=12
-MAX_AGENTS_PER_JOB=5
+MAX_AGENTS_PER_JOB=8            # total claimed agents (snapshot size)
+SUBMITTERS_PER_JOB=3            # subset of claimed that actually submit; rest are voters-only (required by per-job self-vote guard)
 MIN_VOTES_TO_SELECT=3
 VOTES_PER_SUBMISSION=3
 AMOUNT_SPECKS=50000
@@ -97,6 +98,7 @@ while [[ $# -gt 0 ]]; do
     --voter-agent-count) VOTER_AGENT_COUNT="${2:-}"; shift 2 ;;
     --claim-attempts-per-job) CLAIM_ATTEMPTS_PER_JOB="${2:-}"; shift 2 ;;
     --max-agents-per-job) MAX_AGENTS_PER_JOB="${2:-}"; shift 2 ;;
+    --submitters-per-job) SUBMITTERS_PER_JOB="${2:-}"; shift 2 ;;
     --min-votes-to-select) MIN_VOTES_TO_SELECT="${2:-}"; shift 2 ;;
     --votes-per-submission) VOTES_PER_SUBMISSION="${2:-}"; shift 2 ;;
     --amount-specks) AMOUNT_SPECKS="${2:-}"; shift 2 ;;
@@ -129,6 +131,7 @@ require_positive_int "$WORKER_AGENT_COUNT" "worker-agent-count"
 require_positive_int "$VOTER_AGENT_COUNT" "voter-agent-count"
 require_positive_int "$CLAIM_ATTEMPTS_PER_JOB" "claim-attempts-per-job"
 require_positive_int "$MAX_AGENTS_PER_JOB" "max-agents-per-job"
+require_positive_int "$SUBMITTERS_PER_JOB" "submitters-per-job"
 require_positive_int "$MIN_VOTES_TO_SELECT" "min-votes-to-select"
 require_positive_int "$VOTES_PER_SUBMISSION" "votes-per-submission"
 require_positive_int "$AMOUNT_SPECKS" "amount-specks"
@@ -148,6 +151,14 @@ if (( MAX_AGENTS_PER_JOB < 1 )); then
 fi
 if (( MAX_AGENTS_PER_JOB > 20 )); then
   echo "ERROR: max-agents-per-job must be <= 20 (server-side contest cap)" >&2
+  exit 1
+fi
+if (( SUBMITTERS_PER_JOB > MAX_AGENTS_PER_JOB )); then
+  echo "ERROR: submitters-per-job ($SUBMITTERS_PER_JOB) must be <= max-agents-per-job ($MAX_AGENTS_PER_JOB)" >&2
+  exit 1
+fi
+if (( SUBMITTERS_PER_JOB >= MAX_AGENTS_PER_JOB )); then
+  echo "ERROR: at least one claimed agent must remain unsubmitted to act as voter (per-job self-vote guard). Reduce submitters-per-job." >&2
   exit 1
 fi
 if (( MIN_VOTES_TO_SELECT < 1 )); then
@@ -214,12 +225,14 @@ exec "$PYTHON_BIN" - \
   "$VOTER_AGENT_COUNT" \
   "$CLAIM_ATTEMPTS_PER_JOB" \
   "$MAX_AGENTS_PER_JOB" \
+  "$SUBMITTERS_PER_JOB" \
   "$MIN_VOTES_TO_SELECT" \
   "$VOTES_PER_SUBMISSION" \
   "$AMOUNT_SPECKS" \
   "$TIMEOUT_SECONDS" \
   "$SEED" <<'PYCODE'
 import concurrent.futures
+import hashlib
 import json
 import os
 import random
@@ -253,12 +266,13 @@ from datetime import datetime, timezone
     voter_agent_count,
     claim_attempts_per_job,
     max_agents_per_job,
+    submitters_per_job,
     min_votes_to_select,
     votes_per_submission,
     amount_specks,
     timeout_seconds,
     seed_raw,
-) = sys.argv[1:27]
+) = sys.argv[1:28]
 
 activity_mode = int(activity_mode)
 activity_agent_count = int(activity_agent_count)
@@ -281,6 +295,15 @@ worker_agent_count = int(worker_agent_count)
 voter_agent_count = int(voter_agent_count)
 claim_attempts_per_job = int(claim_attempts_per_job)
 max_agents_per_job = int(max_agents_per_job)
+submitters_per_job = int(submitters_per_job)
+if submitters_per_job < 1:
+    submitters_per_job = 1
+if submitters_per_job > max_agents_per_job:
+    submitters_per_job = max_agents_per_job
+# Fix #7: per-job self-vote guard means claimed-and-submitted agents cannot vote at all.
+# Ensure at least 1 claimed-only voter remains when min_votes_to_select > 0.
+if submitters_per_job >= max_agents_per_job and min_votes_to_select > 0:
+    submitters_per_job = max(1, max_agents_per_job - max(1, min_votes_to_select))
 min_votes_to_select = int(min_votes_to_select)
 votes_per_submission = int(votes_per_submission)
 amount_specks = int(amount_specks)
@@ -497,10 +520,18 @@ def compact_error(stage, code, payload):
     return {"stage": stage, "code": code, "error": str(err)[:200]}
 
 
-def vote_for_submission(job_id, submission_id, voter_id, vote_value, metrics):
+def vote_for_submission(job_id, submission_id, voter_id, vote_value, metrics, job_token=None):
+    # Auth: prefer creator job_token (proxy vote) so simulated non-verified agent IDs are accepted.
+    # Falls back to operator bearer for environments where job_token wasn't captured.
+    headers = None
+    if job_token:
+        headers = {"Authorization": f"Bearer {job_token}"}
+    elif operator_secret:
+        headers = {"Authorization": f"Bearer {operator_secret}"}
     code, payload, dt = post_json(
         f"/vote_submission/{job_id}/{submission_id}",
         {"voter_id": voter_id, "vote": vote_value, "reason": "sim-load"},
+        headers=headers,
     )
     metrics["vote_attempts"] += 1
     metrics["endpoint_latencies_ms"]["vote_submission"].append(dt)
@@ -617,11 +648,23 @@ def run_job(round_index, job_index):
         )
         return local
 
-    for agent in claimed:
+    # Per-job self-vote guard (Fix #7): only a subset of claimed agents submit;
+    # the rest remain pure voters so the vote tally can actually reach the threshold.
+    submitters = claimed[:submitters_per_job]
+    voter_only_agents = [a for a in claimed if a not in set(submitters)]
+    for agent in submitters:
         work_output = f"solution job={job_id} agent={agent} round={round_index} idx={job_index}"
+        # Deterministic dummy sha256 per (job_id, agent) — server requires 1:1 with artifact_file_paths.
+        artifact_path = f"/tmp/{job_id}/{agent}.json"
+        artifact_sha = hashlib.sha256(f"{job_id}|{agent}|{artifact_path}".encode("utf-8")).hexdigest()
         p_code, p_body, p_dt = post_json(
             f"/provide_result/{job_id}",
-            {"agent_id": agent, "work_output": work_output, "artifact_file_paths": [f"/tmp/{job_id}/{agent}.json"]},
+            {
+                "agent_id": agent,
+                "work_output": work_output,
+                "artifact_file_paths": [artifact_path],
+                "artifact_sha256": [artifact_sha],
+            },
         )
         local["submission_attempts"] += 1
         local["endpoint_latencies_ms"]["provide_result"].append(p_dt)
@@ -648,11 +691,15 @@ def run_job(round_index, job_index):
         return local
 
     # Vote per submission; bias first submission positive so winner selection passes.
-    # Voter snapshot is claim-based when agent_voting_only=true, so prefer claimed agents here.
+    # Per-job self-vote guard: only claimed agents who did NOT submit can vote.
     used_voters = set()
-    eligible_voters = [agent for agent in claimed if agent]
+    eligible_voters = [agent for agent in voter_only_agents if agent]
     if not eligible_voters:
-        eligible_voters = [agent for agent in worker_agents if agent]
+        # Fallback: with the corrected config this shouldn't happen; surface as an error
+        # rather than silently passing a submitter's ID to the server (which will 409).
+        local["jobs_flow_failed"] += 1
+        local["errors"].append({"stage": "vote_pool", "code": 0, "error": "no eligible claimed-only voters; increase max-agents-per-job or decrease submitters-per-job"})
+        return local
 
     def pick_voter(exclude_agent):
         pool = [v for v in eligible_voters if v != exclude_agent and v not in used_voters]
@@ -673,7 +720,7 @@ def run_job(round_index, job_index):
             voter = pick_voter(sub_agent)
             used_voters.add(voter)
             vote_value = "approve" if idx == 0 else ("approve" if local_rng.random() >= 0.5 else "reject")
-            vote_for_submission(job_id, sub_id, voter, vote_value, local)
+            vote_for_submission(job_id, sub_id, voter, vote_value, local, job_token=job_token)
 
     sel_code, sel_body, sel_dt = post_json(
         f"/select_winner/{job_id}",
@@ -694,7 +741,7 @@ def run_job(round_index, job_index):
             for _ in range(top_up):
                 voter = pick_voter(first_agent)
                 used_voters.add(voter)
-                vote_for_submission(job_id, first_sub_id, voter, "approve", local)
+                vote_for_submission(job_id, first_sub_id, voter, "approve", local, job_token=job_token)
             sel_code, sel_body, sel_dt = post_json(
                 f"/select_winner/{job_id}",
                 {},
@@ -979,9 +1026,16 @@ def run_activity_task(task_seq, local_rng):
         f"epic completion task={task_seq} requester={requester} worker={claimed_agent} "
         f"commit={commitment_hash[:12]}"
     )
+    artifact_path_activity = f"/tmp/{job_id}/{claimed_agent}.txt"
+    artifact_sha_activity = hashlib.sha256(f"{job_id}|{claimed_agent}|{artifact_path_activity}".encode("utf-8")).hexdigest()
     p_code, p_body, p_dt = post_json(
         f"/provide_result/{job_id}",
-        {"agent_id": claimed_agent, "work_output": work_output, "artifact_file_paths": [f"/tmp/{job_id}/{claimed_agent}.txt"]},
+        {
+            "agent_id": claimed_agent,
+            "work_output": work_output,
+            "artifact_file_paths": [artifact_path_activity],
+            "artifact_sha256": [artifact_sha_activity],
+        },
         headers={"Authorization": f"Bearer {job_token}"},
     )
     event["provide_status"] = int(p_code)
@@ -1309,6 +1363,7 @@ if __name__ == "__main__":
                 "voter_agent_count": voter_agent_count,
                 "claim_attempts_per_job": claim_attempts_per_job,
                 "max_agents_per_job": max_agents_per_job,
+                "submitters_per_job": submitters_per_job,
                 "min_votes_to_select": min_votes_to_select,
                 "votes_per_submission": votes_per_submission,
                 "amount_specks": amount_specks,

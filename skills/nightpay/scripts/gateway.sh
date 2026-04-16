@@ -33,6 +33,8 @@
 #   approve-multisig  <job_id> <output_hash> <approver_key>  # per-approver signature
 #   optimistic-sweep  [--dry-run]             # auto-complete expired optimistic windows
 #   refund-unclaimed  [--dry-run]             # auto-refund old jobs with zero claims
+#   split-unselected  [--dry-run]             # split contest bounty among submitters when no winner picked within grace window
+#   schedule          [pool_commitment|job_id|--all]  # list active deadlines/windows
 
 set -euo pipefail
 
@@ -46,8 +48,27 @@ else
 fi
 
 # ─── Required env vars ────────────────────────────────────────────────────────
+# Masumi endpoint resolution:
+# 1) explicit MASUMI_PAYMENT_URL / MASUMI_REGISTRY_URL (highest priority)
+# 2) MASUMI_SAAS_URL-derived proxy paths (/pay/api/v1 + /registry/api/v1)
+# 3) legacy local defaults (masumi-services-dev-quickstart)
+MASUMI_SAAS_URL="${MASUMI_SAAS_URL:-}"
+MASUMI_SAAS_BASE="${MASUMI_SAAS_URL%/}"
+MASUMI_PAYMENT_URL="${MASUMI_PAYMENT_URL:-}"
+MASUMI_REGISTRY_URL="${MASUMI_REGISTRY_URL:-}"
+if [[ -z "$MASUMI_PAYMENT_URL" && -n "$MASUMI_SAAS_BASE" ]]; then
+  MASUMI_PAYMENT_URL="${MASUMI_SAAS_BASE}/pay/api/v1"
+fi
+if [[ -z "$MASUMI_REGISTRY_URL" && -n "$MASUMI_SAAS_BASE" ]]; then
+  MASUMI_REGISTRY_URL="${MASUMI_SAAS_BASE}/registry/api/v1"
+fi
 MASUMI_PAYMENT_URL="${MASUMI_PAYMENT_URL:-http://localhost:3001/api/v1}"
 MASUMI_REGISTRY_URL="${MASUMI_REGISTRY_URL:-http://localhost:3000/api/v1}"
+# Optional explicit public discovery surface (Masumi SaaS /api/v1/*).
+MASUMI_PUBLIC_URL="${MASUMI_PUBLIC_URL:-}"
+if [[ -z "$MASUMI_PUBLIC_URL" && -n "$MASUMI_SAAS_BASE" ]]; then
+  MASUMI_PUBLIC_URL="${MASUMI_SAAS_BASE}/api/v1"
+fi
 MASUMI_API_KEY="${MASUMI_API_KEY:?SECURITY: Set MASUMI_API_KEY}"
 # Keep preprod default until Midnight mainnet is live.
 MIDNIGHT_NETWORK="${MIDNIGHT_NETWORK:-preprod}"
@@ -173,6 +194,7 @@ _masumi_request_with_auth_fallback() {
   local payload="${4:-}"
   local auth_headers=(
     "Authorization: Bearer $MASUMI_API_KEY"
+    "x-api-key: $MASUMI_API_KEY"
     "token: $MASUMI_API_KEY"
   )
   local hdr out
@@ -195,7 +217,7 @@ _masumi_request_with_auth_fallback() {
     fi
   done
 
-  echo "ERROR: Masumi request failed after trying Authorization and token headers (${method} ${endpoint})" >&2
+  echo "ERROR: Masumi request failed after trying Authorization/x-api-key/token headers (${method} ${endpoint})" >&2
   return 1
 }
 
@@ -207,25 +229,53 @@ masumi_post() {
   _masumi_request_with_auth_fallback "POST" "$MASUMI_PAYMENT_URL" "$1" "$2"
 }
 
+# Masumi registry service (port 3000) — distinct from payment POSTs.
+masumi_registry_post() {
+  _masumi_request_with_auth_fallback "POST" "$MASUMI_REGISTRY_URL" "$1" "$2"
+}
+
 # Best-effort compatibility layer for registry endpoint changes.
+# Masumi registry-service (current): POST /api/v1/registry-entry-search and
+# POST /api/v1/registry-entry (see masumi-registry-service routes). Legacy GET
+# /agents paths are kept as fallback for older deployments.
 find_agents() {
   local encoded="$1"
+  local decoded net out
+  decoded="$(python3 -c "import urllib.parse,sys; print(urllib.parse.unquote(sys.argv[1]))" "$encoded")"
+  net="$(python3 -c "import sys
+m = (sys.argv[1] or 'preprod').strip().lower()
+print({'preprod': 'Preprod', 'mainnet': 'Mainnet', 'preview': 'Preview'}.get(m, 'Preprod'))" "${MIDNIGHT_NETWORK:-preprod}")"
+
+  local payload_search payload_filter
+  payload_search="$(python3 -c "import json,sys; print(json.dumps({'network': sys.argv[1], 'limit': 5, 'query': sys.argv[2]}))" "$net" "$decoded")"
+  local reg_post_ep
+  for reg_post_ep in "/registry-entry-search" "/registry-entry-search/"; do
+    if out="$(masumi_registry_post "$reg_post_ep" "$payload_search" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  done
+
+  payload_filter="$(python3 -c "import json,sys; print(json.dumps({'network': sys.argv[1], 'limit': 5, 'filter': {'capability': {'name': sys.argv[2]}}}))" "$net" "$decoded")"
+  for reg_post_ep in "/registry-entry" "/registry-entry/"; do
+    if out="$(masumi_registry_post "$reg_post_ep" "$payload_filter" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  done
+
   local base_urls=("$MASUMI_REGISTRY_URL" "$MASUMI_PAYMENT_URL")
   local endpoints=(
     "/agents?capability=${encoded}&limit=5"
     "/registry/agents?capability=${encoded}&limit=5"
     "/services/agents?capability=${encoded}&limit=5"
     "/search/agents?capability=${encoded}&limit=5"
+    "/api/v1/agents?status=VERIFIED&limit=5&q=${encoded}"
   )
-  local base ep
-  local auth_headers=(
-    "Authorization: Bearer $MASUMI_API_KEY"
-    "token: $MASUMI_API_KEY"
-  )
+  local base ep hdr
   for base in "${base_urls[@]}"; do
     for ep in "${endpoints[@]}"; do
-      local hdr
-      for hdr in "${auth_headers[@]}"; do
+      for hdr in "Authorization: Bearer $MASUMI_API_KEY" "x-api-key: $MASUMI_API_KEY" "token: $MASUMI_API_KEY"; do
         if out="$(_ssrf_safe_curl "${base}${ep}" -H "$hdr" 2>/dev/null)"; then
           printf '%s\n' "$out"
           return 0
@@ -233,6 +283,15 @@ find_agents() {
       done
     done
   done
+
+  # Last resort: Masumi SaaS public discovery API (no auth required).
+  if [[ -n "$MASUMI_PUBLIC_URL" ]]; then
+    if out="$(_ssrf_safe_curl "${MASUMI_PUBLIC_URL}/agents?status=VERIFIED&limit=5&q=${encoded}" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+
   echo "ERROR: agent discovery failed on all known endpoints and auth headers" >&2
   return 1
 }
@@ -495,17 +554,156 @@ print(json.dumps({
 }
 
 # ─── Optimistic delivery env vars ─────────────────────────────────────────────
-# Multisig keys/threshold/M/N are now private to the bridge (APPROVER_KEYS,
-# MULTISIG_M, MULTISIG_THRESHOLD_SPECKS env vars on the bridge process).
-# This script forwards approval blobs to /decision/approve-completion; bridge verifies.
+# Bridge decision endpoint is the primary multisig verifier. In no-bridge/stub mode,
+# gateway enforces a local fallback verifier using the same approval blob format.
 OPTIMISTIC_WINDOW_HOURS="${OPTIMISTIC_WINDOW_HOURS:-48}"
 OPTIMISTIC_SWEEP_PAGE_SIZE="${OPTIMISTIC_SWEEP_PAGE_SIZE:-200}"   # capped to <= 500
 UNCLAIMED_REFUND_HOURS="${UNCLAIMED_REFUND_HOURS:-24}"
 UNCLAIMED_SWEEP_PAGE_SIZE="${UNCLAIMED_SWEEP_PAGE_SIZE:-200}"     # capped to <= 500
+SPLIT_CONTEST_GRACE_HOURS="${SPLIT_CONTEST_GRACE_HOURS:-168}"     # 7 days after voting_ends_at
 MIP003_PORT="${MIP003_PORT:-8090}"
+# OpenClaw env compatibility: NIGHTPAY_API_URL should drive gateway->MIP calls
+# unless MIP003_URL is explicitly set.
+NIGHTPAY_API_URL="${NIGHTPAY_API_URL:-}"
+if [[ -z "${MIP003_URL:-}" && -n "$NIGHTPAY_API_URL" ]]; then
+  MIP003_URL="$NIGHTPAY_API_URL"
+fi
 MIP003_URL="${MIP003_URL:-http://localhost:${MIP003_PORT}}"
+MIP003_URL="${MIP003_URL%/}"
 # Optional x402 passthrough for MIP-003 APIs that enforce PAYMENT-SIGNATURE.
 MIP003_PAYMENT_SIGNATURE="${MIP003_PAYMENT_SIGNATURE:-}"
+MULTISIG_THRESHOLD_SPECKS="${MULTISIG_THRESHOLD_SPECKS:-1000000}"
+MULTISIG_M="${MULTISIG_M:-2}"
+MULTISIG_N="${MULTISIG_N:-3}"
+APPROVER_KEYS="${APPROVER_KEYS:-}"
+MAX_APPROVAL_AGE_SECONDS="${MAX_APPROVAL_AGE_SECONDS:-86400}"
+
+# Local fallback verifier for high-value completion in no-bridge mode.
+# Input blob format must match approve-multisig output: sig:ts:nonce
+verify_multisig_local() {
+  local job_id="$1"
+  local output_hash="$2"
+  local amount_specks="$3"
+  local approvals_raw="$4"
+  python3 - "$job_id" "$output_hash" "$amount_specks" "$approvals_raw" \
+    "$MULTISIG_THRESHOLD_SPECKS" "$MULTISIG_M" "$MULTISIG_N" "$APPROVER_KEYS" "$MAX_APPROVAL_AGE_SECONDS" <<'PY'
+import hashlib
+import hmac
+import json
+import sys
+import time
+
+job_id, output_hash, amount_raw, approvals_raw, threshold_raw, m_raw, n_raw, keys_raw, max_age_raw = sys.argv[1:10]
+
+def to_int(v, default):
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+amount = to_int(amount_raw, 0)
+threshold = to_int(threshold_raw, 1_000_000)
+required_m = max(1, to_int(m_raw, 2))
+configured_n = max(required_m, to_int(n_raw, 3))
+max_age_seconds = max(1, to_int(max_age_raw, 86_400))
+keys = [k.strip() for k in keys_raw.split(',') if k.strip()]
+required_n = len(keys) if keys else configured_n
+
+if amount < threshold:
+    print(json.dumps({
+        "required": False,
+        "ok": True,
+        "valid_count": 0,
+        "required_m": required_m,
+        "required_n": required_n
+    }))
+    raise SystemExit(0)
+
+if not keys:
+    print(json.dumps({
+        "required": True,
+        "ok": False,
+        "valid_count": 0,
+        "required_m": required_m,
+        "required_n": required_n,
+        "error": "APPROVER_KEYS is not configured for local multisig verification"
+    }))
+    raise SystemExit(0)
+
+entries = [x for x in approvals_raw.split(',') if x]
+if not entries:
+    print(json.dumps({
+        "required": True,
+        "ok": False,
+        "valid_count": 0,
+        "required_m": required_m,
+        "required_n": len(keys),
+        "error": "no approvals provided"
+    }))
+    raise SystemExit(0)
+
+now_ms = int(time.time() * 1000)
+used_key_indices = set()
+used_nonces = set()
+valid_count = 0
+
+for entry in entries:
+    parts = entry.split(':')
+    if len(parts) != 3:
+        print(json.dumps({
+            "required": True,
+            "ok": False,
+            "valid_count": valid_count,
+            "required_m": required_m,
+            "required_n": len(keys),
+            "error": f"malformed blob: {entry}"
+        }))
+        raise SystemExit(0)
+
+    sig, ts_str, nonce = parts
+    if nonce in used_nonces:
+        continue
+    used_nonces.add(nonce)
+
+    try:
+        ts_ms = int(ts_str) * 1000
+    except Exception:
+        print(json.dumps({
+            "required": True,
+            "ok": False,
+            "valid_count": valid_count,
+            "required_m": required_m,
+            "required_n": len(keys),
+            "error": f"non-integer ts in blob: {entry}"
+        }))
+        raise SystemExit(0)
+
+    age = now_ms - ts_ms
+    if age > max_age_seconds * 1000 or age < -300_000:
+        continue
+
+    payload = f"{job_id}:{output_hash}:{ts_str}:{nonce}".encode()
+    sig_bytes = sig.encode()
+    for idx, key in enumerate(keys):
+        if idx in used_key_indices:
+            continue
+        expected = hmac.new(key.encode(), payload, hashlib.sha256).hexdigest().encode()
+        if len(sig_bytes) == len(expected) and hmac.compare_digest(sig_bytes, expected):
+            used_key_indices.add(idx)
+            valid_count += 1
+            break
+
+ok = valid_count >= required_m
+print(json.dumps({
+    "required": True,
+    "ok": ok,
+    "valid_count": valid_count,
+    "required_m": required_m,
+    "required_n": len(keys),
+    "error": None if ok else f"only {valid_count} valid approvals, need {required_m}"
+}))
+PY
+}
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -718,6 +916,29 @@ try:
     print(d.get('amount_specks') or 0)
 except: print(0)
 " 2>/dev/null || echo 0)
+    fi
+
+    # ── Multisig verification (fallback when bridge decision endpoint is absent) ──
+    if [[ -z "$BRIDGE_URL" ]]; then
+      LOCAL_MULTI=$(verify_multisig_local "$JOB_ID" "$COMMITMENT" "$JOB_AMOUNT" "${APPROVALS_RAW:-}")
+      LOCAL_REQUIRED=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('required') else 'false')" 2>/dev/null || echo "false")
+      LOCAL_OK=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('ok') else 'false')" 2>/dev/null || echo "true")
+      if [[ "$LOCAL_REQUIRED" == "true" && "$LOCAL_OK" != "true" ]]; then
+        REQ_M=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('required_m',2))" 2>/dev/null || echo "2")
+        REQ_N=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('required_n',3))" 2>/dev/null || echo "3")
+        MULTI_ERR=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','multisig verification failed'))" 2>/dev/null || echo "multisig verification failed")
+        echo -e "${RED}ERROR${RESET}: Multisig required for job amount ${BOLD}${JOB_AMOUNT} specks${RESET} (${REQ_M}-of-${REQ_N})" >&2
+        echo -e "  ${DIM}${MULTI_ERR}${RESET}" >&2
+        echo -e "${YELLOW}Each approver runs:${RESET}" >&2
+        echo -e "  ${CYAN}gateway.sh approve-multisig${RESET} $JOB_ID <output_hash> <approver_key>" >&2
+        echo -e "Then collect M approval_blobs and run:" >&2
+        echo -e "  ${CYAN}gateway.sh complete${RESET} $JOB_ID $COMMITMENT --approvals blob1,blob2" >&2
+        exit 1
+      fi
+      LOCAL_VALID=$(echo "$LOCAL_MULTI" | python3 -c "import sys,json; print(json.load(sys.stdin).get('valid_count',''))" 2>/dev/null || echo "")
+      if [[ "$LOCAL_REQUIRED" == "true" && -n "$LOCAL_VALID" ]]; then
+        echo -e "  ${GREEN}Multisig${RESET}: ok:${LOCAL_VALID} approvals verified ${CYAN}(local fallback)${RESET}" >&2
+      fi
     fi
 
     # ── Payout gate: bridge /decision/approve-completion ────────────────────────
@@ -995,6 +1216,71 @@ print(json.dumps({
 " "$RECEIPT_CONTRACT" "$MIDNIGHT_NETWORK"
     ;;
 
+  verify-receipt|verify)
+    # Verify a ZK receipt hash against the Midnight contract via the bridge.
+    # Docs (SKILL.md, AGENTS.md, AGENT_PLAYGROUND.md, the /verify UI) all point
+    # agents at this subcommand — keep the arg shape and JSON output stable.
+    RECEIPT_HASH_ARG="${1:?Usage: verify-receipt <receipt_hash>}"
+    # Accept agent-friendly formats: raw hex, 0x-prefixed, or uppercase.
+    RECEIPT_HASH_ARG="${RECEIPT_HASH_ARG#0x}"
+    RECEIPT_HASH_ARG="${RECEIPT_HASH_ARG,,}"
+    if ! [[ "$RECEIPT_HASH_ARG" =~ ^[0-9a-f]{64}$ ]]; then
+      python3 -c "
+import sys, json
+print(json.dumps({
+    'valid': False,
+    'stub': True,
+    'error': 'receiptHash must be 64-char lowercase hex (got length ' + str(len(sys.argv[1])) + ')',
+    'receiptHash': sys.argv[1],
+    'verifyUrl': sys.argv[2],
+}, indent=2))
+" "$RECEIPT_HASH_ARG" "${NIGHTPAY_UI_URL:-https://board.nightpay.dev}/verify" >&2
+      exit 2
+    fi
+
+    VERIFY_URL="${NIGHTPAY_UI_URL:-https://board.nightpay.dev}/verify?hash=${RECEIPT_HASH_ARG}"
+
+    if [[ -n "$BRIDGE_URL" ]]; then
+      BRIDGE_VERIFY_PAYLOAD=$(python3 -c "
+import sys, json
+print(json.dumps({'receiptHash': sys.argv[1]}))
+" "$RECEIPT_HASH_ARG")
+      BRIDGE_VERIFY_RESULT=$(bridge_post "/verifyReceipt" "$BRIDGE_VERIFY_PAYLOAD" 2>/dev/null) && {
+        # Bridge returned — merge receiptHash + verifyUrl into the response so
+        # the caller always has a full, agent-navigable JSON object.
+        python3 -c "
+import sys, json
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+data['receiptHash'] = sys.argv[2]
+data['verifyUrl']   = sys.argv[3]
+data.setdefault('source', 'bridge')
+print(json.dumps(data, indent=2))
+" "$BRIDGE_VERIFY_RESULT" "$RECEIPT_HASH_ARG" "$VERIFY_URL"
+        exit 0
+      }
+      echo -e "  ${YELLOW}WARNING${RESET}: Bridge unreachable — returning stub verification" >&2
+    fi
+
+    # Stub/local fallback: without the bridge we cannot prove the receipt is
+    # on-chain. Return stub=true so agents know to retry once BRIDGE_URL is set.
+    python3 -c "
+import sys, json
+print(json.dumps({
+    'valid': False,
+    'stub': True,
+    'receiptHash': sys.argv[1],
+    'verifyUrl': sys.argv[2],
+    'source': 'local-stub',
+    'note': 'BRIDGE_URL not set — cannot verify on-chain. Set BRIDGE_URL to verify against the Midnight contract.'
+}, indent=2))
+" "$RECEIPT_HASH_ARG" "$VERIFY_URL"
+    ;;
+
   optimistic-sweep)
     # Scan for jobs whose optimistic window has expired and auto-complete them.
     # Run on a cron: */30 * * * * bash gateway.sh optimistic-sweep
@@ -1002,8 +1288,8 @@ print(json.dumps({
     DRY_RUN=0
     [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-    MIP003_URL="http://localhost:${MIP003_PORT}"
-    echo -e "${CYAN}Scanning for auto-approvable jobs${RESET} ${DIM}(window=${OPTIMISTIC_WINDOW_HOURS}h, url=${MIP003_URL}, pageSize=${OPTIMISTIC_SWEEP_PAGE_SIZE})${RESET}..." >&2
+    MIP_SWEEP_URL="${MIP003_SWEEP_URL:-$MIP003_URL}"
+    echo -e "${CYAN}Scanning for auto-approvable jobs${RESET} ${DIM}(window=${OPTIMISTIC_WINDOW_HOURS}h, url=${MIP_SWEEP_URL}, pageSize=${OPTIMISTIC_SWEEP_PAGE_SIZE})${RESET}..." >&2
 
     # Fetch one paginated slice of jobs ready for optimistic completion.
     NOW_ISO=$(python3 -c "
@@ -1014,7 +1300,7 @@ print(datetime.now(timezone.utc).isoformat())
     if [[ -n "${OPERATOR_SECRET_KEY:-}" ]]; then
       MIP_SWEEP_AUTH_ARGS=(-H "Authorization: Bearer ${OPERATOR_SECRET_KEY}")
     fi
-    JOBS_JSON=$(curl -sf --max-time 10 "${MIP_SWEEP_AUTH_ARGS[@]}" "${MIP003_URL}/jobs?status=awaiting_approval&visibility=all&approved_before=${NOW_ISO}&limit=${OPTIMISTIC_SWEEP_PAGE_SIZE}&offset=0" 2>/dev/null || echo '{"jobs":[]}')
+    JOBS_JSON=$(curl -sf --max-time 10 "${MIP_SWEEP_AUTH_ARGS[@]}" "${MIP_SWEEP_URL}/jobs?status=awaiting_approval&visibility=all&approved_before=${NOW_ISO}&limit=${OPTIMISTIC_SWEEP_PAGE_SIZE}&offset=0" 2>/dev/null || echo '{"jobs":[]}')
 
     # Filter for expired windows and auto-complete each
     python3 -c "
@@ -1321,8 +1607,8 @@ print(json.dumps({
     #   - commitmentHash present in input_data
     DRY_RUN=0
     [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
-    MIP003_URL="http://localhost:${MIP003_PORT}"
-    echo -e "${CYAN}Scanning for unclaimed refunds${RESET} ${DIM}(age=${UNCLAIMED_REFUND_HOURS}h, url=${MIP003_URL}, pageSize=${UNCLAIMED_SWEEP_PAGE_SIZE})${RESET}..." >&2
+    MIP_REFUND_URL="${MIP003_REFUND_URL:-$MIP003_URL}"
+    echo -e "${CYAN}Scanning for unclaimed refunds${RESET} ${DIM}(age=${UNCLAIMED_REFUND_HOURS}h, url=${MIP_REFUND_URL}, pageSize=${UNCLAIMED_SWEEP_PAGE_SIZE})${RESET}..." >&2
 
     python3 -c "
 import json, subprocess, sys, urllib.request, urllib.error
@@ -1425,7 +1711,288 @@ while True:
     offset += page_size
 
 print(f'Unclaimed refund sweep: scanned={scanned}, candidates={candidates}, refunded={done}, errors={errors}.', file=sys.stderr)
-" "$MIP003_URL" "$0" "$DRY_RUN" "$UNCLAIMED_REFUND_HOURS" "$UNCLAIMED_SWEEP_PAGE_SIZE" "${OPERATOR_SECRET_KEY:-}"
+" "$MIP_REFUND_URL" "$0" "$DRY_RUN" "$UNCLAIMED_REFUND_HOURS" "$UNCLAIMED_SWEEP_PAGE_SIZE" "${OPERATOR_SECRET_KEY:-}"
+    ;;
+
+  split-unselected)
+    # Settle contest jobs that received >=1 submission but no winner was selected within
+    # SPLIT_CONTEST_GRACE_HOURS (default 168h = 7 days) after voting_ends_at.
+    # The bounty is split evenly across all submitters after operator fee; operator keeps the remainder.
+    DRY_RUN=0
+    [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+    MIP_SPLIT_URL="${MIP003_URL}"
+    if [[ -z "${OPERATOR_SECRET_KEY:-}" ]]; then
+      echo -e "${RED}OPERATOR_SECRET_KEY is required for split-unselected${RESET}" >&2
+      exit 1
+    fi
+    echo -e "${CYAN}Scanning for contest jobs eligible for split${RESET} ${DIM}(grace=${SPLIT_CONTEST_GRACE_HOURS}h, url=${MIP_SPLIT_URL})${RESET}..." >&2
+
+    python3 -c "
+import json, sys, urllib.request, urllib.error
+from datetime import datetime, timezone, timedelta
+
+mip_url = sys.argv[1]
+dry_run = sys.argv[2] == '1'
+grace_hours = float(sys.argv[3])
+operator_secret = sys.argv[4]
+
+page_size = 200
+offset = 0
+scanned = 0
+candidates = 0
+done = 0
+errors = 0
+
+def parse_iso(v):
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+headers = {'Authorization': f'Bearer {operator_secret}'}
+threshold_now = datetime.now(timezone.utc)
+
+while True:
+    url = f'{mip_url}/jobs?status=running&visibility=all&limit={page_size}&offset={offset}'
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:
+        print(f'ERROR: failed to query jobs page offset={offset}: {e}', file=sys.stderr)
+        sys.exit(1)
+
+    jobs = data.get('jobs', [])
+    for job in jobs:
+        scanned += 1
+        contest = job.get('contest') or {}
+        if not contest.get('enabled'):
+            continue
+        subs_count = int(job.get('submissions_count') or 0)
+        if subs_count < 1:
+            continue
+        voting = job.get('voting') or {}
+        voting_ends = parse_iso(voting.get('ends_at'))
+        if not voting_ends:
+            continue
+        eligible_at = voting_ends + timedelta(hours=grace_hours)
+        if threshold_now < eligible_at:
+            continue
+
+        jid = job.get('job_id', '')
+        candidates += 1
+        if dry_run:
+            print(f'DRY-RUN: would split job_id={jid} submissions={subs_count} voting_ends_at={voting_ends.isoformat()}')
+            done += 1
+            continue
+
+        post_url = f'{mip_url}/split_contest/{jid}'
+        try:
+            req = urllib.request.Request(post_url, data=b'{}', headers={**headers, 'Content-Type': 'application/json'}, method='POST')
+            with urllib.request.urlopen(req, timeout=15) as r:
+                resp = json.loads(r.read().decode())
+            per = resp.get('economics', {}).get('per_agent_specks')
+            n = resp.get('economics', {}).get('submitter_count')
+            print(f'SPLIT OK: {jid} submitters={n} per_agent={per}')
+            done += 1
+        except urllib.error.HTTPError as he:
+            body = he.read().decode(errors='replace')
+            print(f'SPLIT FAILED: {jid} HTTP {he.code} — {body}', file=sys.stderr)
+            errors += 1
+        except Exception as e:
+            print(f'SPLIT FAILED: {jid} — {e}', file=sys.stderr)
+            errors += 1
+
+    has_more = bool(data.get('has_more'))
+    count = int(data.get('count') or 0)
+    if not has_more or count == 0:
+        break
+    offset += page_size
+
+print(f'Contest split sweep: scanned={scanned}, candidates={candidates}, split={done}, errors={errors}.', file=sys.stderr)
+" "$MIP_SPLIT_URL" "$DRY_RUN" "$SPLIT_CONTEST_GRACE_HOURS" "${OPERATOR_SECRET_KEY:-}"
+    ;;
+
+  schedule)
+    # Single agent-readable view of every time window that governs the pool/job
+    # lifecycle. Agents call this instead of memorising constants from docs.
+    #   schedule                      -> global policy windows (no target)
+    #   schedule <pool_commitment>    -> adds pool deadline (via bridge)
+    #   schedule <job_id>             -> adds voting window + escrow timers (via MIP-003)
+    #   schedule --all                -> global + every running/awaiting_approval job
+    #
+    # Always exits 0 and prints a single JSON object so OpenClaw/heartbeat
+    # runners can parse it without guessing terminal colour.
+    TARGET="${1:-}"
+
+    # Allow the schedule command to be called without live network dependencies.
+    # We already validated RECEIPT_CONTRACT / OPERATOR_ADDRESS at script entry.
+    MIP_SCHED_BASE="${MIP003_URL%/}"
+    BRIDGE_SCHED_BASE="${BRIDGE_URL:-}"
+    MIP_SCHED_AUTH=()
+    if [[ -n "${OPERATOR_SECRET_KEY:-}" ]]; then
+      MIP_SCHED_AUTH=(-H "Authorization: Bearer ${OPERATOR_SECRET_KEY}")
+    fi
+
+    POOL_ARG=""
+    JOB_ARG=""
+    LIST_ALL="false"
+    case "$TARGET" in
+      "")  ;;
+      --all|-a|all) LIST_ALL="true" ;;
+      *)
+        # 64-char hex → pool commitment; anything else → job id (server validates)
+        if [[ "$TARGET" =~ ^[0-9a-f]{64}$ ]]; then POOL_ARG="$TARGET"
+        else JOB_ARG="$TARGET"; fi
+        ;;
+    esac
+
+    POOL_JSON='null'
+    if [[ -n "$POOL_ARG" && -n "$BRIDGE_SCHED_BASE" ]]; then
+      POOL_JSON=$(curl -sf --max-time 8 "${BRIDGE_SCHED_BASE}/poolStatus/${POOL_ARG}" 2>/dev/null || echo 'null')
+      [[ -z "$POOL_JSON" ]] && POOL_JSON='null'
+    fi
+
+    JOB_JSON='null'
+    if [[ -n "$JOB_ARG" ]]; then
+      JOB_JSON=$(curl -sf --max-time 5 "${MIP_SCHED_AUTH[@]}" "${MIP_SCHED_BASE}/status/${JOB_ARG}" 2>/dev/null || echo 'null')
+      [[ -z "$JOB_JSON" ]] && JOB_JSON='null'
+    fi
+
+    JOBS_JSON='null'
+    if [[ "$LIST_ALL" == "true" ]]; then
+      # Pull running + awaiting_approval jobs so the agent sees every open deadline.
+      JOBS_JSON=$(curl -sf --max-time 8 "${MIP_SCHED_AUTH[@]}" "${MIP_SCHED_BASE}/jobs?status=running&limit=50" 2>/dev/null || echo 'null')
+      [[ -z "$JOBS_JSON" ]] && JOBS_JSON='null'
+    fi
+
+    MIDNIGHT_MAINNET_DATE="${MIDNIGHT_MAINNET_DATE:-2026-03-30T00:00:00Z}"
+
+    python3 -c "
+import sys, json
+from datetime import datetime, timezone, timedelta
+
+def parse_iso(v):
+    if not v: return None
+    try:
+        return datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+def delta_fields(target_iso, now):
+    dt = parse_iso(target_iso)
+    if not dt: return None
+    secs = int((dt - now).total_seconds())
+    return {
+        'at': target_iso,
+        'seconds_remaining': secs,
+        'hours_remaining': round(secs / 3600, 2),
+        'expired': secs <= 0,
+    }
+
+now = datetime.now(timezone.utc)
+pool_deadline_hours    = int('${DEFAULT_POOL_DEADLINE_HOURS:-72}')
+optimistic_hours       = int('${OPTIMISTIC_WINDOW_HOURS:-48}')
+unclaimed_hours        = int('${UNCLAIMED_REFUND_HOURS:-24}')
+escrow_timeout_minutes = int('${ESCROW_TIMEOUT_MINUTES:-60}')
+multisig_threshold     = int('${MULTISIG_THRESHOLD_SPECKS:-1000000}')
+
+out = {
+    'now':     now.isoformat(),
+    'network': '${MIDNIGHT_NETWORK}',
+    'policy_windows': {
+        'pool_deadline_hours':           pool_deadline_hours,
+        'vote_window_hours_default':     24,
+        'optimistic_approval_hours':     optimistic_hours,
+        'unclaimed_refund_hours':        unclaimed_hours,
+        'escrow_timeout_minutes':        escrow_timeout_minutes,
+        'multisig_threshold_specks':     multisig_threshold,
+        'emergency_refund_tx_delta':     500,
+    },
+    'milestones': {
+        'midnight_mainnet_kukolu':       '${MIDNIGHT_MAINNET_DATE}',
+        'mainnet_eta_days':              round((parse_iso('${MIDNIGHT_MAINNET_DATE}') - now).total_seconds() / 86400, 1) if parse_iso('${MIDNIGHT_MAINNET_DATE}') else None,
+    },
+    'notifications': {
+        'heartbeat_command':             'npx nightpay heartbeat',
+        'heartbeat_cadence_default':     '2h',
+        'notify_before_deadline_hours':  [6, 1],
+    }
+}
+
+pool_raw = '''$POOL_JSON'''.strip()
+try:
+    pool = json.loads(pool_raw) if pool_raw and pool_raw != 'null' else None
+except Exception:
+    pool = None
+if pool and isinstance(pool, dict):
+    dl = pool.get('deadline') or pool.get('deadlineAt') or pool.get('expiresAt')
+    out['pool'] = {
+        'commitment':  pool.get('poolCommitment') or '${POOL_ARG}',
+        'status':      pool.get('status'),
+        'deadline':    delta_fields(dl, now) if dl else None,
+    }
+
+job_raw = '''$JOB_JSON'''.strip()
+try:
+    job = json.loads(job_raw) if job_raw and job_raw != 'null' else None
+except Exception:
+    job = None
+if job and isinstance(job, dict):
+    started = job.get('started_at') or job.get('startedAt')
+    approved = job.get('approved_at') or job.get('approvedAt')
+    voting_ends = job.get('voting_ends_at') or (job.get('voting') or {}).get('ends_at')
+    escrow_deadline = None
+    s_dt = parse_iso(started)
+    if s_dt:
+        escrow_deadline = (s_dt + timedelta(minutes=escrow_timeout_minutes)).isoformat()
+    auto_approve_at = None
+    a_dt = parse_iso(approved)
+    if a_dt:
+        auto_approve_at = (a_dt + timedelta(hours=optimistic_hours)).isoformat()
+    unclaimed_deadline = None
+    if s_dt:
+        unclaimed_deadline = (s_dt + timedelta(hours=unclaimed_hours)).isoformat()
+    out['job'] = {
+        'job_id':              job.get('job_id') or '${JOB_ARG}',
+        'status':              job.get('status'),
+        'amount_specks':       job.get('amount_specks'),
+        'requires_multisig':   (job.get('amount_specks') or 0) >= multisig_threshold,
+        'started_at':          started,
+        'approved_at':         approved,
+        'voting_ends':         delta_fields(voting_ends, now) if voting_ends else None,
+        'escrow_timeout':      delta_fields(escrow_deadline, now) if escrow_deadline else None,
+        'unclaimed_refund_at': delta_fields(unclaimed_deadline, now) if unclaimed_deadline else None,
+        'optimistic_autocomplete_at': delta_fields(auto_approve_at, now) if auto_approve_at else None,
+    }
+
+jobs_raw = '''$JOBS_JSON'''.strip()
+try:
+    jobs_env = json.loads(jobs_raw) if jobs_raw and jobs_raw != 'null' else None
+except Exception:
+    jobs_env = None
+if jobs_env and isinstance(jobs_env, dict) and isinstance(jobs_env.get('jobs'), list):
+    entries = []
+    for j in jobs_env['jobs']:
+        started = j.get('started_at'); approved = j.get('approved_at')
+        s_dt = parse_iso(started); a_dt = parse_iso(approved)
+        escrow_deadline = (s_dt + timedelta(minutes=escrow_timeout_minutes)).isoformat() if s_dt else None
+        unclaimed_deadline = (s_dt + timedelta(hours=unclaimed_hours)).isoformat() if s_dt else None
+        auto_approve_at = (a_dt + timedelta(hours=optimistic_hours)).isoformat() if a_dt else None
+        entries.append({
+            'job_id': j.get('job_id'),
+            'status': j.get('status'),
+            'amount_specks': j.get('amount_specks'),
+            'escrow_timeout':             delta_fields(escrow_deadline, now) if escrow_deadline else None,
+            'unclaimed_refund_at':        delta_fields(unclaimed_deadline, now) if unclaimed_deadline else None,
+            'optimistic_autocomplete_at': delta_fields(auto_approve_at, now) if auto_approve_at else None,
+        })
+    out['jobs'] = entries
+
+print(json.dumps(out, indent=2))
+"
     ;;
 
   *)
@@ -1441,10 +2008,13 @@ print(f'Unclaimed refund sweep: scanned={scanned}, candidates={candidates}, refu
     echo -e "  ${CYAN}complete${RESET}         <job_id> <hash>            Mint receipt, release payment" >&2
     echo -e "  ${CYAN}refund${RESET}           <job_id> <hash> [addr]     Cancel escrow, refund NIGHT" >&2
     echo -e "  ${CYAN}refund-unclaimed${RESET} [--dry-run]                Auto-refund old unclaimed jobs" >&2
+    echo -e "  ${CYAN}split-unselected${RESET} [--dry-run]                Split contest bounty among submitters when no winner picked within grace window (7d default)" >&2
     echo -e "  ${CYAN}approve-multisig${RESET} <id> <hash> <key>          Sign high-value approval" >&2
     echo -e "  ${CYAN}optimistic-sweep${RESET} [--dry-run]                Auto-complete expired windows" >&2
     echo -e "  ${CYAN}withdraw-fees${RESET}    [amount]                   Operator fee withdrawal" >&2
     echo -e "  ${CYAN}stats${RESET}                                       On-chain contract stats" >&2
+    echo -e "  ${CYAN}verify-receipt${RESET}   <receipt_hash>             Verify a ZK receipt on-chain" >&2
+    echo -e "  ${CYAN}schedule${RESET}         [pool|job|--all]           Deadlines, vote windows, milestones" >&2
     echo "" >&2
     echo -e "${DIM}Required: MASUMI_API_KEY  MIDNIGHT_NETWORK  OPERATOR_ADDRESS  RECEIPT_CONTRACT_ADDRESS${RESET}" >&2
     exit 1

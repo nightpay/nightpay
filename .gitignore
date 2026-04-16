@@ -59,6 +59,22 @@ pids/
 # Stray files
 Tempcounter_contents.json
 
+# UI/UX audit screenshots (ad-hoc, not committed)
+/[0-9][0-9]-*.png
+/[0-9][0-9]b-*.png
+/[0-9][0-9]c-*.png
+/m[0-9][0-9]-*.png
+/m[0-9][0-9]b-*.png
+/m[0-9][0-9]c-*.png
+/n[0-9][0-9]-*.png
+/n[0-9][0-9]b-*.png
+
+# Local fuzz/test scratch
+.tmp-fuzz/
+
+# Unrelated side-project notes (never commit)
+horse-enrich.md
+
 # Auto Claude data directory
 .auto-claude/
 

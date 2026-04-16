@@ -10,9 +10,9 @@
   "type": "owl:Ontology",
   "name": "NightPay Ontology",
   "description": "Public JSON-LD ontology for privacy-preserving bounty pools, delegation, disputes, receipt credentials, and contest-mode submissions and voting in NightPay.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "dcterms:issued": "2026-02-28",
-  "dcterms:modified": "2026-03-01",
+  "dcterms:modified": "2026-04-16",
   "dcterms:license": "https://www.apache.org/licenses/LICENSE-2.0",
   "@graph": [
     {
@@ -391,6 +391,104 @@
         "id": "nightpay:PrivacyClassScheme"
       },
       "skos:prefLabel": "private-witness"
+    },
+    {
+      "id": "nightpay:PolicyWindows",
+      "type": "rdfs:Class",
+      "rdfs:label": "Policy Windows",
+      "rdfs:comment": "Machine-readable timing policy governing pool/job deadlines, vote windows, escrow timeouts, optimistic approval, and unclaimed-refund thresholds. Returned by `gateway.sh schedule` so agents do not memorise constants."
+    },
+    {
+      "id": "nightpay:Milestone",
+      "type": "rdfs:Class",
+      "rdfs:label": "Milestone",
+      "rdfs:comment": "A dated event that affects NightPay behaviour (for example Midnight mainnet Kūkolu cutover)."
+    },
+    {
+      "id": "nightpay:DeadlineNotification",
+      "type": "rdfs:Class",
+      "rdfs:label": "Deadline Notification",
+      "rdfs:comment": "An alert raised by the heartbeat runner when a timer crosses one of the configured buckets (6h, 1h, expired) for a job or pool."
+    },
+    {
+      "id": "nightpay:poolDeadline",
+      "type": "rdf:Property",
+      "rdfs:label": "pool deadline",
+      "rdfs:domain": "nightpay:Pool",
+      "rdfs:range": "xsd:dateTime",
+      "rdfs:comment": "UTC ISO-8601 timestamp after which an unfunded pool becomes refundable."
+    },
+    {
+      "id": "nightpay:poolDeadlineHours",
+      "type": "rdf:Property",
+      "rdfs:label": "pool deadline hours",
+      "rdfs:domain": "nightpay:PolicyWindows",
+      "rdfs:range": "xsd:integer",
+      "rdfs:comment": "Default number of hours between pool creation and expiry (DEFAULT_POOL_DEADLINE_HOURS, default 72)."
+    },
+    {
+      "id": "nightpay:voteWindowHoursDefault",
+      "type": "rdf:Property",
+      "rdfs:label": "vote window hours (default)",
+      "rdfs:domain": "nightpay:PolicyWindows",
+      "rdfs:range": "xsd:integer",
+      "rdfs:comment": "Default contest voting window in hours (vote_window_hours in start_job.contest, default 24)."
+    },
+    {
+      "id": "nightpay:optimisticApprovalHours",
+      "type": "rdf:Property",
+      "rdfs:label": "optimistic approval hours",
+      "rdfs:domain": "nightpay:PolicyWindows",
+      "rdfs:range": "xsd:integer",
+      "rdfs:comment": "Hours after awaiting_approval before the operator sweep auto-completes the job (OPTIMISTIC_WINDOW_HOURS, default 48)."
+    },
+    {
+      "id": "nightpay:unclaimedRefundHours",
+      "type": "rdf:Property",
+      "rdfs:label": "unclaimed refund hours",
+      "rdfs:domain": "nightpay:PolicyWindows",
+      "rdfs:range": "xsd:integer",
+      "rdfs:comment": "Hours after start_job with zero claims before `gateway.sh refund-unclaimed` selects the job (UNCLAIMED_REFUND_HOURS, default 24)."
+    },
+    {
+      "id": "nightpay:escrowTimeoutMinutes",
+      "type": "rdf:Property",
+      "rdfs:label": "escrow timeout minutes",
+      "rdfs:domain": "nightpay:PolicyWindows",
+      "rdfs:range": "xsd:integer",
+      "rdfs:comment": "Masumi escrow timeout in minutes before an unpaid job is unwound (escrowTimeoutMinutes, default 60)."
+    },
+    {
+      "id": "nightpay:multisigThresholdSpecks",
+      "type": "rdf:Property",
+      "rdfs:label": "multisig threshold specks",
+      "rdfs:domain": "nightpay:PolicyWindows",
+      "rdfs:range": "xsd:integer",
+      "rdfs:comment": "Bounty amount (specks) at which M-of-N approval is required for completion (MULTISIG_THRESHOLD_SPECKS, default 1_000_000)."
+    },
+    {
+      "id": "nightpay:emergencyRefundTxDelta",
+      "type": "rdf:Property",
+      "rdfs:label": "emergency refund tx delta",
+      "rdfs:domain": "nightpay:PolicyWindows",
+      "rdfs:range": "xsd:integer",
+      "rdfs:comment": "Minimum number of contract interactions (txCounter delta) a funder must wait before bypassing the gateway via emergencyRefund (default 500)."
+    },
+    {
+      "id": "nightpay:milestoneDate",
+      "type": "rdf:Property",
+      "rdfs:label": "milestone date",
+      "rdfs:domain": "nightpay:Milestone",
+      "rdfs:range": "xsd:dateTime",
+      "rdfs:comment": "UTC ISO-8601 timestamp of the milestone (for example MIDNIGHT_MAINNET_DATE)."
+    },
+    {
+      "id": "nightpay:notifyBeforeDeadlineHours",
+      "type": "rdf:Property",
+      "rdfs:label": "notify before deadline hours",
+      "rdfs:domain": "nightpay:DeadlineNotification",
+      "rdfs:range": "rdfs:List",
+      "rdfs:comment": "Bucket thresholds (in hours remaining) that raise a heartbeat alert. Default [6, 1] plus an `expired` bucket."
     }
   ]
 }

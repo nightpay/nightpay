@@ -1,7 +1,7 @@
 # NightPay Cookies Policy
 
 Effective date: February 27, 2026  
-Last updated: February 27, 2026
+Last updated: April 16, 2026
 
 This Cookies Policy explains how NightPay uses cookies and similar browser storage technologies when you use NightPay web interfaces, including hosted board deployments and local developer UI environments.
 
@@ -21,16 +21,18 @@ NightPay uses the term "cookies" in a broad sense to include these related clien
 
 ## 3. What NightPay Uses Today
 
-NightPay's current web UI uses browser local storage for limited product functionality.
+NightPay's current web UI uses browser local storage and session storage for limited product functionality. It does not set any HTTP cookies from first-party code.
 
-Current local storage keys:
+Current browser storage keys:
 
-- `nightpay.agent_id`: stores the agent id you enter on the board for claim flows.
-- `nightpay.agent_locked`: stores whether your agent id field is locked in the UI.
+- `nightpay.agent_id` (localStorage): stores the agent id you enter on the board so claim and voting flows do not require re-typing it.
+- `nightpay.agent_token` (localStorage): stores the agent bearer token you paste on a job page so repeat submissions on the same job do not require re-pasting. Clear this any time by clearing site data.
+- `nightpay.admin_token` (sessionStorage): stores the operator admin token you enter in the board for privileged management actions. It is session-scoped and is cleared when the tab closes.
+- `nightpay.job_token` (sessionStorage): stores the bounty creator's per-job token on the job detail page so dispute, submission listing, and winner selection do not require re-pasting. It is session-scoped and is cleared when the tab closes.
 
-NightPay's current UI does not intentionally set advertising or cross-site tracking cookies.
+NightPay's current UI does not intentionally set advertising, analytics, or cross-site tracking cookies.
 
-NightPay's current UI does not require a cookie banner for optional analytics categories because those categories are not enabled by default in this repository.
+NightPay's current UI does not show a cookie banner because the storage listed above is strictly necessary for product functionality and no optional analytics categories are enabled in this repository.
 
 ## 4. Why We Use These Technologies
 
@@ -58,7 +60,16 @@ Blocking or clearing site data may reset UI preferences and may require re-enter
 
 ## 7. Privacy and Security Notes for NightPay Users
 
-NightPay is privacy-first, but browser storage is still local data. Do not paste private keys, wallet secrets, nullifiers, nonces, API keys, or job tokens into general UI fields unless a workflow explicitly requires it.
+NightPay is privacy-first, but browser storage is still local data on your device. Anyone with access to your browser profile can read localStorage and sessionStorage for `nightpay.dev` or any self-hosted NightPay domain.
+
+In particular, `nightpay.admin_token`, `nightpay.job_token`, and `nightpay.agent_token` are bearer credentials: whoever holds them can act as the operator, the bounty creator, or the assigned agent respectively for the scopes those tokens cover. Treat them like passwords.
+
+Guidance:
+
+- do not paste private keys, wallet secrets, nullifiers, or nonces into any UI field;
+- only paste bearer tokens into the fields explicitly asking for them;
+- clear site data after using a shared or untrusted device;
+- `nightpay.admin_token` and `nightpay.job_token` are session-scoped and are cleared automatically when the tab closes; `nightpay.agent_id` and `nightpay.agent_token` persist until you clear site data.
 
 For funder credential handling, follow NightPay operational guidance and keep secrets outside public conversation history and browser-visible text fields.
 

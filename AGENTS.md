@@ -19,7 +19,7 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 | Resource | URL | Use for |
 |---|---|---|
 | Compact language reference | https://docs.midnight.network/develop/reference/compact/lang-ref | Syntax, types, circuit rules — ground truth |
-| Compact stdlib | https://docs.midnight.network/develop/reference/compact/compact-std-library/exports | MerkleTree, hash, effects, send, receive |
+| Compact stdlib | https://docs.midnight.network/compact/compact-std-library | MerkleTree, hash, effects, send, receive |
 | Compact overview + DSL | https://docs.midnight.network/compact | Circuits, witnesses, public/private state model |
 | Midnight concepts | https://docs.midnight.network/concepts | Ledgers, UTXO, ZK proofs, Kachina, Compact — align terminology |
 | Compact tools release notes | https://docs.midnight.network/relnotes/compact-tools | Compiler version changes, `compact fixup` notes |
@@ -38,7 +38,10 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 - Compact compiler inside tools is v0.29.0 — `fixup --check` mode was added in 0.4.0 (use it)
 - Proof system is BLS12-381 — do NOT write Pluto-Eris code
 - `MerkleTree<25>` is our depth — max is 32, we are safe
-- Bridge SDK versions: `midnight-js-*@3.1.0`, `wallet-sdk-*@1.0.0`, `ledger-v7@7.0.1`, `compact-js@2.4.0`
+- Bridge SDK versions (enforced via `bridge/package.json` `overrides`): `midnight-js-*@3.1.0`, `ledger-v7@7.0.1`, `compact-js@2.4.2`, `compact-runtime@0.14.0`
+- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.0.0` + `wallet-sdk-hd@3.0.0` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@1.0.0` + `wallet-sdk-facade@1.0.0` + `wallet-sdk-shielded@1.0.0` + `wallet-sdk-unshielded-wallet@1.0.0` (wallet ops, v1 line). Do not unify — these are upstream's own major version split.
+- Why the `overrides`: preprod-matrix peer deps point at `compact-js@2.4.0` / `ledger-v7@7.0.0`, but we pin to the newer patch releases for bug fixes. Both patches are API-compatible with the matrix-declared majors; keep `overrides` in sync with `dependencies` when bumping.
+- Ledger 8 / `compactc-0.30.0` / `compact-v0.5.0` are **released but NOT on the preprod matrix yet** — do not upgrade the bridge SDK past ledger-7 until the preprod compatibility matrix at `docs.midnight.network/relnotes/overview` advances.
 - Proof server runs on `localhost:6300` via Docker — always local, never remote
 - **Mainnet (Kūkolu) launches last week of March 2026** — keep `preprod` default until then
 - **Midnight City simulation opens Feb 26, 2026** — good demo window before mainnet
@@ -157,6 +160,7 @@ plaintext conversation history, agent logs, or LLM provider telemetry.
 - `receipt.compact` — ZK contract, touch carefully, run `compact fixup --check` then `compact fixup` after
 - `gateway.sh` — bounty lifecycle, main integration point between Masumi and Midnight
 - `mip003-server.sh` — MIP-003 HTTP server (Python inside bash), job lifecycle + idempotency
+- `heartbeat.py` / `heartbeat.sh` — OpenClaw HEARTBEAT.md runner (`npx nightpay heartbeat`); update with `HEARTBEAT.md` when checks change
 - `bridge/src/` — TypeScript SDK integration, follows example-bboard patterns (not example-counter — we have witnesses)
 - `SKILL.md` — agent discovery, strict format rules (see OpenClaw section above)
 - `openclaw-fragment.json` — merge into `~/.openclaw/openclaw.json` to activate skill with env vars
@@ -172,6 +176,7 @@ plaintext conversation history, agent logs, or LLM provider telemetry.
 - **Post + hire flow:** `gateway.sh post-bounty` -> `gateway.sh find-agent` -> `gateway.sh hire-and-pay <agent> <desc> <commitment> [refund_address]`
 - **Delivery + settlement flow:** worker calls `/provide_input/<job_id>` or `/provide_result/<job_id>` with `Authorization: Bearer <job_token>`; operator runs `gateway.sh complete <job_id> <commitment>`
 - **No-agent refund flow:** run `gateway.sh refund-unclaimed --dry-run` then without dry-run on schedule; this only targets `running` jobs with `claims_count=0`, empty assignee, old `started_at`, and valid `input_data.commitmentHash`
+- **Contest no-winner split flow:** run `gateway.sh split-unselected --dry-run` then without dry-run on schedule; targets contest jobs with `>=1` submission, `voting_ends_at` past `SPLIT_CONTEST_GRACE_HOURS` (default 168h = 7 days), and no winner selected. Operator fee is applied first; remainder accrues to operator; shares recorded under `result.settlement.split`
 - **Dispute flow:** `/dispute/<job_id>` is valid from `running`, `awaiting_approval`, and `multisig_pending` (job_token or operator signature required)
 - **High-value flow:** if `amount_specks >= MULTISIG_THRESHOLD_SPECKS`, job transitions to `multisig_pending` and requires multisig approval path before `complete`
 - **Ops routing flow:** keep ports `3333/8090/4000` private; expose only `80/443` and reverse-proxy subdomains via Caddy (`board.*`, `api.*`, `bridge.*`)

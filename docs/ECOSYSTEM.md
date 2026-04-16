@@ -2,7 +2,7 @@
 
 **Purpose:** Stay current with every project we depend on or compete with. Check this before making architectural decisions. Update when you spot version bumps, breaking changes, or new entrants.
 
-Last researched: **2026-03-14** (refresh #7 — synced Midnight preprod matrix to compiler 0.29.0, added OpenClaw v2026.3.13, and updated skills validation command)
+Last researched: **2026-04-16** (refresh #10 — bridge-pin reconciliation pass: synced `Current Versions` to `bridge/package.json` `overrides` (`compact-js@2.4.2`, `ledger-v7@7.0.1`, `compact-runtime@0.14.0`) and documented the v1/v3 wallet-sdk major split. Refresh #9 on 2026-04-15 verified `masumi-saas` HEAD `dcc1c46` for SaaS proxy surfaces, OIDC/API auth scopes, and mainnet-aware route expectations.)
 
 ---
 
@@ -34,25 +34,26 @@ Our `receipt.compact` runs here. Everything privacy-related depends on this.
 | [Olanetsoft/midnight-mcp](https://github.com/Olanetsoft/midnight-mcp) | 29-tool MCP server for Midnight (compile, analyze, deploy Compact via Claude, 19 ⭐) | Complementary to our skill; use when Claude Code needs to touch `receipt.compact` directly |
 | [OpenZeppelin/compact-security-detectors-sdk](https://github.com/OpenZeppelin/compact-security-detectors-sdk) | Static analysis / vulnerability scanner for Compact contracts (OpenZeppelin) | **Run on `receipt.compact` before every deployment** — AST-based, CLI, pre-built detectors |
 
-### Current Versions (updated 2026-03-14)
+### Current Versions (updated 2026-04-16 — reconciled against `bridge/package.json` `overrides`)
 
 | Component | Version | Notes |
 |---|---|---|
-| Compact Compiler | 0.29.0 | Inside developer tools package (preprod compatibility matrix) |
-| **Compact Developer Tools** | **0.4.0** ⬆️ | Released Jan 21 2026 — `compact fixup --check` mode added |
+| Compact Compiler | 0.29.0 | Preprod compatibility matrix (`docs.midnight.network/relnotes/overview`, updated Mar 17, 2026) |
+| **Compact Developer Tools** | **0.4.0** (preprod baseline) | `compact-v0.5.0` is released, but preprod matrix still targets compiler 0.29.0 (ledger 7) |
 | Wallet SDK | 1.0.0 | Preprod compatibility matrix |
 | Wallet API | 1.0.0 | Preprod compatibility matrix |
-| DApp Connector API | 3.0.0 | Chrome-only (Lace), providers exposed under `window.midnight.{walletId}` |
+| DApp Connector API | 4.0.0 | Preprod compatibility matrix |
 | Midnight.js | 3.1.0 | [midnight-js](https://github.com/midnightntwrk/midnight-js); see [MIDNIGHT_JS_INTEGRATION.md](MIDNIGHT_JS_INTEGRATION.md) for bridge adoption options |
-| Midnight Node | 0.20.1 | GitHub release `node-0.20.1` (Feb 3, 2026) |
-| Midnight Indexer | 2.1.4 | |
-| ledger-v7 | 7.0.1 | Preprod compatibility matrix |
-| compact-js | 2.4.0 | Preprod compatibility matrix |
-| Proof Server | 4.0.0 | |
+| Midnight Node | 0.21.0 | Preprod compatibility matrix |
+| Midnight Indexer | 3.1.0 | Preprod compatibility matrix |
+| ledger-v7 | 7.0.1 | Bridge pinned via `overrides` (matrix peer declares 7.0.0; 7.0.1 is API-compatible patch) |
+| compact-js | 2.4.2 | Bridge pinned via `overrides` (matrix peer declares 2.4.0; 2.4.2 is API-compatible patch) |
+| compact-runtime | 0.14.0 | Transitive of `compact-js@2.4.2`; installed exactly |
+| Proof Server | 7.0.0 | Preprod compatibility matrix |
 | Midnight Lace Wallet | 3.0.0 | |
 | VS Code Extension | 0.2.13 | |
 
-> ⚠️ **Action required:** Compact Developer Tools jumped from 0.3.0 → 0.4.0. Run `compact fixup --check` on `receipt.compact` before the next compile pass. The `fixup` subcommand interface changed — use `--check` to preview migrations before applying.
+> ⚠️ **Compatibility note:** `compact-v0.5.0` / `compactc-v0.30.0` (ledger 8) released on March 17, 2026. Preprod matrix remains on compiler `0.29.0` (ledger 7), so keep the preprod toolchain pinned until the matrix changes.
 
 ### Known Breaking Changes (History)
 
@@ -90,7 +91,7 @@ Network naming note: Midnight node docker commonly uses `CHAIN=preview` with
 ### Key Docs
 
 - Language reference: https://docs.midnight.network/develop/reference/compact/lang-ref
-- Compact stdlib: https://docs.midnight.network/develop/reference/compact/compact-std-library/exports
+- Compact stdlib: https://docs.midnight.network/compact/compact-std-library
 - Ledger ADT (MerkleTree API): https://docs.midnight.network/develop/reference/compact/ledger-adt
 - Release notes: https://docs.midnight.network/relnotes/overview
 - Zswap paper: https://eprint.iacr.org/2022/1002.pdf
@@ -107,6 +108,7 @@ Our gateway.sh and mip003-server.sh talk to these APIs.
 | Repo | Purpose | Watch For |
 |---|---|---|
 | [masumi-network/masumi-payment-service](https://github.com/masumi-network/masumi-payment-service) | Core payment infra (TxPipe-audited) | API version bumps, escrow endpoint changes |
+| [masumi-network/masumi-saas](https://github.com/masumi-network/masumi-saas) | SaaS control plane + authenticated proxy (`/pay/api/v1/*`, `/registry/api/v1/*`) + public discovery (`/api/v1/agents`) | Proxy route additions/removals, API auth semantics (`Authorization` vs `x-api-key`), scope gating |
 | [masumi-network/masumi-docs](https://github.com/masumi-network/masumi-docs) | Tutorials + reference impls | MIP spec changes, new endpoint documentation |
 | [masumi-network/agentic-service-wrapper](https://github.com/masumi-network/agentic-service-wrapper) | Minimal MIP-003-compliant wrapper template | New required endpoints, schema changes |
 | [masumi-network/crewai-masumi-quickstart-template](https://github.com/masumi-network/crewai-masumi-quickstart-template) | CrewAI + FastAPI + MIP-003 starter | Integration patterns |
@@ -135,6 +137,17 @@ POST /provide_input/<id>  — (some versions) interactive agent jobs
 | Central Registry (public) | `http://registry.masumi.network` |
 | Explorer (Preprod) | `https://explorer.masumi.network/?network=preprod` |
 | API Reference | `https://docs.masumi.network/api-reference` |
+
+### Masumi SaaS Snapshot (Verified 2026-04-15)
+
+- **HEAD:** `dcc1c46` (Apr 15, 2026) — merge of API route workstream.
+- **API base split landed:** `59d1840` (Apr 15, 2026) moved to explicit SaaS proxies:
+  - `/pay/api/v1/*` (payment-node upstream)
+  - `/registry/api/v1/*` (registry-service upstream)
+  - public discovery remains `/api/v1/agents` (+ `/api/v1/openapi`)
+- **OIDC/API scope support updated:** `4df6cc1` (Apr 15, 2026) expanded OIDC-scoped API compatibility on v1 proxy routes.
+- **Mainnet scope rollout:** `89f8154` (Apr 15, 2026) enabled mainnet-aware flows in SaaS layer.
+- **OpenAPI path fix:** `b0d2de9` (Apr 15, 2026) corrected endpoint OpenAPI generation for platform docs.
 
 ### On-Chain Addresses
 
@@ -214,7 +227,7 @@ Steinberger (OpenClaw creator) announced joining OpenAI — project moving to an
 
 ### Recent OpenClaw Releases
 
-- **v2026.3.13 (Mar 13, 2026):** latest stable release line (post-ACP hardening cycle)
+- **v2026.3.13-1 (Mar 14, 2026):** latest stable release line (post-ACP hardening cycle)
 - **v2026.2.26 (Feb 27, 2026):** External Secrets Management (`audit/configure/apply/reload` workflow); **ACP/Thread-bound agents as first-class runtimes**; agent routing CLI (`bind`/`unbind`/`bindings`); Android device capability additions
 - **v2026.2.25 (Feb 26, 2026):** `agents.defaults.heartbeat.directPolicy` replaces heartbeat DM toggle — **DM delivery blocked by default**; gateway WebSocket auth hardening
 - **v2026.2.24 (Feb 25, 2026):** Heartbeat delivery blocks DM targets by default; Docker namespace-join blocked by default; routing/session isolation hardening
@@ -427,7 +440,7 @@ Run these checks periodically (suggest: before each release, or at minimum month
 
 ### Midnight
 
-- [x] **Compact tools 0.4.0 — run `compact fixup --check` on `receipt.compact` before next compile** (added 2026-02-18)
+- [x] **Re-check Midnight preprod compatibility matrix (Mar 17, 2026)** — keep compiler pinned at `0.29.0` for preprod and defer ledger-8 toolchain upgrades
 - [ ] Check [compact releases](https://github.com/midnightntwrk/compact/releases) — any new version? Run `compact fixup --check` then `compact fixup` on `receipt.compact`
 - [ ] Check [midnight-ledger releases](https://github.com/midnightntwrk/midnight-ledger/releases) — any proof system changes?
 - [ ] Check [midnight-zk releases](https://github.com/midnightntwrk/midnight-zk/releases) — BLS12-381 or PLONK primitive changes invalidate our circuits
@@ -442,6 +455,7 @@ Run these checks periodically (suggest: before each release, or at minimum month
 ### Masumi
 
 - [ ] Check [masumi-payment-service releases](https://github.com/masumi-network/masumi-payment-service/releases) — API version bump? Update endpoints in `gateway.sh`
+- [ ] Check [masumi-saas](https://github.com/masumi-network/masumi-saas) latest commits/releases — proxy route surface changed (`/pay/api/v1`, `/registry/api/v1`, `/api/v1`)?
 - [ ] Check [masumi-docs](https://github.com/masumi-network/masumi-docs) for MIP-003 spec changes — new required endpoints?
 - [ ] Verify local Payment API (`localhost:3001/api/v1`) and Registry API (`localhost:3000/api/v1`) still match current spec
 - [ ] Check [masumi-mcp-server](https://github.com/masumi-network/masumi-mcp-server) — new capabilities to expose via our MIP-003 server?
@@ -502,4 +516,4 @@ Run these checks periodically (suggest: before each release, or at minimum month
 
 ---
 
-*Updated: 2026-03-14 (refresh #7). Next review: mainnet launch (~2026-03-24).*
+*Updated: 2026-04-16 (refresh #10, bridge-pin reconciliation). Next review: Masumi SaaS + payment-service surface recheck (~2026-04-22).*

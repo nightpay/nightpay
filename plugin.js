@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// NightPay OpenClaw plugin entrypoint -- v0.3.11
-// Fix: bridge health probe on gateway_start, RECEIPT_CONTRACT_ADDRESS validation,
-//      wallet connectivity status in ready log
+// NightPay OpenClaw plugin entrypoint -- v0.4.6
+// Adds: /nightpay schedule surfaces policy windows, milestones, and deadline
+//       radar output (heartbeat deadline check #6). See skills/nightpay/SKILL.md
+//       and ontology.md (Timeline & notifications).
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -11,8 +12,13 @@ import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_SRC = join(__dirname, "skills", "nightpay");
+const GATEWAY_SH = join(SKILL_SRC, "scripts", "gateway.sh");
 
-const REQUIRED_ENV = ["MASUMI_API_KEY", "OPERATOR_ADDRESS", "BRIDGE_URL"];
+// Keep in sync with skills/nightpay/SKILL.md frontmatter
+// `metadata.openclaw.requires.env` (canonical source of truth).
+// openclaw-fragment.json pre-populates NIGHTPAY_API_URL with the default
+// from DEFAULTS, so the fragment install path never trips this.
+const REQUIRED_ENV = ["MASUMI_API_KEY", "OPERATOR_ADDRESS", "NIGHTPAY_API_URL", "BRIDGE_URL"];
 const WALLET_ENV = ["RECEIPT_CONTRACT_ADDRESS", "OPERATOR_SECRET_KEY"];
 
 const DEFAULTS = {
@@ -65,11 +71,17 @@ const FULL_CONTEXT = [
   "- submit_work(jobId, workOutput, bountyCommitment, outputHash)",
   "- verify_receipt(receiptHash)",
   "- get_ontology() -> GET /ontology  -- call before complex ops",
+  "- schedule([pool|job|--all]) -> gateway.sh schedule -- policy windows, milestones, deadlines",
   "",
   "### Pre-flight (ALWAYS before funding or accepting work)",
   "1. GET /availability -- operator online?",
   "2. GET BRIDGE_URL/health -> contractAddress + stub status",
   "3. verify-receipt <any_hash> -> ZK system live?",
+  "",
+  "### Timeline awareness (never hardcode deadlines)",
+  "- Ask: bash skills/nightpay/scripts/gateway.sh schedule [pool|job|--all]",
+  "- Watch: heartbeat deadline radar fires lt_6h, lt_1h, expired buckets via HEARTBEAT.md",
+  "- Mainnet milestone: heartbeat emits a one-shot alert within 30 days of MIDNIGHT_MAINNET_DATE",
   "",
   "### CRITICAL privacy rule",
   "NEVER log, store, or expose funderNullifier or nonce.",
@@ -80,7 +92,7 @@ const FULL_CONTEXT = [
 ].join("\n");
 
 const OPERATING_MODEL = [
-  "NightPay Operating Model -- v0.3.11",
+  "NightPay Operating Model -- v0.4.6",
   "=".repeat(50),
   "",
   "POOL CREATION",
@@ -118,11 +130,12 @@ const OPERATING_MODEL = [
   '  "hire an agent to do X"  "post a bounty for X"  "claim refund on pool X"',
   "",
   "COMMANDS",
-  "  /nightpay status  -- config + bridge + connectivity check",
-  "  /nightpay wallet  -- optional midnight-wallet-cli status",
+  "  /nightpay status   -- config + bridge + connectivity check",
+  "  /nightpay schedule [pool|job|--all] -- policy windows, milestones, deadlines",
+  "  /nightpay wallet   -- optional midnight-wallet-cli status",
   "  /nightpay wallet help -- install + MCP wiring hints",
-  "  /nightpay help    -- this message",
-  "  /nightpay <task>  -- delegate task to nightpay skill",
+  "  /nightpay help     -- this message",
+  "  /nightpay <task>   -- delegate task to nightpay skill",
   "",
   "DOCS (refreshed on every gateway_start)",
   "  skills/nightpay/SKILL.md              -- full tool reference, trust model",
@@ -631,6 +644,21 @@ const plugin = {
 
         if (args === "help") return { text: OPERATING_MODEL };
         if (args === "wallet help") return { text: WALLET_CLI_HELP };
+        if (args === "schedule" || args.startsWith("schedule ")) {
+          const scheduleArgs = args.slice("schedule".length).trim();
+          const gwArgs = ["schedule"];
+          if (scheduleArgs) gwArgs.push(...scheduleArgs.split(/\s+/).filter(Boolean));
+          const res = runCommand("bash", [GATEWAY_SH, ...gwArgs], 15000);
+          if (!res.ok) {
+            return {
+              text:
+                `/nightpay schedule failed (exit ${res.status}).\n` +
+                (res.stderr ? `stderr: ${res.stderr.split("\n").slice(-5).join("\n")}\n` : "") +
+                `Manual run: bash ${GATEWAY_SH} schedule${scheduleArgs ? ` ${scheduleArgs}` : ""}`,
+            };
+          }
+          return { text: res.stdout || "(no schedule output)" };
+        }
         if (args === "wallet provision" || args.startsWith("wallet provision ")) {
           const parts = args.split(/\s+/).filter(Boolean);
           const requestedNetwork = parts[2] || "";
@@ -680,7 +708,7 @@ const plugin = {
 
           return {
             text:
-              `NightPay v0.3.11\n\n` +
+              `NightPay v0.4.6\n\n` +
               `Masumi (MIP-003)\n` +
               `  API:     ${apiUrl}\n` +
               `  Key:     ${env.MASUMI_API_KEY ? "set" : "MISSING"}\n\n` +

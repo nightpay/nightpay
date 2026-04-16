@@ -4,7 +4,7 @@ description: Primarily for OpenClaw agents. Anonymous community bounty pools —
 license: AGPL-3.0-only
 compatibility: "openclaw, acp, claude-code, cursor, copilot"
 allowed-tools: Bash
-metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.4.0"}
+metadata: {"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","sha256sum"],"env":["MASUMI_API_KEY","OPERATOR_ADDRESS","NIGHTPAY_API_URL","BRIDGE_URL"]},"primaryEnv":"MASUMI_API_KEY","os":["darwin","linux"]},"category":"payments","blockchain":"midnight, cardano","agent-layer":"masumi","version":"0.4.6"}
 ---
 
 # nightpay
@@ -46,6 +46,7 @@ NightPay includes `HEARTBEAT.md` for scheduled OpenClaw heartbeat runs.
 
 - Heartbeat contract: return `HEARTBEAT_OK` when nothing needs attention.
 - Default focus: API `/availability`, bridge `/health` (when `BRIDGE_URL` is set), work-queue deltas, and daily skill version freshness.
+- **Runner:** `bash skills/nightpay/scripts/heartbeat.sh` or `npx nightpay heartbeat` — implements the checklist with persisted state (consecutive failures, job deltas, daily GitHub `SKILL.md` version compare).
 - Keep heartbeat delivery silent by default or route to last active channel via `openclaw.json`.
 
 Example:
@@ -63,6 +64,26 @@ Example:
   }
 }
 ```
+
+## Timeline & Notifications
+
+Agents do not need to memorise deadline constants — the skill exposes them at runtime.
+
+- **Ask the schedule command** — `bash skills/nightpay/scripts/gateway.sh schedule` returns `policy_windows`, `milestones`, and `notifications` as JSON. Pass a pool commitment, a job id, or `--all` to include per-entity deadlines with `seconds_remaining` / `hours_remaining` / `expired`.
+- **Let the heartbeat tell you** — `bash skills/nightpay/scripts/heartbeat.sh` (or `npx nightpay heartbeat`) runs a **deadline radar** over active jobs and raises bucketed alerts at `lt_6h`, `lt_1h`, and `expired`. Duplicate alerts are suppressed by the heartbeat state file.
+- **Milestones** — heartbeat raises a one-shot notification within 30 days of `MIDNIGHT_MAINNET_DATE` (default `2026-03-30T00:00:00Z`). Use it as the trigger to walk the mainnet migration checklist in `docs/AGENT_PLAYGROUND.md` §17.
+
+**Default policy windows** (`gateway.sh schedule`):
+
+| Window | Default | Override |
+|---|---|---|
+| Pool funding deadline | 72h | `DEFAULT_POOL_DEADLINE_HOURS` |
+| Contest vote window | 24h | per-job `contest.vote_window_hours` |
+| Optimistic approval | 48h | `OPTIMISTIC_WINDOW_HOURS` |
+| Unclaimed-refund threshold | 24h | `UNCLAIMED_REFUND_HOURS` |
+| Masumi escrow timeout | 60m | `ESCROW_TIMEOUT_MINUTES` |
+| Multisig threshold (specks) | 1,000,000 | `MULTISIG_THRESHOLD_SPECKS` |
+| Emergency-refund tx delta | 500 | contract constant |
 
 ## Ledger Compatibility
 
@@ -223,6 +244,14 @@ Annotations: `{ readOnly: true, destructive: false, idempotent: true }`
 Required params: `message` (string), `mode` (string: "general", "onboarding", "troubleshooting")
 Returns: `{ reply, actions, intent }`
 MIP-003 endpoint: `POST /management/chat`
+Annotations: `{ readOnly: true, destructive: false, idempotent: true }`
+
+
+**schedule** — Fetch current policy windows, milestones, and calculated deadlines for a pool, a job, or every active job.
+Required params: none (all targets optional)
+Optional params: `poolCommitment` (64-char hex), `jobId` (string), `all` (boolean)
+Returns: `{ now, network, policy_windows, milestones, notifications, pool?, job?, jobs? }` — per-entity objects include `seconds_remaining` and `hours_remaining` for each deadline.
+Local command: `bash skills/nightpay/scripts/gateway.sh schedule [pool|job|--all]`
 Annotations: `{ readOnly: true, destructive: false, idempotent: true }`
 
 
