@@ -27,6 +27,8 @@ Last updated: 2026-04-16 (skill distribution single-source-of-truth added)
 
 **Docker:** Do not run a second Caddy container bound to **80/443** if the host already runs Caddy (port bind fight + restart loops).
 
+**Caddy read path for `ui/dist`:** Caddy runs as its own OS user (`caddy:caddy`), so `/opt/nightpay` **must** be mode `drwx---r-x` (or wider) and every directory on the path to `ui/dist/` must be world-executable for Caddy to traverse. After any tar/rsync that resets the mode to `700` (owner-only), re-apply `chmod o+rx /opt/nightpay && chmod -R o+rX /opt/nightpay/ui/dist`. `bin/deploy-hetzner-ci.sh` does this automatically after each UI build; the public deploy gate validates by checking `https://nightpay.dev/` and `https://board.nightpay.dev/` both return **200**.
+
 Details for your operator machine belong in the private runbook `docs/HETZNER_X86_RUNBOOK.md` (gitignored).
 
 ### One Caddy, many sites (host-based routing)

@@ -252,9 +252,20 @@ if [[ "$SKIP_NPM_INSTALL" != "1" ]]; then
   su - deploy -c "cd '$REMOTE_DIR' && npm install --no-audit --no-fund"
   if [[ -f "$REMOTE_DIR/ui/package.json" ]]; then
     su - deploy -c "cd '$REMOTE_DIR/ui' && npm install --no-audit --no-fund"
+    # Build static bundle for Caddy (serves from ui/dist/ on nightpay.dev + board.nightpay.dev).
+    # Without this, Vite dev-server is the only path — but Caddy does not proxy 3333, so
+    # the public site returns 403 when dist/ is missing.
+    su - deploy -c "cd '$REMOTE_DIR/ui' && npm run build"
   else
     echo "WARN: $REMOTE_DIR/ui/package.json missing; skipping UI npm install."
   fi
+fi
+
+# Caddy runs as its own user and must traverse $REMOTE_DIR to serve ui/dist/.
+# Sync can reset mode to 700; grant world read+execute so file_server works.
+chmod o+rx "$REMOTE_DIR" || true
+if [[ -d "$REMOTE_DIR/ui/dist" ]]; then
+  chmod -R o+rX "$REMOTE_DIR/ui/dist" || true
 fi
 
 if [[ ! -f "$REMOTE_DIR/.agent-playground.env" ]]; then
