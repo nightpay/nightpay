@@ -119,3 +119,10 @@ git submodule update --init --recursive
 If you skip submodule commits and only push root, teammates/CI will not get your UI or bridge file changes.
 They will only get whichever submodule commit SHA root points to.
 
+## Shipping the result to production
+
+Pushing the root pointer commit above only lands the code on `origin/master` (or `staging`) — it does **not** automatically reach Hetzner unless CI is wired up and green. For the full flow from "I pushed the submodule pointer" to "production returns 200", see:
+
+- **`docs/ADJUSTMENT_DEPLOY_CHECKLIST.md` §6** — pushing a working/sync branch into production via `.github/workflows/deploy-hetzner.yml`, including how to reconcile a drifted local `master` and how to read the CI job steps without `gh auth`.
+- **`docs/ADJUSTMENT_DEPLOY_CHECKLIST.md` §7** — troubleshooting when the production gate fails (403 from Caddy perms, port conflicts from stale PIDs, CRLF in env files after Windows deploys, stale `ui/dist/`).
+
