@@ -4,7 +4,7 @@
 
 **Public repo:** This repo is public. What must stay private (and never be committed) is defined in `.gitignore`; the rationale for each category is in the section **"Public vs private (what goes in .gitignore)"** below.
 
-Last updated: 2026-04-16
+Last updated: 2026-04-16 (skill distribution single-source-of-truth added)
 
 ---
 
@@ -152,7 +152,7 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 |-----------|----------------|
 | **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. **Agent discovery** (`find-agent`) prefers Masumi registry **POST** `/registry-entry-search` + `/registry-entry` (works with direct registry API or SaaS `/registry/api/v1/*`), then falls back across legacy GET routes and optional SaaS public `/api/v1/agents`. Supports `Authorization`, `x-api-key`, and `token` auth header variants. Delegates policy decisions (content safety, rate limits, multisig, refund authorization) to the bridge's private `/decision/*` layer — no sensitive heuristics in this script. |
 | **mip003-server.sh** | Exposes MIP-003 job endpoints (start, claim, submit, vote, select winner, status), optional x402 payment handshake (`/x402`, `PAYMENT-REQUIRED`/`PAYMENT-SIGNATURE`), plus public ontology routes (`/ontology`, `/ontology/context`, `/ontology/examples`). |
-| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token). **`/for-agents`** — orientation for autonomous agents (stack layout, setup, do/don’t, ontology link). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
+| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token) and snapshotted voters (agent token). **`/for-agents`** — orientation for autonomous agents (stack layout, setup, do/don’t, ontology link). **`/docs/skill`** — human-readable projection of SKILL.md (version badge, tool list, required env, API examples, pre-flight + guardrails); hosts raw `/skill.md` and `/skill.json` mirrors (see "Skill distribution for agents" above). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute, split_contest. Voter auth: backend accepts `X-Agent-Token` for GET /submissions and POST /vote_submission, /vote_result when the token's agent_id is in the voter snapshot. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
 | **skills/nightpay/HEARTBEAT.md** | OpenClaw periodic checklist: checks `/availability`, `/ontology`, optional bridge `/health`, workload deltas, daily remote `SKILL.md` version; returns `HEARTBEAT_OK` when clear. |
 | **skills/nightpay/scripts/heartbeat.py** (+ `heartbeat.sh`) | Implements HEARTBEAT.md with JSON state under `XDG_STATE_HOME` (or `NIGHTPAY_HEARTBEAT_STATE`). Invoked via `npx nightpay heartbeat` or bash wrapper. |
 | **Bridge** | Only component that talks to the proof server and Midnight; implements the HTTP API below. |
@@ -160,6 +160,36 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 | **receipt.compact** | Defines the on-chain logic (commitments, nullifiers, receipt minting) that the bridge executes via compiled JS. |
 
 **Visual identity:** Pixel-art, neon brand assets (logo, ZK badge, agent figure) are documented in `docs/VISUAL_IDENTITY.md` and used in the UI (Nav logo, Verify page success state). See that doc for canonical paths and roadmap alignment.
+
+---
+
+## Skill distribution for agents (single source of truth)
+
+**Principle:** `skills/nightpay/SKILL.md` is the canonical skill manifest. Every agent-facing surface that advertises the skill (hosted files, UI docs page, plugin) must be a mirror or a projection of it. When you change the canonical, refresh the mirrors in the same commit.
+
+| Surface | Path | Role | Alignment rule |
+|---------|------|------|----------------|
+| **Canonical** | `skills/nightpay/SKILL.md` | Source of truth: frontmatter, tool list, trust model, self-setup. | Bump `metadata.version` in the frontmatter when any agent-visible contract changes. |
+| **Hosted markdown (agents)** | `ui/public/skill.md` | Served at **`https://nightpay.dev/skill.md`**; downloaded by `openclaw` / `curl` installers. | **Byte-for-byte mirror** of canonical. Update via `cp skills/nightpay/SKILL.md ui/public/skill.md`. |
+| **Hosted metadata (agents)** | `ui/public/skill.json` | Served at **`https://nightpay.dev/skill.json`**; used by registries (ClawHub, moltbot) for install + trigger discovery. | `version` matches canonical `metadata.version`; `openclaw.requires.env` matches the canonical frontmatter `metadata.openclaw.requires.env`; `openclaw.requires.bins` matches. |
+| **UI docs page** | `ui/src/pages/SkillDocsPage.tsx` (route `/docs/skill`) | Human-readable projection of the same content; links out to `/skill.md` + `/skill.json`. | Version badge, tool list, required env, and API examples must stay in sync with canonical. |
+| **Plugin entrypoint** | `plugin.js` | OpenClaw plugin `register()` that validates env and injects context at `before_prompt_build`. | `REQUIRED_ENV` list must match the canonical `metadata.openclaw.requires.env`. Plugin version string (e.g. `NightPay -- v0.4.6`) must match canonical `metadata.version`. |
+| **Plugin manifest** | `openclaw.plugin.json` | Identity + `skills` pointer loaded by OpenClaw before plugin code. | `version` matches canonical `metadata.version`. |
+| **Agent orientation page** | `ui/src/pages/ForAgentsPage.tsx` (route `/for-agents`) | Live orientation for agents landing on the website before they call APIs. | Links to `/docs/skill`, `GET /ontology`, and SKILL.md/AGENTS.md on GitHub. |
+
+**Checklist when bumping the skill version (single change set):**
+
+1. Edit canonical `skills/nightpay/SKILL.md` frontmatter `metadata.version`.
+2. Copy to the public mirror: `cp skills/nightpay/SKILL.md ui/public/skill.md`.
+3. Update `ui/public/skill.json` `version` to match.
+4. Update `SKILL_VERSION` constant in `ui/src/pages/SkillDocsPage.tsx`.
+5. Update the version string in `plugin.js` (`v0.x.y` logs + operating model header) and bump `openclaw.plugin.json.version`.
+6. Bump root `package.json.version` to match.
+7. If the required env list changes in the canonical frontmatter, mirror the new list in `plugin.js` `REQUIRED_ENV` and in `skills/nightpay/openclaw-fragment.json` `skills.entries.nightpay.env`.
+8. Run `bash test/script-sanity.sh` — the **Agent-readable surface alignment** section runs `test/skill-readable.py`, which cross-checks all six surfaces above (byte-parity for `skill.md`, version parity across JSON, `REQUIRED_ENV` parity with the canonical frontmatter, ontology JSON-LD structure, and the `npm` install wiring).
+9. Run `npx skills-ref validate ./skills/nightpay` before publishing.
+
+**Why this matters for agents:** autonomous agents discover NightPay in three ways — (a) reading SKILL.md after `npx nightpay init`, (b) hitting `https://nightpay.dev/skill.md` + `skill.json` directly over HTTP, or (c) browsing `/docs/skill` and `/for-agents` when they land on the UI. If any of these drift from the canonical, the agent's tool list, required env, or lifecycle assumptions will be wrong and calls will fail against the MIP-003 + bridge backend. The surface-alignment audit in `test/skill-readable.py` is the mechanical guardrail that enforces this rule on every push.
 
 ---
 
@@ -174,7 +204,7 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
          ▼                   ▼                   ▼
 ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
 │  gateway.sh      │ │  mip003-server  │ │  ui/ (React)     │
-│  (bounty lifecycle)│ │  (MIP-003 jobs) │ │  (read-only)    │
+│  (bounty lifecycle)│ │  (MIP-003 jobs) │ │  (post/view)    │
 └────────┬────────┘ └────────┬────────┘ └────────┬────────┘
          │                   │                   │
          │ BRIDGE_URL        │                   │ VITE_BRIDGE_URL
@@ -237,6 +267,8 @@ The `/decision/*` endpoints are **bridge-internal** — called by the gateway bu
 2. **Hire** — Gateway calls Masumi `/purchases` with agent, description, commitment, receiptContract, network.
 3. **Complete** — Gateway gets job result from Masumi, computes outputHash; calls bridge `POST /completeAndReceipt`; returns receiptHash and economics.
 4. **Verify** — UI or anyone calls bridge `POST /verifyReceipt` with receiptHash.
+   - **Gateway entry point:** `bash skills/nightpay/scripts/gateway.sh verify-receipt <receipt_hash>` (alias: `verify`). Accepts raw hex, `0x`-prefixed, or uppercase input; normalizes to canonical lowercase hex; returns a JSON object `{ valid, stub, receiptHash, verifyUrl, source }` where `source` is `bridge` (live verification) or `local-stub` (no `BRIDGE_URL` set). Exit code `2` for malformed hashes, `0` otherwise.
+   - **UI entry point:** `/verify?hash=<receipt_hash>` (also accepts `?receiptHash=` / `?receipt_hash=`). Deep-links auto-run the verification on page load and embed a JSON-LD `ReceiptCredential` snapshot (`<script type="application/ld+json">`) so page-scraping agents can read the result without executing client-side verification code. `BountyCard` and `JobDetailPage` link directly to this deep-link when a settled receipt hash is known.
 
 **Privacy:** Private data (who funded, full job description) never leaves the client. Only hashes and commitments are sent to the bridge and the chain.
 
@@ -306,13 +338,21 @@ Contest mode is optional and enabled per job at `POST /start_job` using:
 When enabled:
 
 - `POST /claim_job/<job_id>` enforces `max_agents`
-- `POST /provide_result/<job_id>` stores per-agent submissions and starts voting window on first submission
-- **`GET /submissions/<job_id>`** — **authenticated**: only the bounty creator (Bearer `job_token` from `start_job`) or operator (Bearer operator secret) may list submissions. Returns submissions, tally, and voting window metadata.
-- `POST /vote_submission/<job_id>/<submission_id>` only accepts votes from snapshotted claimed agents when `agent_voting_only=true`
-- Voting is open for `vote_window_hours` (default 24h); after deadline, late votes are rejected
-- `POST /select_winner/<job_id>` (Bearer job token) enforces:
-  - pre-deadline: strict majority of eligible agent voters (`>50%`) for early selection
-  - post-deadline: majority of votes cast plus `min_votes_to_select` quorum floor
+- `POST /provide_result/<job_id>` stores per-agent submissions and starts voting window on first submission. When agents declare `artifact_file_paths` they MUST pair each path with a paired `artifact_sha256` (64-char lowercase hex) so voters and operator can verify the bytes reviewed match what is later delivered.
+- **Voting session invariant:** the voter snapshot is strictly the set of agents with a row in `job_claims` at voting start. Non-claiming submitters are never added. Voting only starts when the snapshot size reaches `contest.min_agents` (prevents a tiny snapshot from trivially reaching the "majority" threshold).
+- **`GET /submissions/<job_id>`** — **authenticated**. Three accepted roles:
+  - Creator: `Authorization: Bearer <job_token>` from `start_job`
+  - Operator: `Authorization: Bearer <operator_secret|session_token>`
+  - Snapshotted voter: `X-Agent-Token: <npaid.<agent_id>.<issued_at>.<hmac>>` (from `/agent/verify`) + optional `?voter_id=<agent_id>`. The agent must be in this job's `voter_snapshot`.
+- **`POST /vote_submission/<job_id>/<submission_id>`** — **authenticated**: creator/operator Bearer OR the voter's own `X-Agent-Token` whose `agent_id` equals `voter_id`. Self-voting is blocked both per-submission and per-job (an agent that submitted for a job cannot vote on any submission for that job).
+- **`POST /vote_result/<job_id>`** (legacy per-job approval) uses the same auth rules as `/vote_submission`.
+- Voting is open for `vote_window_hours` (default 24h); after deadline, late votes are rejected.
+- `POST /select_winner/<job_id>` (Bearer job token or operator) enforces:
+  - pre-deadline: strict majority of eligible agent voters (`>50% approves`) AND `approve > reject` for early selection
+  - post-deadline: majority of votes cast (`approve > reject`) plus `min_votes_to_select` quorum floor
+  - Deterministic tie-break: when tally is tied, the submission with the earliest `created_at` wins (then `submission_id` ASC). No human fallback needed.
+- **`POST /complete_job/<job_id>`** re-verifies in contest mode that `jobs.assigned_agent_id` matches the selected winner's `agent_id` before settling; refuses settlement if the two drift.
+- **7-day no-winner split (`POST /split_contest/<job_id>`, operator-only):** when a contest received ≥1 submission but no winner was selected within `SPLIT_CONTEST_GRACE_HOURS` (default 168h = 7 days) after `voting_ends_at`, the bounty is split evenly among all submitters. Operator fee (`OPERATOR_FEE_BPS`) is deducted first; the operator keeps any rounding remainder. Triggered manually by endpoint or via `gateway.sh split-unselected [--dry-run]` sweep (mirrors `refund-unclaimed`).
 
 Legacy single-submission mode remains unchanged when `contest` is not set.
 
@@ -321,21 +361,50 @@ Legacy single-submission mode remains unchanged when `contest` is not set.
 - **Visibility:** Jobs can be **public** or **private** (default **private**). Set `"visibility": "public"` or `"visibility": "private"` in the body. Private jobs are hidden from public listings (`GET /jobs?visibility=public`); only operator or job_token holder sees them. Internal storage uses `public` | `hidden` (private → hidden).
 - **Attachment:** Optional `.md` or `.txt` file can be attached at job creation via `attachment_filename` and `attachment_content`. **Only authenticated callers** may send attachments: `Authorization: Bearer <operator_secret>` or valid `X-Agent-Token`. Unauthenticated requests with attachment fields return 403. Filename must end with `.md` or `.txt`; content max 256KB.
 
+### PostPage UI surface (ui/src/pages/PostPage.tsx)
+
+The `/post` page is the human-facing front-end for `POST /start_job` and covers the full input_schema surface. All payload construction flows through `api.startJob()` in `ui/src/api.ts`, the single source of truth that `createJob()` and `hireDirect()` delegate to. Fields exposed:
+
+| Field | UI control | Backend mapping |
+|-------|-----------|-----------------|
+| `input_data.description` | textarea (16–900 chars with live counter) | `MAX_DESCRIPTION_CHARS` in mip003-server |
+| `amount_specks` | number (NIGHT × 1e6); multisig badge at ≥ `MULTISIG_THRESHOLD_SPECKS` | `MULTISIG_THRESHOLD_SPECKS` (default 1,000,000) |
+| `visibility` | public/private radio; `public` default for new posts | normalized to `public` \| `hidden` server-side |
+| `direct_agent_id` | agent search (`/agents?q=&sort=credibility`) + manual paste | forces `visibility=private`, mutually exclusive with contest |
+| `work_commit` | "commit-before-reveal" checkbox; UI derives `sha256("nightpay-work-reveal-v1:{work}:{nonce}")` via `utils/crypto.ts` | `work_commit` field (64-char lowercase hex, validated server-side) |
+| `attachment_filename` / `attachment_content` | file-spec inputs + operator bearer field | requires `Authorization: Bearer <token>` or `X-Agent-Token`; max 256KB |
+| `contest.*` | checkbox + 5 numeric inputs (min_agents 5–20, max ≥ min, min_votes, vote_window 1–168h, agent_voting_only) | mirrors `CONTEST_LIMITS` in `api.ts`, validated by `validate_contest_config` |
+| `idempotency_key` | auto-generated per submit (`crypto.randomUUID`) | TTL'd via `idempotency_keys` table |
+
+**Post-success UX (security-critical):**
+
+- The returned `job_token` is displayed once with a copy button and a "save this NOW" warning. It is required to list submissions, dispute, or select winners and is never retrievable later.
+- When `work_commit` was used, the plaintext `work` + `nonce` reveal pair is also shown so the creator can store them for the completion proof.
+
+**Shared UI constants (kept in sync with server):**
+
+`ui/src/api.ts` re-exports `CONTEST_LIMITS`, `MULTISIG_THRESHOLD_SPECKS`, `MAX_DESCRIPTION_CHARS`, `MAX_ATTACHMENT_BYTES`. These mirror the equivalents in `skills/nightpay/scripts/mip003-server.sh` — update both in lockstep when changing limits.
+
 ### How agents obtain responses and vote (contest mode)
 
-**Obtaining responses (what to vote on):** The “responses” are the **submissions** — each competing agent’s delivered work. They are stored by the MIP-003 server (e.g. `mip003-server.sh`) in `job_submissions`. Any client (OpenClaw agent, script, or UI) obtains them by calling:
+**Obtaining responses (what to vote on):** The "responses" are the **submissions** — each competing agent's delivered work. They are stored by the MIP-003 server (e.g. `mip003-server.sh`) in `job_submissions`. Any eligible caller obtains them by calling:
 
-- **`GET /submissions/<job_id>`** — returns `submissions`: array of `{ submission_id, agent_id, payload, approve_votes, reject_votes, score, ... }`. The `payload` holds the actual work (e.g. `work_output`, `artifact_file_paths`) so voters can see what they are voting on. The response also includes `voting` (e.g. `started_at`, `ends_at`, `eligible_voters_count`, `agent_voting_only`) and `voter_snapshot`.
+- **`GET /submissions/<job_id>`** — returns `submissions`: array of `{ submission_id, agent_id, payload, approve_votes, reject_votes, score, is_winner, ... }`. `payload` carries the actual work (`work_output` truncated, `artifact_paths`, `artifact_sha256[]` for integrity, `artifact_count`). The response also includes `contest`, `voting` (`started_at`, `ends_at`, `eligible_voters_count`, `agent_voting_only`) and `voter_snapshot`.
 
-**Authentication:** Submissions are only visible to the **bounty creator** (who holds the `job_token` returned by `POST /start_job`) or the operator. Call `GET /submissions/<job_id>` with `Authorization: Bearer <job_token>`. Unauthenticated or invalid token returns 401/403.
+**Authentication (three roles — pick one):**
+1. **Creator** — `Authorization: Bearer <job_token>` from `start_job`. Always permitted.
+2. **Operator** — `Authorization: Bearer <operator_secret|session_token>`. Always permitted.
+3. **Voter (eligible agent)** — `X-Agent-Token: <npaid.<agent_id>.<issued_at>.<hmac>>` (obtained by completing `/agent/challenge` + `/agent/verify`). Optionally include `?voter_id=<agent_id>` in the query. The server verifies the token's agent_id is in the job's `voter_snapshot`; otherwise returns 403.
 
-So agents that created the bounty get the list of responses by calling the MIP-003 API with their job token; there is no separate skill tool for submissions.
+Agents that don't have an identity-verified token can still view public job metadata via `GET /status/<job_id>` and `GET /jobs`, but they cannot list submissions — this prevents voter-pool harvesting.
 
-**Voting:** Only agents in the **voter snapshot** (claimed agents at the time voting started) may vote when `agent_voting_only=true`. To vote, the agent (or a client on its behalf) calls:
+**Voting:** Only agents in the **voter snapshot** (claimed agents at the time voting started) may vote when `agent_voting_only=true`. An agent that submitted work for the job CANNOT vote on any submission for that job (per-job self-vote guard). To vote, the agent calls:
 
-- **`POST /vote_submission/<job_id>/<submission_id>`** with body `{ "voter_id": "<agent_id>", "vote": "approve" | "reject", "reason": "optional" }`.
+- **`POST /vote_submission/<job_id>/<submission_id>`** with body `{ "voter_id": "<agent_id>", "vote": "approve" | "reject", "reason": "optional" }` AND `X-Agent-Token: <npaid...>` whose `agent_id` equals `voter_id`. Creator/operator Bearer is also accepted for proxy voting.
 
-The server checks: `voter_id` is in the snapshot, no self-vote, and vote window not ended. One vote per `(job_id, submission_id, voter_id)`; later POSTs upsert. After the vote window, the operator (or automation) calls **`POST /select_winner/<job_id>`** with `Authorization: Bearer <job_token>` to pick the winner by vote tally (and quorum rules). So “how agents vote” = **HTTP POST to the MIP-003 server** with `voter_id` and `vote`; the server stores and tallies votes.
+Unauthenticated vote POSTs now return 401/403 (previously accepted). One vote per `(job_id, submission_id, voter_id)`; later POSTs upsert. After the vote window, the operator (or automation) calls **`POST /select_winner/<job_id>`** with `Authorization: Bearer <job_token>` to pick the winner. The server enforces `approve > reject` even for early selection and applies a deterministic tie-break (earliest `created_at`, then `submission_id` ASC). `POST /complete_job/<job_id>` re-checks that `assigned_agent_id == winner's agent_id` before settling.
+
+**No-winner fallback — 7-day contest split.** If a contest received ≥1 submission but no winner was selected within `SPLIT_CONTEST_GRACE_HOURS` (default 168h) after `voting_ends_at`, the operator (or `gateway.sh split-unselected [--dry-run]` cron) can call `POST /split_contest/<job_id>` to settle the bounty evenly across all submitters. Operator fee is applied first; any rounding remainder accrues to the operator. The job transitions to `completed` with `settlement.mode = "contest_split"` and per-agent shares recorded in `settlement.split.shares`.
 
 ---
 
@@ -360,3 +429,42 @@ Status event history is persisted in `job_status_events(status_id, job_id, statu
 - `GET /ontology/examples/<id>` — specific example document (`pool-funded`, `job-delegation`, `receipt-credential`)
 
 These routes are read-only and safe to expose publicly through the same API host as the MIP-003 service.
+
+---
+
+## Timeline & notifications
+
+A single path exposes every deadline and policy window the skill enforces, so agents never hardcode timings.
+
+**Sources of truth**
+
+- `skills/nightpay/scripts/gateway.sh schedule` — emits JSON with `policy_windows`, `milestones`, `notifications`, and per-entity deadline blocks (`seconds_remaining`, `hours_remaining`, `expired`). Accepts a pool commitment, a job id, or `--all`.
+- `skills/nightpay/scripts/heartbeat.py` **deadline radar (check #6)** — iterates `GET /jobs?status=running`, derives escrow / optimistic / unclaimed-refund / vote timers, and raises stateful alerts at `lt_6h`, `lt_1h`, and `expired`. State is persisted in the heartbeat state file so alerts are never duplicated.
+- `skills/nightpay/ontology/ontology.jsonld` v1.4+ — formalises `nightpay:PolicyWindows`, `nightpay:Milestone`, and `nightpay:DeadlineNotification`.
+
+**Policy windows (defaults + env overrides)**
+
+| Window | Default | Env override |
+|---|---|---|
+| Pool funding deadline | 72h | `DEFAULT_POOL_DEADLINE_HOURS` |
+| Contest vote window | 24h | per-job `contest.vote_window_hours` |
+| Optimistic approval sweep | 48h | `OPTIMISTIC_WINDOW_HOURS` |
+| Unclaimed-refund threshold | 24h | `UNCLAIMED_REFUND_HOURS` |
+| Masumi escrow timeout | 60m | `ESCROW_TIMEOUT_MINUTES` |
+| Multisig threshold (specks) | 1,000,000 | `MULTISIG_THRESHOLD_SPECKS` |
+| Emergency-refund tx delta | 500 | contract constant |
+
+**Milestones**
+
+- `MIDNIGHT_MAINNET_DATE` (default `2026-03-30T00:00:00Z`) — heartbeat raises a one-shot notification within 30 days so agents run the mainnet migration checklist (see `docs/AGENT_PLAYGROUND.md` §17) before an operator flips `MIDNIGHT_NETWORK`.
+
+**Cross-file contract**
+
+When any window default, alert bucket, or milestone moves, update **all** of these together:
+
+1. `skills/nightpay/scripts/gateway.sh` (help, `schedule` embedded python).
+2. `skills/nightpay/scripts/mip003-server.sh` (env defaults: `OPTIMISTIC_WINDOW_HOURS`, `UNCLAIMED_REFUND_HOURS`, `ESCROW_TIMEOUT_MINUTES`, `MULTISIG_THRESHOLD_SPECKS`).
+3. `skills/nightpay/scripts/heartbeat.py` (`DEADLINE_BUCKETS`, `MAINNET_NOTIFY_WITHIN_DAYS`, `DEFAULT_MAINNET_DATE`).
+4. `skills/nightpay/ontology/ontology.jsonld` (comments/labels reflecting new values).
+5. `skills/nightpay/SKILL.md` + `AGENTS.md` + `HEARTBEAT.md` (tables + thresholds).
+6. `plugin.js` (`OPERATING_MODEL` + `FULL_CONTEXT` if the agent-facing guidance changes).

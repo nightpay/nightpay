@@ -2,8 +2,12 @@
   "id": "nightpay",
   "name": "NightPay",
   "description": "Anonymous community bounty pools \u2014 Midnight ZK proofs + Masumi settlement + Cardano finality. Skills auto-loaded from skills/nightpay/.",
-  "version": "0.4.5",
-  "configSchema": {},
+  "version": "0.4.6",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
   "skills": [
     "skills/nightpay"
   ]

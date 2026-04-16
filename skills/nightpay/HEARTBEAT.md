@@ -57,6 +57,18 @@ Only report new or actionable changes.
 - Check `https://raw.githubusercontent.com/nightpay/nightpay/master/skills/nightpay/SKILL.md`
 - If `metadata.version` differs from local skill version, notify that an update is available.
 
+6) Deadline radar (per run)
+- Query `GET ${NIGHTPAY_API_URL}/jobs?status=running&limit=50` and derive per-job timers
+  from `started_at` + `approved_at` combined with policy windows published by
+  `gateway.sh schedule` (`escrow_timeout_minutes`, `optimistic_approval_hours`,
+  `unclaimed_refund_hours`, vote window from `/submissions/<job_id>` when present).
+- Alert when any timer crosses **6h** or **1h** remaining, or when a timer has
+  **expired** (e.g. escrow timeout, optimistic autocomplete, unclaimed refund).
+- Suppress duplicate notifications: state file records `{job_id, timer, bucket}`
+  so the same "<6h" alert fires at most once per bucket per job.
+- Also reports the Midnight mainnet (Kūkolu) milestone once within **30 days**
+  of `MIDNIGHT_MAINNET_DATE` (default `2026-03-30T00:00:00Z`).
+
 ## Alert format
 
 When alerting, keep it short:
@@ -69,3 +81,4 @@ If multiple alerts exist, order by severity:
 2. bridge/init issues
 3. new work spikes
 4. version update
+5. deadline radar (expired timers > 1h window > 6h window)

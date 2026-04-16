@@ -137,6 +137,8 @@ json_files = [
     root / "skills/nightpay/openclaw-fragment.json",
     root / "skills/nightpay/ontology/ontology.jsonld",
     root / "skills/nightpay/ontology/context.jsonld",
+    root / "openclaw.plugin.json",
+    root / "ui/public/skill.json",
 ]
 
 examples_dir = root / "skills/nightpay/ontology/examples"
@@ -148,9 +150,22 @@ for path in json_files:
 print("ok")
 PY
 then
-  pass "json parse: skill + ontology payloads"
+  pass "json parse: skill + ontology + plugin payloads"
 else
-  fail "json parse: skill + ontology payloads"
+  fail "json parse: skill + ontology + plugin payloads"
+fi
+
+echo
+echo "== Agent-readable surface alignment =="
+# Cross-surface alignment: SKILL.md frontmatter <-> ui/public/skill.md (byte parity)
+# <-> ui/public/skill.json (version + requires) <-> openclaw.plugin.json (version)
+# <-> plugin.js (REQUIRED_ENV) <-> openclaw-fragment.json (env keys) <-> package.json.
+# Run the single source-of-truth audit from docs/architecture.md § Skill distribution.
+if "$PYTHON_BIN" "$ROOT_DIR/test/skill-readable.py" >/dev/null 2>&1; then
+  pass "skill surface alignment: SKILL.md, skill.md, skill.json, plugin.js, manifests"
+else
+  fail "skill surface alignment: SKILL.md, skill.md, skill.json, plugin.js, manifests"
+  "$PYTHON_BIN" "$ROOT_DIR/test/skill-readable.py" || true
 fi
 
 echo

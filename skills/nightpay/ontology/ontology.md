@@ -31,6 +31,9 @@ Agents can call **`GET /ontology`** and **`GET /ontology/context`** to get the J
 | **Agent** | An autonomous system that claims and performs NightPay work. |
 | **FundingCommitment** | A private contribution commitment represented only by hashes. |
 | **EncryptedWalletMemory** | OpenShart-protected seed/mnemonic record referenced by `memoryId` (no plaintext secret in chat). |
+| **PolicyWindows** | Machine-readable timing policy (pool deadline, vote window, escrow timeout, optimistic approval, unclaimed-refund threshold, multisig threshold, emergency-refund tx delta). Returned by `gateway.sh schedule`. |
+| **Milestone** | A dated event that affects NightPay behaviour (for example Midnight mainnet Kūkolu cutover). |
+| **DeadlineNotification** | A heartbeat alert raised when a timer crosses one of the configured buckets (6h, 1h, expired). |
 
 ---
 
@@ -218,6 +221,33 @@ Expected behavior:
 - Stores `seed` + `mnemonic` in OpenShart (`NIGHTPAY_FUNDING`)
 - Returns only: address, network, seed fingerprint, and `memoryId`
 - Never prints plaintext seed or mnemonic to the chat
+
+---
+
+## Timeline & notifications
+
+Every NightPay timer now has a **single machine-readable source of truth**:
+
+- `bash skills/nightpay/scripts/gateway.sh schedule` — global `policy_windows` + `milestones` + `notifications`
+- `gateway.sh schedule <pool_commitment>` — adds per-pool `deadline` with `seconds_remaining` / `hours_remaining` / `expired`
+- `gateway.sh schedule <job_id>` — adds `voting_ends`, `escrow_timeout`, `unclaimed_refund_at`, and `optimistic_autocomplete_at` for the job
+- `gateway.sh schedule --all` — scans every `running` job and returns the same per-job timers
+
+**Policy windows returned by `schedule`:**
+
+| Field | Env override | Default | What it controls |
+|-------|--------------|---------|------------------|
+| `pool_deadline_hours` | `DEFAULT_POOL_DEADLINE_HOURS` | `72` | Pool lifetime before it can be `expired` and refunded. |
+| `vote_window_hours_default` | `contest.vote_window_hours` (per-job) | `24` | Contest voting window after first submission. |
+| `optimistic_approval_hours` | `OPTIMISTIC_WINDOW_HOURS` | `48` | Delay before the operator sweep auto-completes an `awaiting_approval` job. |
+| `unclaimed_refund_hours` | `UNCLAIMED_REFUND_HOURS` | `24` | Time a `running` job with zero claims can sit before `refund-unclaimed` picks it up. |
+| `escrow_timeout_minutes` | `ESCROW_TIMEOUT_MINUTES` | `60` | Masumi escrow lifetime before an unpaid job is unwound. |
+| `multisig_threshold_specks` | `MULTISIG_THRESHOLD_SPECKS` | `1_000_000` | Bounty amount that forces M-of-N approval at completion. |
+| `emergency_refund_tx_delta` | n/a (contract constant) | `500` | Contract interactions a funder must wait before bypassing the gateway via `emergencyRefund`. |
+
+**Agent notifications:** The OpenClaw heartbeat (`npx nightpay heartbeat` / `bash skills/nightpay/scripts/heartbeat.sh`) runs a **deadline radar** over active jobs and fires bucketed alerts at `lt_6h`, `lt_1h`, and `expired`. Duplicate alerts are suppressed by the heartbeat state file, so the same timer only re-alerts when it crosses a tighter bucket. Agents should schedule heartbeat at the platform default cadence (OpenClaw `agents.defaults.heartbeat.every: "2h"`) — more frequent polling is wasteful, less frequent can miss the `lt_1h` bucket.
+
+Mainnet milestone: heartbeat raises a one-shot `DeadlineNotification` within **30 days** of `MIDNIGHT_MAINNET_DATE` (default `2026-03-30T00:00:00Z`) so agents can run through the mainnet migration checklist before an operator flips `MIDNIGHT_NETWORK`.
 
 ---
 

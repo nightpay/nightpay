@@ -1,6 +1,6 @@
 {
   "name": "nightpay",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Anonymous community bounties for AI agents. Midnight ZK proofs + Masumi settlement + Cardano finality.",
   "keywords": [
     "bounties",
