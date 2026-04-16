@@ -264,6 +264,26 @@ ls -la /opt/nightpay/ui/dist/   # check mtime of index.html
 
 If `index.html` is older than your latest commit, the build didn't run. CI from `2026-04-16` onwards always runs `npm run build` in `ui/` — if the step shows skipped, check that `ui/package.json` exists in the CI payload (submodule must have checked out).
 
+### 7.5) CI `Deploy To Hetzner` step fails but `nightpay.dev` is still green
+
+This is a legitimate state: the CI deploy is a superset of what the public site needs. The production gate guards the four public URLs, but `doctor` inside the deploy script *also* requires the Vite dev-server on `:3333` and MIP-003 on `:8090` to be healthy on the server itself. If either of those two server-side services is flaky while `ui/dist/` is fresh and Caddy traverse perms are good, you'll see:
+
+- ✅ `https://nightpay.dev/` returns **200** (Caddy serves `ui/dist/` regardless of Vite)
+- ❌ CI `Deploy To Hetzner` exits non-zero (doctor retries exhausted)
+- ⏭ CI `Validate Web Endpoints` shows `skipped` (only runs if deploy succeeded)
+
+Diagnose on the server:
+
+```bash
+ssh root@<HOST> "ss -lntp | grep -E ':(3333|8090|4000)\\b'"
+ssh root@<HOST> "tail -n 50 /opt/nightpay/.agent-playground/logs/ui.log"
+ssh root@<HOST> "tail -n 50 /opt/nightpay/.agent-playground/logs/mip003.log"
+```
+
+If Vite logs `VITE v6.4.1 ready in …` but `ss` shows nothing on `:3333`, the process died after the readiness banner — typical causes are OOM on a small instance, missing `.env` values the code tries to dereference after bind, or a stale `ui/node_modules/.vite` cache that survived the `rm -rf` step. Retrying the deploy usually clears it; if it persists, clear `~/.npm` and `ui/node_modules` on the server and re-run CI.
+
+**The key rule:** don't assume prod is down just because CI is red. Always verify with `curl https://nightpay.dev/ -o /dev/null -w '%{http_code}\n'` first. The server-side `doctor` is stricter than the public gate by design — it wants the full dev loop healthy, not just the static-build path.
+
 ## 8) Mandatory bundle for refund/discovery/dispute flow edits
 
 When adjusting 5/6/7 lifecycle paths, update together:
