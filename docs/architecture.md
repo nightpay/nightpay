@@ -4,7 +4,7 @@
 
 **Public repo:** This repo is public. What must stay private (and never be committed) is defined in `.gitignore`; the rationale for each category is in the section **"Public vs private (what goes in .gitignore)"** below.
 
-Last updated: 2026-04-15
+Last updated: 2026-04-16
 
 ---
 
@@ -198,6 +198,10 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 - **UI** is read-only; it calls the bridge for stats and receipt verification. No wallet in the browser.
 
 The bridge lives in a separate (private) repo; this repo defines *what* the bridge must expose (the API below), not the bridge code itself.
+
+### OpenClaw plugin and skills (alignment with current OpenClaw)
+
+The published npm package is both a **native-style plugin** and a **skill bundle**: `openclaw.plugin.json` supplies identity, the `skills` array (`skills/nightpay`), and a **`configSchema` that must be valid JSON Schema** — OpenClaw validates this manifest before loading plugin code ([plugin manifest](https://docs.openclaw.ai/plugins/manifest)). Runtime hooks and commands live in `plugin.js`, exported as `{ register(api) }` (the supported entry; legacy `activate` is not used). Per-skill env and secrets are configured under `skills.entries.nightpay` (`enabled`, `env`, optional `apiKey` / `config` per [skills config](https://docs.openclaw.ai/tools/skills-config)). **Skill visibility:** if an operator sets `agents.defaults.skills` or `agents.list[].skills` to a non-empty allowlist, they must include `nightpay` there or the skill will not be exposed for that agent (explicit lists replace defaults, they do not merge).
 
 ---
 

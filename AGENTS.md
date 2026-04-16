@@ -38,7 +38,10 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 - Compact compiler inside tools is v0.29.0 — `fixup --check` mode was added in 0.4.0 (use it)
 - Proof system is BLS12-381 — do NOT write Pluto-Eris code
 - `MerkleTree<25>` is our depth — max is 32, we are safe
-- Bridge SDK versions: `midnight-js-*@3.1.0`, `wallet-sdk-*@1.0.0`, `ledger-v7@7.0.1`, `compact-js@2.4.0`
+- Bridge SDK versions (enforced via `bridge/package.json` `overrides`): `midnight-js-*@3.1.0`, `ledger-v7@7.0.1`, `compact-js@2.4.2`, `compact-runtime@0.14.0`
+- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.0.0` + `wallet-sdk-hd@3.0.0` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@1.0.0` + `wallet-sdk-facade@1.0.0` + `wallet-sdk-shielded@1.0.0` + `wallet-sdk-unshielded-wallet@1.0.0` (wallet ops, v1 line). Do not unify — these are upstream's own major version split.
+- Why the `overrides`: preprod-matrix peer deps point at `compact-js@2.4.0` / `ledger-v7@7.0.0`, but we pin to the newer patch releases for bug fixes. Both patches are API-compatible with the matrix-declared majors; keep `overrides` in sync with `dependencies` when bumping.
+- Ledger 8 / `compactc-0.30.0` / `compact-v0.5.0` are **released but NOT on the preprod matrix yet** — do not upgrade the bridge SDK past ledger-7 until the preprod compatibility matrix at `docs.midnight.network/relnotes/overview` advances.
 - Proof server runs on `localhost:6300` via Docker — always local, never remote
 - **Mainnet (Kūkolu) launches last week of March 2026** — keep `preprod` default until then
 - **Midnight City simulation opens Feb 26, 2026** — good demo window before mainnet

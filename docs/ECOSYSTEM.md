@@ -2,7 +2,7 @@
 
 **Purpose:** Stay current with every project we depend on or compete with. Check this before making architectural decisions. Update when you spot version bumps, breaking changes, or new entrants.
 
-Last researched: **2026-04-15** (refresh #9 — verified `masumi-saas` HEAD `dcc1c46` on Apr 15, 2026 and aligned NightPay compatibility notes for SaaS proxy surfaces, OIDC/API auth scopes, and mainnet-aware route expectations)
+Last researched: **2026-04-16** (refresh #10 — bridge-pin reconciliation pass: synced `Current Versions` to `bridge/package.json` `overrides` (`compact-js@2.4.2`, `ledger-v7@7.0.1`, `compact-runtime@0.14.0`) and documented the v1/v3 wallet-sdk major split. Refresh #9 on 2026-04-15 verified `masumi-saas` HEAD `dcc1c46` for SaaS proxy surfaces, OIDC/API auth scopes, and mainnet-aware route expectations.)
 
 ---
 
@@ -34,7 +34,7 @@ Our `receipt.compact` runs here. Everything privacy-related depends on this.
 | [Olanetsoft/midnight-mcp](https://github.com/Olanetsoft/midnight-mcp) | 29-tool MCP server for Midnight (compile, analyze, deploy Compact via Claude, 19 ⭐) | Complementary to our skill; use when Claude Code needs to touch `receipt.compact` directly |
 | [OpenZeppelin/compact-security-detectors-sdk](https://github.com/OpenZeppelin/compact-security-detectors-sdk) | Static analysis / vulnerability scanner for Compact contracts (OpenZeppelin) | **Run on `receipt.compact` before every deployment** — AST-based, CLI, pre-built detectors |
 
-### Current Versions (updated 2026-03-20)
+### Current Versions (updated 2026-04-16 — reconciled against `bridge/package.json` `overrides`)
 
 | Component | Version | Notes |
 |---|---|---|
@@ -46,8 +46,9 @@ Our `receipt.compact` runs here. Everything privacy-related depends on this.
 | Midnight.js | 3.1.0 | [midnight-js](https://github.com/midnightntwrk/midnight-js); see [MIDNIGHT_JS_INTEGRATION.md](MIDNIGHT_JS_INTEGRATION.md) for bridge adoption options |
 | Midnight Node | 0.21.0 | Preprod compatibility matrix |
 | Midnight Indexer | 3.1.0 | Preprod compatibility matrix |
-| ledger-v7 | 7.0.0 | Preprod compatibility matrix |
-| compact-js | 2.4.0 | Preprod compatibility matrix |
+| ledger-v7 | 7.0.1 | Bridge pinned via `overrides` (matrix peer declares 7.0.0; 7.0.1 is API-compatible patch) |
+| compact-js | 2.4.2 | Bridge pinned via `overrides` (matrix peer declares 2.4.0; 2.4.2 is API-compatible patch) |
+| compact-runtime | 0.14.0 | Transitive of `compact-js@2.4.2`; installed exactly |
 | Proof Server | 7.0.0 | Preprod compatibility matrix |
 | Midnight Lace Wallet | 3.0.0 | |
 | VS Code Extension | 0.2.13 | |
@@ -515,4 +516,4 @@ Run these checks periodically (suggest: before each release, or at minimum month
 
 ---
 
-*Updated: 2026-04-15 (refresh #9). Next review: Masumi SaaS + payment-service surface recheck (~2026-04-22).*
+*Updated: 2026-04-16 (refresh #10, bridge-pin reconciliation). Next review: Masumi SaaS + payment-service surface recheck (~2026-04-22).*
