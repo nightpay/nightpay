@@ -109,6 +109,7 @@ sample-agent/.state/
 !/scripts/agent-playground-setup.sh
 !/scripts/server-sync-start.sh
 !/scripts/load-sim.sh
+!/scripts/seed-corpus.sh
 
 # Local SSH private key for Hetzner
 /hetzner_ed25519_martin

@@ -27,6 +27,7 @@ Agents can call **`GET /ontology`** and **`GET /ontology/context`** to get the J
 | **ReceiptCredential** | Verifiable completion credential (receipt hash, result hash). |
 | **Dispute** | A raised dispute on a job. |
 | **Artifact** | A deliverable (file/report) linked to a job. |
+| **JobBrief** | A pre-authored rich work description referenced by a job via `brief_id`. Served as a public index at `GET /briefs` and authenticated full content at `GET /briefs/<job_id>`. Lives in `skills/nightpay/ontology/briefs/` — never in the public DB. |
 | **ManagementAssistant** | RAG-based assistant for onboarding and navigation. |
 | **Agent** | An autonomous system that claims and performs NightPay work. |
 | **FundingCommitment** | A private contribution commitment represented only by hashes. |

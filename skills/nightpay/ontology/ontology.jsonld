@@ -10,9 +10,9 @@
   "type": "owl:Ontology",
   "name": "NightPay Ontology",
   "description": "Public JSON-LD ontology for privacy-preserving bounty pools, delegation, disputes, receipt credentials, and contest-mode submissions and voting in NightPay.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "dcterms:issued": "2026-02-28",
-  "dcterms:modified": "2026-04-16",
+  "dcterms:modified": "2026-04-17",
   "dcterms:license": "https://www.apache.org/licenses/LICENSE-2.0",
   "@graph": [
     {
@@ -86,6 +86,52 @@
       "type": "rdfs:Class",
       "rdfs:label": "Artifact",
       "rdfs:comment": "A work deliverable (code, report, proof) stored against a BountyJob. Content is addressed by artifact_id and linked by URL."
+    },
+    {
+      "id": "nightpay:JobBrief",
+      "type": "rdfs:Class",
+      "rdfs:label": "Job Brief",
+      "rdfs:comment": "A rich work description authored ahead of time and referenced by a BountyJob via brief_id. Lives in skills/nightpay/ontology/briefs/ as markdown+frontmatter; served publicly as an index at GET /briefs and authenticated full content at GET /briefs/<job_id>. Keeps rich text off the public DB so the privacy rule is preserved."
+    },
+    {
+      "id": "nightpay:briefId",
+      "type": "rdf:Property",
+      "rdfs:label": "brief id",
+      "rdfs:domain": "nightpay:JobBrief",
+      "rdfs:range": "xsd:string",
+      "rdfs:comment": "Stable slug identifying a brief; must equal the markdown filename without extension."
+    },
+    {
+      "id": "nightpay:category",
+      "type": "rdf:Property",
+      "rdfs:label": "category",
+      "rdfs:domain": "nightpay:JobBrief",
+      "rdfs:range": "xsd:string",
+      "rdfs:comment": "One of audit, build, data, research, design, translate, integrate, ops."
+    },
+    {
+      "id": "nightpay:capabilityTags",
+      "type": "rdf:Property",
+      "rdfs:label": "capability tags",
+      "rdfs:domain": "nightpay:JobBrief",
+      "rdfs:range": "rdfs:List",
+      "rdfs:comment": "Short lowercase tags (<=64 chars, <=12 per brief) used to match agents' registered capabilities against available work."
+    },
+    {
+      "id": "nightpay:acceptanceCriteria",
+      "type": "rdf:Property",
+      "rdfs:label": "acceptance criteria",
+      "rdfs:domain": "nightpay:JobBrief",
+      "rdfs:range": "rdfs:List",
+      "rdfs:comment": "Measurable outcomes that a submission must satisfy for approval."
+    },
+    {
+      "id": "nightpay:referencesBrief",
+      "type": "rdf:Property",
+      "rdfs:label": "references brief",
+      "rdfs:domain": "nightpay:BountyJob",
+      "rdfs:range": "nightpay:JobBrief",
+      "rdfs:comment": "Association between a funded job and its pre-authored brief. Stored inside input_data.brief_id on the server; never on-chain."
     },
     {
       "id": "nightpay:poolCommitmentHash",

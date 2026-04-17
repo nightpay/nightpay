@@ -747,6 +747,225 @@ def load_ontology_examples(base_dir):
         out[name] = doc
     return out
 
+# ─── Brief corpus loader ──────────────────────────────────────────────────────
+# Briefs live as markdown+frontmatter under <ONTOLOGY_DIR>/briefs/<category>/<slug>.md
+# and are referenced from a BountyJob via input_data.brief_id. The frontmatter is
+# a tiny YAML subset (key: value, lists as flow arrays or block lists), parsed here
+# without adding a PyYAML dependency. Body text is returned as markdown.
+BRIEF_FRONTMATTER_DELIM = '---'
+BRIEF_ALLOWED_CATEGORIES = (
+    'audit', 'build', 'data', 'research',
+    'design', 'translate', 'integrate', 'ops',
+)
+BRIEF_MAX_TAGS = 12
+BRIEF_MAX_TAG_LEN = 64
+BRIEF_MAX_TITLE_LEN = 120
+BRIEF_MAX_BODY_BYTES = 8192
+
+def _parse_brief_scalar(raw):
+    text = raw.strip()
+    if text == '' or text.lower() in ('null', '~'):
+        return None
+    if text.lower() == 'true':
+        return True
+    if text.lower() == 'false':
+        return False
+    if re.fullmatch(r'-?\d+', text):
+        try:
+            return int(text)
+        except ValueError:
+            return text
+    if re.fullmatch(r'-?\d+\.\d+', text):
+        try:
+            return float(text)
+        except ValueError:
+            return text
+    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+        return text[1:-1]
+    if text.startswith('[') and text.endswith(']'):
+        inner = text[1:-1].strip()
+        if inner == '':
+            return []
+        parts = []
+        current = ''
+        depth = 0
+        for ch in inner:
+            if ch == ',' and depth == 0:
+                parts.append(current)
+                current = ''
+            else:
+                if ch in '[{':
+                    depth += 1
+                elif ch in ']}':
+                    depth -= 1
+                current += ch
+        parts.append(current)
+        return [_parse_brief_scalar(p) for p in parts if p.strip() != '']
+    return text
+
+def _parse_brief_frontmatter(raw_fm):
+    data = {}
+    lines = raw_fm.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped == '' or stripped.startswith('#'):
+            i += 1
+            continue
+        indent = len(line) - len(line.lstrip(' '))
+        if indent != 0:
+            i += 1
+            continue
+        if ':' not in stripped:
+            i += 1
+            continue
+        key, _, value = stripped.partition(':')
+        key = key.strip()
+        value = value.strip()
+        if value != '':
+            data[key] = _parse_brief_scalar(value)
+            i += 1
+            continue
+        block_items = []
+        block_obj = None
+        j = i + 1
+        while j < len(lines):
+            child = lines[j]
+            child_stripped = child.strip()
+            if child_stripped == '':
+                j += 1
+                continue
+            child_indent = len(child) - len(child.lstrip(' '))
+            if child_indent == 0:
+                break
+            if child_stripped.startswith('- '):
+                item = child_stripped[2:].strip()
+                if ':' in item and not (item.startswith('"') or item.startswith("'")):
+                    item_key, _, item_val = item.partition(':')
+                    current = {item_key.strip(): _parse_brief_scalar(item_val)}
+                    k = j + 1
+                    while k < len(lines):
+                        nxt = lines[k]
+                        nxt_stripped = nxt.strip()
+                        if nxt_stripped == '':
+                            k += 1
+                            continue
+                        nxt_indent = len(nxt) - len(nxt.lstrip(' '))
+                        if nxt_indent <= child_indent:
+                            break
+                        if nxt_stripped.startswith('- ') or ':' not in nxt_stripped:
+                            break
+                        nk, _, nv = nxt_stripped.partition(':')
+                        current[nk.strip()] = _parse_brief_scalar(nv)
+                        k += 1
+                    block_items.append(current)
+                    j = k
+                else:
+                    block_items.append(_parse_brief_scalar(item))
+                    j += 1
+            elif ':' in child_stripped:
+                obj_key, _, obj_val = child_stripped.partition(':')
+                if block_obj is None:
+                    block_obj = {}
+                block_obj[obj_key.strip()] = _parse_brief_scalar(obj_val)
+                j += 1
+            else:
+                j += 1
+        if block_items:
+            data[key] = block_items
+        elif block_obj is not None:
+            data[key] = block_obj
+        else:
+            data[key] = None
+        i = j
+    return data
+
+def _read_brief_file(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            raw = fh.read()
+    except Exception as exc:
+        print(f'[nightpay] WARNING: failed to read brief {path}: {exc}')
+        return None
+    if not raw.startswith(BRIEF_FRONTMATTER_DELIM):
+        return None
+    after = raw[len(BRIEF_FRONTMATTER_DELIM):]
+    end_idx = after.find('\n' + BRIEF_FRONTMATTER_DELIM)
+    if end_idx == -1:
+        return None
+    frontmatter = after[:end_idx].lstrip('\n')
+    body = after[end_idx + len('\n' + BRIEF_FRONTMATTER_DELIM):].lstrip('\n')
+    fm = _parse_brief_frontmatter(frontmatter)
+    if not isinstance(fm, dict):
+        return None
+    brief_id = str(fm.get('brief_id') or '').strip()
+    if not brief_id:
+        return None
+    tags = fm.get('capability_tags') or []
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t).strip() for t in tags if str(t).strip()]
+    tags = [t for t in tags if len(t) <= BRIEF_MAX_TAG_LEN][:BRIEF_MAX_TAGS]
+    title = str(fm.get('title') or '').strip()[:BRIEF_MAX_TITLE_LEN]
+    category_raw = str(fm.get('category') or '').strip().lower()
+    if category_raw not in BRIEF_ALLOWED_CATEGORIES:
+        category_raw = ''
+    amount_specks = fm.get('amount_specks')
+    if not isinstance(amount_specks, int) or amount_specks < 0:
+        amount_specks = 0
+    contest = fm.get('contest') if isinstance(fm.get('contest'), dict) else {}
+    expected_artifacts = fm.get('expected_artifacts') if isinstance(fm.get('expected_artifacts'), list) else []
+    acceptance = fm.get('acceptance_criteria') if isinstance(fm.get('acceptance_criteria'), list) else []
+    body_bytes = body.encode('utf-8')[:BRIEF_MAX_BODY_BYTES]
+    body_text = body_bytes.decode('utf-8', errors='ignore').strip()
+    return {
+        'brief_id': brief_id,
+        'title': title,
+        'category': category_raw,
+        'capability_tags': tags,
+        'amount_specks': amount_specks,
+        'contest': contest,
+        'expected_artifacts': expected_artifacts,
+        'acceptance_criteria': acceptance,
+        'body': body_text,
+        'source_path': path,
+    }
+
+def load_ontology_briefs(base_dir):
+    # Reads skills/nightpay/ontology/briefs/<category>/<slug>.md into a dict keyed by brief_id.
+    briefs = {}
+    briefs_root = os.path.join(base_dir, 'briefs')
+    if not os.path.isdir(briefs_root):
+        return briefs
+    pattern = os.path.join(briefs_root, '*', '*.md')
+    for path in sorted(glob.glob(pattern)):
+        basename = os.path.basename(path).lower()
+        if basename in ('index.md', 'readme.md'):
+            continue
+        parsed = _read_brief_file(path)
+        if not parsed:
+            continue
+        slug = os.path.basename(path)[:-3]
+        if parsed['brief_id'] != slug:
+            print(f'[nightpay] WARNING: brief_id mismatch in {path}: got {parsed["brief_id"]}, expected {slug}')
+            continue
+        parent = os.path.basename(os.path.dirname(path)).lower()
+        if parsed['category'] == '' and parent in BRIEF_ALLOWED_CATEGORIES:
+            parsed['category'] = parent
+        briefs[parsed['brief_id']] = parsed
+    return briefs
+
+def brief_index_entry(brief):
+    # Public index shape: no description body, just pointers agents need to filter work.
+    return {
+        'brief_id': brief['brief_id'],
+        'title': brief['title'],
+        'category': brief['category'],
+        'capability_tags': list(brief['capability_tags']),
+        'amount_specks': brief['amount_specks'],
+    }
+
 ONTOLOGY_CONTEXT = load_json_file(
     os.path.join(ONTOLOGY_DIR, 'context.jsonld'),
     {
@@ -769,6 +988,12 @@ ONTOLOGY_SPEC = load_json_file(
 ONTOLOGY_EXAMPLES = load_ontology_examples(ONTOLOGY_DIR)
 if not ONTOLOGY_EXAMPLES:
     print(f'[nightpay] WARNING: no ontology examples loaded from {os.path.join(ONTOLOGY_DIR, "examples")}')
+
+BRIEFS_INDEX = load_ontology_briefs(ONTOLOGY_DIR)
+if not BRIEFS_INDEX:
+    print(f'[nightpay] INFO: no briefs loaded from {os.path.join(ONTOLOGY_DIR, "briefs")} (seed corpus not installed)')
+else:
+    print(f'[nightpay] loaded {len(BRIEFS_INDEX)} brief(s) from {os.path.join(ONTOLOGY_DIR, "briefs")}')
 
 # ─── Security helpers ─────────────────────────────────────────────────────────
 
@@ -2743,7 +2968,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'demo': True,
                 'message': 'nightpay mip003 demo endpoint',
                 'mode': MIP003_MODE,
-                'routes': ['/availability', '/x402', '/use_cases', '/agents', '/ontology', '/ontology/context', '/ontology/examples', '/management/help', '/management/chat', '/input_schema', '/agent/challenge', '/agent/verify', '/start_job', '/status?job_id=...', '/provide_input?job_id=...', '/complete_job/<id>'],
+                'routes': ['/availability', '/x402', '/use_cases', '/agents', '/ontology', '/ontology/context', '/ontology/examples', '/briefs', '/briefs/<job_id>', '/management/help', '/management/chat', '/input_schema', '/agent/challenge', '/agent/verify', '/start_job', '/status?job_id=...', '/provide_input?job_id=...', '/complete_job/<id>'],
                 'potential_use_cases': POTENTIAL_USE_CASES,
             })
 
@@ -2931,6 +3156,89 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'voter_snapshot': voter_snapshot,
                 'submissions': submissions,
                 'count': len(submissions)
+            })
+
+        elif path_only == '/briefs':
+            # GET /briefs — public index of seed-corpus briefs. No description bodies.
+            # Agents use this to discover available capability_tags + brief_id mappings
+            # before claiming work. Optional query filters: category=<cat> & tag=<capability_tag>.
+            category_filter = str(params.get('category', [''])[0] or '').strip().lower()
+            if category_filter and category_filter not in BRIEF_ALLOWED_CATEGORIES:
+                self.respond(400, {'error': f'category must be one of {",".join(BRIEF_ALLOWED_CATEGORIES)}'})
+                return
+            tag_filter = str(params.get('tag', [''])[0] or '').strip().lower()
+            index = []
+            for brief in sorted(BRIEFS_INDEX.values(), key=lambda b: (b.get('category') or '', b.get('brief_id') or '')):
+                if category_filter and brief.get('category') != category_filter:
+                    continue
+                if tag_filter and tag_filter not in [t.lower() for t in (brief.get('capability_tags') or [])]:
+                    continue
+                index.append(brief_index_entry(brief))
+            self.respond(200, {
+                'briefs': index,
+                'count': len(index),
+                'total': len(BRIEFS_INDEX),
+                'categories': list(BRIEF_ALLOWED_CATEGORIES),
+                'filters': {
+                    'category': category_filter or None,
+                    'tag': tag_filter or None,
+                },
+            })
+
+        elif path_only.startswith('/briefs/'):
+            # GET /briefs/<job_id> — full brief (frontmatter + body) for a running job.
+            # Auth (any one):
+            #   (a) Authorization: Bearer <OPERATOR_SECRET_KEY>
+            #   (b) X-Agent-Token header (any verified identity) — briefs are not secrets,
+            #       but we gate full bodies behind identity to keep anonymous scrapers out.
+            job_id = path_only.split('/', 2)[2]
+            if not job_id:
+                self.respond(400, {'error': 'job_id required: /briefs/<job_id>'})
+                return
+            if not self._validate_job_id(job_id):
+                self.respond(400, {'error': 'invalid job_id format'})
+                return
+            db = get_db()
+            agent_token = str(self.headers.get('X-Agent-Token', '')).strip()
+            authorized = self._operator_bearer_ok()
+            identity = None
+            if not authorized and agent_token:
+                identity, _ = self._verify_agent_identity_token(db, agent_token, None)
+                if identity:
+                    authorized = True
+            if not authorized:
+                self.respond(401, {'error': 'GET /briefs/<job_id> requires Authorization: Bearer <operator_secret> or a valid X-Agent-Token'})
+                return
+            row = db.execute(
+                'SELECT job_id, status, input_data, visibility FROM jobs WHERE job_id = ?',
+                (job_id,)
+            ).fetchone()
+            if not row:
+                self.respond(404, {'error': 'job not found'})
+                return
+            idata = safe_json_loads(row['input_data'], {})
+            if not isinstance(idata, dict):
+                idata = {}
+            brief_id = str(idata.get('brief_id') or '').strip()
+            if not brief_id:
+                self.respond(404, {'error': 'job has no brief_id pointer (not part of the seed corpus)'})
+                return
+            brief = BRIEFS_INDEX.get(brief_id)
+            if not brief:
+                self.respond(404, {'error': f'brief_id {brief_id!r} not in corpus'})
+                return
+            self.respond(200, {
+                'job_id': job_id,
+                'brief_id': brief['brief_id'],
+                'title': brief.get('title') or '',
+                'category': brief.get('category') or '',
+                'capability_tags': list(brief.get('capability_tags') or []),
+                'amount_specks': brief.get('amount_specks') or 0,
+                'contest': brief.get('contest') or {},
+                'expected_artifacts': brief.get('expected_artifacts') or [],
+                'acceptance_criteria': brief.get('acceptance_criteria') or [],
+                'body': brief.get('body') or '',
+                'served_to': 'operator' if identity is None else 'agent',
             })
 
         elif path_only == '/jobs':
@@ -3130,6 +3438,21 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 j['status'] = external_status_from_internal(internal_status, j.get('amount_specks'))
                 j['internal_status'] = internal_status
                 j['visibility'] = visibility_for_api(normalize_visibility(j.get('visibility'), default='public') or 'public')
+                # Project seed-corpus pointers next to commitmentHash so agents can filter
+                # without fetching the full brief via GET /briefs/<job_id>.
+                idata = j.get('input_data') if isinstance(j.get('input_data'), dict) else {}
+                brief_id_proj = str(idata.get('brief_id') or '').strip()
+                if brief_id_proj:
+                    j['brief_id'] = brief_id_proj
+                title_proj = str(idata.get('title') or '').strip()
+                if title_proj:
+                    j['title'] = title_proj
+                category_proj = str(idata.get('category') or '').strip()
+                if category_proj:
+                    j['category'] = category_proj
+                tags_proj = idata.get('capability_tags')
+                if isinstance(tags_proj, list) and tags_proj:
+                    j['capability_tags'] = [str(t) for t in tags_proj if str(t).strip()]
                 jobs.append(j)
 
             if MIP003_MODE == 'strict' and status_filter and status_filter_internal is None:
@@ -3551,6 +3874,72 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'input_data.description must not contain control characters'})
                 return
             input_data['description'] = description
+
+            # Optional seed-corpus pointers: brief_id, title, capability_tags.
+            # Stored inside input_data (no schema migration). Rich description text
+            # lives in the briefs corpus and is served via GET /briefs/<job_id>.
+            brief_id_raw = input_data.get('brief_id')
+            if brief_id_raw not in (None, ''):
+                brief_id = str(brief_id_raw).strip()
+                if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{1,96}', brief_id):
+                    self.respond(400, {'error': 'input_data.brief_id must match [a-z0-9][a-z0-9_-]{1,96}'})
+                    return
+                brief = BRIEFS_INDEX.get(brief_id)
+                if not brief:
+                    self.respond(400, {'error': f'input_data.brief_id {brief_id!r} not found in the seed corpus'})
+                    return
+                input_data['brief_id'] = brief_id
+                input_data.setdefault('category', brief.get('category') or '')
+                if not input_data.get('title'):
+                    input_data['title'] = brief.get('title') or ''
+                if not input_data.get('capability_tags'):
+                    input_data['capability_tags'] = list(brief.get('capability_tags') or [])
+            else:
+                input_data.pop('brief_id', None)
+
+            title_raw = input_data.get('title')
+            if title_raw not in (None, ''):
+                if not isinstance(title_raw, str):
+                    self.respond(400, {'error': 'input_data.title must be a string'})
+                    return
+                title = title_raw.strip()
+                if contains_disallowed_control_chars(title):
+                    self.respond(400, {'error': 'input_data.title must not contain control characters'})
+                    return
+                if len(title) > BRIEF_MAX_TITLE_LEN:
+                    self.respond(400, {'error': f'input_data.title must be <= {BRIEF_MAX_TITLE_LEN} chars'})
+                    return
+                input_data['title'] = title
+            else:
+                input_data.pop('title', None)
+
+            capability_tags_raw = input_data.get('capability_tags')
+            if capability_tags_raw not in (None, '', []):
+                if not isinstance(capability_tags_raw, list):
+                    self.respond(400, {'error': 'input_data.capability_tags must be a list of strings'})
+                    return
+                try:
+                    tags_norm = normalize_string_list(
+                        capability_tags_raw,
+                        max_items=BRIEF_MAX_TAGS,
+                        max_len=BRIEF_MAX_TAG_LEN,
+                    )
+                except Exception:
+                    self.respond(400, {'error': 'input_data.capability_tags must be strings'})
+                    return
+                input_data['capability_tags'] = tags_norm
+            else:
+                input_data.pop('capability_tags', None)
+
+            category_raw = input_data.get('category')
+            if category_raw not in (None, ''):
+                category = str(category_raw).strip().lower()
+                if category not in BRIEF_ALLOWED_CATEGORIES:
+                    self.respond(400, {'error': f'input_data.category must be one of {",".join(BRIEF_ALLOWED_CATEGORIES)}'})
+                    return
+                input_data['category'] = category
+            else:
+                input_data.pop('category', None)
 
             if json_size_bytes(input_data) > MAX_INPUT_PAYLOAD_BYTES:
                 self.respond(413, {'error': f'input_data exceeds {MAX_INPUT_PAYLOAD_BYTES} bytes'})
@@ -5100,7 +5489,7 @@ print(f'[nightpay] Idempotency TTL: {IDEMPOTENCY_TTL_SECONDS}s (X-Idempotency-Ke
 print(f'[nightpay] Agent identity enforce: {AGENT_IDENTITY_ENFORCE} | challenge TTL: {AGENT_CHALLENGE_TTL_SECONDS}s | token TTL: {AGENT_VERIFIED_TOKEN_TTL_SECONDS}s')
 print(f'[nightpay] Management LLM: enabled={MANAGEMENT_LLM_ENABLED} | url={MANAGEMENT_LLM_URL} | model={MANAGEMENT_LLM_MODEL} | timeout={MANAGEMENT_LLM_TIMEOUT_SECONDS}s')
 print(f'[nightpay] x402: enabled={X402_ENABLED} | routes={",".join(X402_REQUIRE_ROUTES)} | verify_mode={X402_VERIFY_MODE} | settle_on_success={X402_SETTLE_ON_SUCCESS}')
-endpoints = '/availability /x402 /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /split_contest/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /complete_job/<id> /complete_job?job_id= /dispute/<id> /jobs?status=&limit=&offset=&cursor=&approved_before=&search=&visibility='
+endpoints = '/availability /x402 /use_cases /agents /ontology /ontology/context /ontology/examples /ontology/examples/<id> /briefs /briefs/<job_id> /management/help /management/chat /input_schema /demo /agent/challenge /agent/verify /start_job /status?job_id= /status/<id> /claim_job/<id> /vote_result/<id> /vote_submission/<job_id>/<submission_id> /submissions/<id> /select_winner/<id> /split_contest/<id> /provide_input?job_id= /provide_input/<id> /provide_result/<id> /complete_job/<id> /complete_job?job_id= /dispute/<id> /jobs?status=&limit=&offset=&cursor=&approved_before=&search=&visibility='
 print(f'[nightpay] Endpoints: {endpoints}')
 httpd.serve_forever()
 PYCODE

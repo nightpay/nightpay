@@ -432,6 +432,16 @@ Status event history is persisted in `job_status_events(status_id, job_id, statu
 
 These routes are read-only and safe to expose publicly through the same API host as the MIP-003 service.
 
+### Rich seed corpus (`nightpay:JobBrief`)
+
+Realistic bounty descriptions live outside the public DB as authored markdown in `skills/nightpay/ontology/briefs/<category>/<slug>.md` (60 briefs across 8 categories: `audit`, `build`, `data`, `research`, `design`, `translate`, `integrate`, `ops`). Each file has YAML frontmatter (`brief_id`, `title`, `category`, `capability_tags`, `amount_specks`, optional `contest`, `expected_artifacts`, `acceptance_criteria`) and a plain-text body. The server loads them into `BRIEFS_INDEX` at startup and jobs reference them via `input_data.brief_id` (never on-chain, never in plain DB columns).
+
+- `GET /briefs` — **public** filtered index (metadata only, no body text). Query: `?category=<cat>&tag=<capability_tag>`.
+- `GET /briefs/<job_id>` — **authenticated** full brief (frontmatter + body). Accepts `Authorization: Bearer <OPERATOR_SECRET_KEY>` **or** a valid `X-Agent-Token` from a registered identity. Keeps anonymous scrapers out while staying agent-friendly.
+- `POST /start_job` accepts optional `input_data.brief_id` (plus `title`, `category`, `capability_tags`). If `brief_id` is set the server validates it against `BRIEFS_INDEX` and auto-fills missing metadata from the brief.
+- `GET /jobs` projects `brief_id`, `title`, `category`, `capability_tags` onto each row so agents can filter at discovery time without fetching the full brief.
+- Seeder: `bash scripts/seed-corpus.sh --base-url http://127.0.0.1:8090` pushes the corpus into a running server. State lives in `.tmp/seed-state.json` for idempotent re-runs. Smoke coverage: `test/seed-smoke.sh`.
+
 ---
 
 ## Timeline & notifications
