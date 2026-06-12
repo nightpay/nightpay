@@ -2,52 +2,40 @@
 
 **Purpose:** Single place for system components, data flow, and where external frameworks (e.g. Midnight.js) fit. Update when making integration or structural changes.
 
-**Public repo:** This repo is public. What must stay private (and never be committed) is defined in `.gitignore`; the rationale for each category is in the section **"Public vs private (what goes in .gitignore)"** below.
+**Public docs:** [docs/README.md](README.md) (agents + integrators). **Operator deploy runbooks are private** (gitignored — not in this public repo).
 
-Last updated: 2026-04-16 (skill distribution single-source-of-truth added)
+**Public repo:** This repo is public. What must stay private is defined in `.gitignore`; rationale in **"Public vs private"** below.
+
+Last updated: 2026-05-24 (Caddy SPA + UI base URL DRY + public/private doc split)
 
 ---
 
-## VPS / Hetzner (canonical layout)
+## Production deployment (operators)
 
-**Goal:** one production NightPay stack per machine so ports and systemd units do not fight each other.
+NightPay runs on **operator-managed VPS** infrastructure (typically Hetzner x86_64). **Deploy procedures, CI secrets, hostnames, systemd units, and Caddy config are private** — they live in gitignored files under `docs/` (`HETZNER_X86_RUNBOOK.md`, `OPS_INDEX.md`, etc.) and are **not published** in this public repo.
 
-| Path / unit | Role |
-|-------------|------|
-| `/opt/nightpay` | Public repo sync target; MIP-003 + gateway skill tree |
-| `/opt/nightpay-bridge` | Private bridge checkout; **`ExecStart=/usr/bin/node dist/server.js`** (not `npm run dev` / `tsx`) |
-| `/opt/nightpay/.agent-playground.env` | MIP-003 env for production; set **`ENABLE_UI=0`** when Caddy serves `ui/dist` so `server-sync-start.sh` / `agent-playground-setup.sh start` does not spawn a redundant Vite on **3333**. |
-| `/opt/nightpay-bridge/.env` | Bridge env (`WALLET_SEED`, contract, proof server URL, etc.) |
-| `nightpay-mip003.service` | `mip003-server.sh` on **8090** |
-| `nightpay-ui.service` | **Optional / off on canonical VPS:** UI is **`npm run build`** output in `ui/dist` served by **Caddy** (`try_files` + `file_server`). Disable this unit when Caddy serves static files so **3333** stays free. |
-| `nightpay-bridge.service` | Bridge on **4000**; **`Restart=on-failure`** and sane `RestartSec` to avoid CPU storms on misconfig |
-| Host **`caddy.service`** | **Single TLS entrypoint** on **80/443** for every public hostname on the box (see multisite table below). |
+**Public contract:** agents and integrators use deployed URLs only:
 
-**Avoid:** a second copy under `/opt/nightpay-staging` (or any second tree) listening on **8091/3334** unless you intentionally run staging and accept extra RAM/CPU. **Never** run two bridge processes on **4000** (systemd + manual `node dist/server.js` + `tsx`).
+- `NIGHTPAY_API_URL` — MIP-003 API (`POST /start_job`, `/claim_job`, …)
+- `BRIDGE_URL` — bridge HTTP API (on-chain actions)
 
-**Docker:** Do not run a second Caddy container bound to **80/443** if the host already runs Caddy (port bind fight + restart loops).
+Local bootstrap for contributors: [AGENT_PLAYGROUND.md](AGENT_PLAYGROUND.md) + `scripts/agent-playground-setup.sh`.
 
-**Caddy read path for `ui/dist`:** Caddy runs as its own OS user (`caddy:caddy`), so `/opt/nightpay` **must** be mode `drwx---r-x` (or wider) and every directory on the path to `ui/dist/` must be world-executable for Caddy to traverse. `bin/deploy-hetzner-ci.sh` applies `chmod o+rx /opt/nightpay` and `chmod -R o+rX ui/dist/` automatically after each build; the public deploy gate validates by checking `https://nightpay.dev/` and `https://board.nightpay.dev/` both return **200**. If the gate ever fails with `403` here, see `docs/ADJUSTMENT_DEPLOY_CHECKLIST.md` §7.1 for the one-line diagnostic and fix.
+## Public endpoint routing (Caddy)
 
-Details for your operator machine belong in the private runbook `docs/HETZNER_X86_RUNBOOK.md` (gitignored).
+Production traffic terminates TLS at a single **Caddy** reverse proxy (one process, ports 80/443). Host-based routing (SNI + HTTP Host header) dispatches to backends on loopback only:
 
-### One Caddy, many sites (host-based routing)
+- `nightpay.dev` / `www.nightpay.dev` / `board.nightpay.dev` — serve the static UI bundle (`ui/dist/`) + proxy `/api` and `/mip` paths to the MIP-003 service.
+- `api.nightpay.dev` — MIP-003 HTTP API (jobs, submissions, ontology, etc.).
+- `bridge.nightpay.dev` — bridge control plane (health, postBounty, completeAndReceipt, verifyReceipt, deploy, etc.).
 
-**Capisce:** you run **exactly one** Caddy process (`systemd` unit `caddy.service`). It listens on **80** and **443** once. Each **site block** in `/etc/caddy/Caddyfile` lists one or more hostnames; Caddy matches **SNI** (HTTPS) or **Host** (HTTP→HTTPS redirect), then applies that block’s handlers (`reverse_proxy`, `file_server`, `handle_path`, etc.). Backends stay on **localhost** (or Docker-published ports on the host); nothing else binds **443**.
+**Why one Caddy:** avoids port conflicts, central ACME (Let's Encrypt) cert management for all subdomains, simple firewall (only 80/443 public), and consistent security headers / compression across the surface.
 
-| Public hostname(s) | What users get | Typical backend (loopback) |
-|--------------------|----------------|----------------------------|
-| **nightpay.dev**, **www.nightpay.dev**, **board.nightpay.dev** | NightPay SPA + same-origin **`/api`**, **`/mip`**, **`/ontology`** | Static **`/opt/nightpay/ui/dist`**; **4000** (bridge); **8090** (MIP) |
-| **ceo.nightpay.dev** | Same app build, CEO landing route (client uses hostname) | Same as row above |
-| **api.nightpay.dev** | MIP-003 API only | **8090** |
-| **bridge.nightpay.dev** | Bridge HTTP API only | **4000** |
-| **procureai.tech**, **www.procureai.tech** | ProcureAI site | **127.0.0.1:5178** (or whatever that stack uses) |
-| **aiprocurement.club**, **www.aiprocurement.club**, **aiprocurement.ai**, **www.aiprocurement.ai** (one Caddy block) | Next.js app | **127.0.0.1:3008** (Docker); DNS for all four should point at the same host IP (e.g. **89.167.94.187**) |
-| **taskzilla.ai**, **www.taskzilla.ai** | Static/Taskzilla routes + optional path proxies | **`/var/www/taskzilla`** + relays as configured in Caddyfile |
+All internal services (MIP on 8090, bridge on 4000, Vite or static on 3333) stay on 127.0.0.1 and are never directly reachable from the internet. Caddy also enforces the filesystem perms for the static bundle (see deploy checklist for the `chmod o+rx` / `o+rX` rules).
 
-Optional raw-hostname blocks (e.g. Hetzner reverse DNS) can mirror **board** behavior for testing without extra domains.
+The concrete Caddyfile, systemd units, and exact host list live in private operator runbooks only. Deploys run `bin/caddy-ensure.sh` on production (`validate` + `reload` + verify ports 80/443) so TLS regressions fail before the public CI gate.
 
-Add a new product on this VPS: **do not** start a second Caddy. Add another **`{ ... }`** site block (or comma-separated hostnames) and point `reverse_proxy` / `root` at the new service’s port or directory, then **`caddy validate`** and **`systemctl reload caddy`**.
+Operational commands (validate, reload, cert rotation, firewall) live in the private operator runbook `docs/HETZNER_X86_RUNBOOK.md` (gitignored — maintain locally).
 
 ---
 
@@ -101,13 +89,13 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 
 | Category | Paths / patterns | Why private |
 |----------|------------------|-------------|
-| **Bridge & wallet** | `bridge/` | Private git submodule pointer to a separate private repo; operator wallet and bridge implementation stay there. Public repo defines the bridge HTTP API contract (this doc). |
+| **Bridge & wallet** | `bridge/` (submodule) | Private `nightpay-bridge` repo; root stores commit pointer only. Clone with `bash scripts/submodule-init.sh`. Never commit bridge source files to root. |
 | **Internal planning** | `plans/`, `LAUNCH.md`, `docs/MARKETING.md` | Roadmap, launch kit, marketing drafts; for maintainers. (AGENTS.md is **public** so agent coding instructions apply in every clone.) |
 | **IDE & local config** | `.cursor/`, `.claude/`, `.claude/settings.local.json`, `.claude_settings.json`, `.auto-claude/`, `.worktrees/`, `.security-key`, `logs/security/`, `.playwright-mcp` | May contain hostnames, API keys, local paths; machine-specific. |
 | **Local automation** | `.private/`, `scripts/*` (except allowlisted) | Custom deploy/ops scripts and secrets; only `agent-playground-setup.sh`, `server-sync-start.sh`, `load-sim.sh` are shared. |
 | **Agent playground** | `.agent-playground/`, `.agent-playground.env`, `.agent-playground.env.bak*`, `.agent-playground.env.local`, `sample-agent/.env`, `sample-agent/.state/` | Runtime secrets (JOB_TOKEN_SECRET, OPERATOR_SECRET_KEY, MASUMI_API_KEY, etc.); template `.agent-playground.env.example` stays tracked. |
 | **Credentials & keys** | `.env`, `.env.*`, `*.pem`, `*.p12`, `*.pk8`, `hetzner_*`, `id_rsa`, `id_ed25519`, `credentials*.json`, `secrets.json` | Env vars and key material must never be committed. |
-| **VPS / deployment** | `docs/HETZNER_X86_RUNBOOK.md` | Contains deployment details and host references; operator-only. |
+| **VPS / deployment** | `docs/HETZNER_X86_RUNBOOK.md`, `docs/OPS_INDEX.md`, `docs/ADJUSTMENT_DEPLOY_CHECKLIST.md`, `docs/SERVER_BOOTSTRAP_COPYPASTE.md`, `docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md` | Deploy details, CI secrets, host references; operator-only. |
 | **Operator session** | `docs/OPERATOR_SESSION.md` | Admin-only full visibility (token generation via SSH, sessionStorage, no UI); do not commit. |
 | **Test suites** | `test/smoke.sh`, `test/chaos_stress_suite.py` | May reference internal endpoints or test credentials; keep private unless sanitized for public CI. |
 | **Runtime artifacts** | `runtime/`, `state/`, `logs/`, `pids/`, `*.sqlite*`, `*.pid` | Server/process state and DBs; not part of source. |
@@ -121,9 +109,12 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 
 | Path | Status | Notes |
 |------|--------|--------|
+| `scripts/submodule-init.sh` | **PUBLIC** | Clone/install `ui/` + `bridge/` submodules for local full-stack dev. |
 | `scripts/agent-playground-setup.sh` | **PUBLIC** | Allowlisted; bootstrap init/start/stop/doctor/ops-token. |
 | `scripts/server-sync-start.sh` | **PUBLIC** | Allowlisted. |
 | `scripts/load-sim.sh` | **PUBLIC** | Allowlisted. |
+| `scripts/local-dev-start.sh` | **PUBLIC** | Allowlisted; starts MIP + UI + bridge on localhost. |
+| `scripts/seed-corpus.sh` | **PUBLIC** | Allowlisted; seeds JobBrief corpus for demos. |
 | `scripts/server-sync-start.ps1` | **PRIVATE** | Under `/scripts/*`; not allowlisted. |
 | `scripts/swarm-nightpay-dev.sh` | **PRIVATE** | Under `/scripts/*`; not allowlisted. |
 | `skills/nightpay/scripts/gateway.sh` | **PUBLIC** | Not under `/scripts/`; core bounty lifecycle. |
@@ -138,9 +129,14 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 
 | Path | Status | Notes |
 |------|--------|--------|
-| `docs/AGENT_PLAYGROUND.md` | **PUBLIC** | Full agent/operator runbook (init, env, doctor, API ref). No secret values; points to private `OPERATOR_SESSION.md` for admin token flow. Safe for GitHub so contributors can run the stack. |
+| `docs/README.md` | **PUBLIC** | Agent + integrator doc index (no deploy secrets). |
+| `docs/AGENT_PLAYGROUND.md` | **PUBLIC** | Full agent/operator runbook (init, env, doctor, API ref). No secret values. |
 | `docs/architecture.md` | **PUBLIC** | Component and public-vs-private reference. |
-| `docs/OPERATOR_SESSION.md` | **PRIVATE** | Gitignored; admin-only token and sessionStorage flow. |
+| `docs/OPS_INDEX.md` | **PRIVATE** | Gitignored; master operator checklist + upstream index. |
+| `docs/ADJUSTMENT_DEPLOY_CHECKLIST.md` | **PRIVATE** | Gitignored; CI deploy and production gates. |
+| `docs/SERVER_BOOTSTRAP_COPYPASTE.md` | **PRIVATE** | Gitignored; first-time VPS sync. |
+| `docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md` | **PRIVATE** | Gitignored; gateway ↔ MIP completion sync. |
+| `docs/OPERATOR_SESSION.md` | **PRIVATE** | Gitignored; admin-only token flow. |
 | `docs/HETZNER_X86_RUNBOOK.md` | **PRIVATE** | Gitignored; VPS/deploy details. |
 | Other `docs/*.md` | **PUBLIC** | Unless listed above or in .gitignore. |
 
@@ -230,6 +226,30 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 - **UI** is read-only; it calls the bridge for stats and receipt verification. No wallet in the browser.
 
 The bridge lives in a separate (private) repo; this repo defines *what* the bridge must expose (the API below), not the bridge code itself.
+
+## Public endpoint routing (Caddy) and UI base URL resolution
+
+Prod on Hetzner uses a **single Caddy** (ports 80/443) with host-based routing:
+
+- `nightpay.dev`, `www.nightpay.dev`, `board.nightpay.dev` → static `ui/dist/` (file_server) + selective reverse_proxy for `/api/*` (→ bridge 4000), `/mip/*` + `/ontology*` (→ MIP 8090) + **SPA fallback rewrite to /index.html** for all other paths. This is required for BrowserRouter routes (`/job/:id`, `/verify?hash=...`, `/board`, deep links) to return 200 instead of 404 on direct access/refresh.
+- `api.nightpay.dev` → MIP-003 on 8090
+- `bridge.nightpay.dev` → bridge on 4000
+
+**Critical for full functionality:** After `npm run build --prefix ui`, ensure `chmod o+rx /opt/nightpay && chmod -R o+rX ui/dist` (Caddy user must traverse). The deploy scripts and CI gate enforce this; missing perms → 403 on site/board.
+
+**UI base URL resolution (DRY):** `ui/src/api.ts` exports `getApiUrl()` / `getBridgeUrl()` (and internal `resolvePublicBase`). Logic:
+
+1. If VITE_MIP_URL / VITE_BRIDGE_URL is a full http(s) URL → use it (full override).
+2. If served from `*.nightpay.dev` (browser `location.hostname`) → `https://api.nightpay.dev` / `https://bridge.nightpay.dev`.
+3. Otherwise → `http://localhost:8090` / `http://localhost:4000` (dev + Vite proxies `/mip`, `/api`, `/ontology`).
+
+All curl examples, external links, JSON-LD embeds, and docs snippets in the UI now delegate to these (previously duplicated hostname checks in 5+ files). Internal fetches for board/jobs/verify still use relative `/mip` `/api` bases (proxied by Caddy on the UI origin) so same-origin works without CORS.
+
+Staging uses separate subdomains + ports; same pattern applies with adjusted targets.
+
+See README § "DNS + Caddy" for a copy-paste production Caddyfile that includes the SPA fallback. The private Hetzner runbook has the full multisite + cert + systemd details.
+
+**Production operator wiring:** On a deployed VPS, set public HTTPS URLs in `.agent-playground.env` (see `.agent-playground.env.example`), set `ENABLE_UI=0` when Caddy serves `ui/dist`, and obtain `OPERATOR_ADDRESS` from bridge `GET /operator-address`. Wallet seeds and bridge `.env` stay on the operator machine only — never commit them. Host-specific deploy steps are in gitignored operator runbooks under `docs/`.
 
 ### OpenClaw plugin and skills (alignment with current OpenClaw)
 

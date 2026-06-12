@@ -406,7 +406,7 @@ else
   fail "no sample tag available from seeded job"
 fi
 
-# ── /start_job rejects unknown brief_id ───────────────────────────────────────
+# ── /start_job validates brief_id ───────────────────────────────────────
 section "/start_job validates brief_id"
 BAD_BODY=$(cat <<JSON
 {
@@ -427,6 +427,27 @@ if [[ "$c" == "400" && "$bd" == *"not found in the seed corpus"* ]]; then
   pass "unknown brief_id rejected (400)"
 else
   fail "unknown brief_id -> $c $bd"
+fi
+
+# ── gateway.sh start-job (MIP-only — no Masumi/contract env) ─────────────────
+section "gateway.sh start-job"
+GW_OUT="$TMP_DIR/gateway-start-job.json"
+(
+  export NIGHTPAY_API_URL="$MIP_BASE"
+  unset RECEIPT_CONTRACT_ADDRESS MASUMI_API_KEY OPERATOR_ADDRESS 2>/dev/null || true
+  bash "$ROOT_DIR/skills/nightpay/scripts/gateway.sh" start-job "seed-smoke gateway create" 2000000 public \
+    >"$GW_OUT" 2>"$TMP_DIR/gateway-start-job.err"
+) || true
+if [[ -s "$GW_OUT" ]]; then
+  GW_JOB="$(json_get "$(cat "$GW_OUT")" "job_id")"
+  GW_TOKEN="$(json_get "$(cat "$GW_OUT")" "job_token")"
+  if [[ -n "$GW_JOB" && -n "$GW_TOKEN" ]]; then
+    pass "gateway start-job returned job_id + job_token"
+  else
+    fail "gateway start-job missing job_id or job_token: $(cat "$GW_OUT")"
+  fi
+else
+  fail "gateway start-job failed: $(cat "$TMP_DIR/gateway-start-job.err" 2>/dev/null)"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

@@ -36,6 +36,12 @@ SKIP_MASUMI_RECREATE=0
 SKIP_BRIDGE_RESTART=0
 UI_PORT=""
 MIP_PORT=""
+# Production public URLs — used to patch .agent-playground.env on /opt/nightpay deploys
+# so doctor exercises Caddy TLS (catches ERR_SSL_PROTOCOL_ERROR before CI gate).
+SITE_URL="${SITE_URL:-https://nightpay.dev/}"
+BOARD_URL="${BOARD_URL:-https://board.nightpay.dev/}"
+PUBLIC_API_URL="${PUBLIC_API_URL:-https://api.nightpay.dev}"
+PUBLIC_BRIDGE_URL="${PUBLIC_BRIDGE_URL:-https://bridge.nightpay.dev}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -245,7 +251,7 @@ fi
 
 echo "[7/11] Restart NightPay services..."
 ssh "${SSH_OPTS[@]}" "root@${HOST}" \
-  "REMOTE_DIR='${REMOTE_DIR}' SKIP_NPM_INSTALL='${SKIP_NPM_INSTALL}' UI_PORT='${UI_PORT}' MIP_PORT='${MIP_PORT}' SKIP_MASUMI_RECREATE='${SKIP_MASUMI_RECREATE}' bash -s" <<'REMOTE'
+  "REMOTE_DIR='${REMOTE_DIR}' SKIP_NPM_INSTALL='${SKIP_NPM_INSTALL}' UI_PORT='${UI_PORT}' MIP_PORT='${MIP_PORT}' SKIP_MASUMI_RECREATE='${SKIP_MASUMI_RECREATE}' SITE_URL='${SITE_URL}' BOARD_URL='${BOARD_URL}' PUBLIC_API_URL='${PUBLIC_API_URL}' PUBLIC_BRIDGE_URL='${PUBLIC_BRIDGE_URL}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 if [[ "$SKIP_NPM_INSTALL" != "1" ]]; then
@@ -373,6 +379,42 @@ PY
   chown deploy:deploy "$REMOTE_DIR/.agent-playground.env" || true
 fi
 
+# Production deploy: point doctor at public HTTPS endpoints + static UI mode (Caddy serves ui/dist).
+if [[ "$REMOTE_DIR" == "/opt/nightpay" && -f "$REMOTE_DIR/.agent-playground.env" ]]; then
+  python3 - <<'PY'
+from pathlib import Path
+import os
+
+env_path = Path(os.environ["REMOTE_DIR"]) / ".agent-playground.env"
+updates = {
+    "export SITE_URL": f'"{os.environ["SITE_URL"].rstrip("/")}"',
+    "export BOARD_URL": f'"{os.environ["BOARD_URL"].rstrip("/")}"',
+    "export NIGHTPAY_API_URL": f'"{os.environ["PUBLIC_API_URL"].rstrip("/")}"',
+    "export BRIDGE_URL": f'"{os.environ["PUBLIC_BRIDGE_URL"].rstrip("/")}"',
+    "export ENABLE_UI": '"0"',
+}
+
+lines = env_path.read_text().splitlines()
+out = []
+seen = set()
+for line in lines:
+    replaced = False
+    for key, value in updates.items():
+        if line.startswith(key + "="):
+            out.append(f"{key}={value}")
+            seen.add(key)
+            replaced = True
+            break
+    if not replaced:
+        out.append(line)
+for key, value in updates.items():
+    if key not in seen:
+        out.append(f"{key}={value}")
+env_path.write_text("\n".join(out) + "\n")
+PY
+  chown deploy:deploy "$REMOTE_DIR/.agent-playground.env" || true
+fi
+
 su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh stop || true"
 
 # Best-effort cleanup for stale processes that survived previous stop operations.
@@ -403,6 +445,12 @@ rm -rf "$REMOTE_DIR/ui/.vite" "$REMOTE_DIR/ui/node_modules/.vite" || true
 
 if ! su - deploy -c "cd '$REMOTE_DIR' && bash scripts/agent-playground-setup.sh start"; then
   echo "WARN: startup script exited non-zero; continuing with doctor retries."
+fi
+
+if [[ "$REMOTE_DIR" == "/opt/nightpay" && -f "$REMOTE_DIR/bin/caddy-ensure.sh" ]]; then
+  chmod +x "$REMOTE_DIR/bin/caddy-ensure.sh" || true
+  echo "Ensuring Caddy TLS (80/443)..."
+  bash "$REMOTE_DIR/bin/caddy-ensure.sh"
 fi
 
 doctor_ok=0

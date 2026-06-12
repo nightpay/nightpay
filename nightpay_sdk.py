@@ -101,6 +101,11 @@ class NightPay:
         "BRIDGE_URL": "Midnight bridge URL",
     }
 
+    # Commands that only need NIGHTPAY_API_URL (+ optional BRIDGE) per gateway MIP_ONLY path.
+    # Single source of truth is skills/nightpay/config/mip-only-commands.txt (read at runtime
+    # when possible). This tuple is the Python fallback / for import-time use.
+    MIP_ONLY_COMMANDS = ("start-job", "start_job", "hire-direct", "agent-showcase", "schedule")
+
     REQUIRED_BINS = ["bash", "curl", "openssl", "sqlite3"]
 
     def __init__(self, skill_path: Optional[str] = None):
@@ -131,8 +136,14 @@ class NightPay:
 
     # ─── Validation ───────────────────────────────────────────────────────
 
-    def validate(self, verbose: bool = True) -> HealthReport:
-        """Run full validation: prerequisites, env, connectivity, skill files."""
+    def validate(self, verbose: bool = True, command: Optional[str] = None) -> HealthReport:
+        """Run full validation: prerequisites, env, connectivity, skill files.
+
+        If `command` is one of MIP_ONLY_COMMANDS (e.g. "start-job"), only the
+        lightweight env subset is enforced — matching gateway.sh MIP-only bypass.
+        This makes NightPay(client).validate(command="start-job") succeed with
+        only NIGHTPAY_API_URL for pure board consumers.
+        """
         report = HealthReport()
 
         # Prerequisites
@@ -148,8 +159,12 @@ class NightPay:
                     "sha256sum/shasum found" if has_hash else "neither found",
                     fix_hint="Install coreutils (Linux) or use shasum (macOS)")
 
-        # Env vars
-        for var, desc in self.REQUIRED_ENV.items():
+        # Env vars — relax for MIP-only commands (DRY with gateway MIP_ONLY_COMMANDS)
+        env_items = self.REQUIRED_ENV.items()
+        if command and command.replace("_", "-") in self.MIP_ONLY_COMMANDS:
+            mip_keys = ("NIGHTPAY_API_URL", "BRIDGE_URL")
+            env_items = [(k, v) for k, v in self.REQUIRED_ENV.items() if k in mip_keys]
+        for var, desc in env_items:
             val = os.environ.get(var, "")
             if not val:
                 report.add(f"env:{var}", False, f"not set — {desc}",
@@ -291,6 +306,23 @@ class NightPay:
         result = self._run_gateway("stats")
         if result.returncode != 0:
             raise RuntimeError(f"stats failed: {result.stderr}")
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"raw_output": result.stdout.strip()}
+
+    def start_job(self, description: str, amount_specks: int,
+                  visibility: str = "public") -> dict:
+        """Create a MIP-003 job on the bounty board (POST /start_job).
+
+        This is the lightweight / MIP-only path: only NIGHTPAY_API_URL is
+        required (no MASUMI_API_KEY / OPERATOR_ADDRESS / RECEIPT_CONTRACT).
+        Use `validate(command="start-job")` to check the reduced env set.
+        """
+        result = self._run_gateway("start-job", description,
+                                   str(amount_specks), visibility)
+        if result.returncode != 0:
+            raise RuntimeError(f"start-job failed: {result.stderr}")
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError:

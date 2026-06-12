@@ -10,6 +10,8 @@ Usage:
     --board-url <https-url> \
     --api-url <https://.../availability> \
     --bridge-url <https://.../health>
+  # Also verifies key SPA client routes (/board, /for-agents) return 200 via Caddy fallback.
+  # This gate ensures full nightpay.dev functionality (not just the index.html shell).
 EOF
 }
 
@@ -64,10 +66,15 @@ failures=0
 check_page_200() {
   local label="$1"
   local url="$2"
-  local code
-  code="$(curl -sS -L --max-time 20 -o /dev/null -w '%{http_code}' "$url" || true)"
+  local code err
+  err="$(curl -sS -L --max-time 20 -o /dev/null -w '%{errormsg}' "$url" 2>&1 || true)"
+  code="$(curl -sS -L --max-time 20 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo "000")"
   if [[ "$code" != "200" ]]; then
-    echo "FAIL: ${label} expected 200, got ${code} (${url})" >&2
+    if [[ "$code" == "000" || "$err" =~ (SSL|certificate|handshake|protocol|TLS|timed? ?out) ]]; then
+      echo "FAIL: ${label} TLS/connect error — ${err:-no response} (HTTP ${code}) (${url})" >&2
+    else
+      echo "FAIL: ${label} expected 200, got ${code} (${url})" >&2
+    fi
     failures=$((failures + 1))
   else
     echo "PASS: ${label} returned 200 (${url})"
@@ -118,6 +125,10 @@ check_page_200 "site" "$SITE_URL"
 check_page_200 "board" "$BOARD_URL"
 check_json_field "api availability" "$API_URL" "status"
 check_json_field "bridge health" "$BRIDGE_URL" "status"
+
+# SPA route checks (critical for full client routing on static prod serve; catches missing Caddy rewrite @spa /index.html)
+check_page_200 "board-spa-route" "${BOARD_URL%/}/board"
+check_page_200 "for-agents-spa-route" "${SITE_URL%/}/for-agents"
 
 if [[ "$failures" -gt 0 ]]; then
   echo "Web validation failed for ${ENV_NAME}: ${failures} check(s) failed." >&2

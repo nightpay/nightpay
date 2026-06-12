@@ -343,7 +343,7 @@ def build_management_chat_payload(message, mode, base_url):
 
     if _contains_any(text, ('domain', 'dns', 'caddy', 'subdomain', 'nightpay.dev', 'api.nightpay.dev', 'bridge.nightpay.dev', 'docs.nightpay.dev', 'ceo.nightpay.dev')):
         intent = 'domain_routing'
-        references = ['README.md', 'docs/HETZNER_X86_RUNBOOK.md', 'docs/SERVER_BOOTSTRAP_COPYPASTE.md']
+        references = ['README.md', 'private operator runbooks (HETZNER_X86_RUNBOOK.md + deploy checklists — gitignored, local to your VPS)']
         actions = [
             {
                 'title': 'Verify public hosts',
@@ -363,7 +363,7 @@ def build_management_chat_payload(message, mode, base_url):
         )
     elif _contains_any(text, ('start', 'bootstrap', 'init', 'onboard', 'setup', 'install')):
         intent = 'operator_onboarding'
-        references = ['docs/AGENT_PLAYGROUND.md', 'docs/SERVER_BOOTSTRAP_COPYPASTE.md']
+        references = ['docs/AGENT_PLAYGROUND.md', 'private operator runbooks (SERVER_BOOTSTRAP... + HETZNER — gitignored, local to your VPS)']
         actions = [
             {
                 'title': 'Initialize runtime',

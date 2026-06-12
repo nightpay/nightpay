@@ -66,6 +66,7 @@ const FULL_CONTEXT = [
   "running -> awaiting_approval -> completed | disputed | refunded",
   "",
   "### Key tools (bridge or MIP-003 API)",
+  "- start_job(description, amountSpecks, visibility) -> POST /start_job (gateway: start-job)",
   "- create_pool(description, contributionAmountSpecks, fundingGoalSpecks, maxFunders)",
   "- fund_pool(poolCommitment, funderNullifier)",
   "- submit_work(jobId, workOutput, bountyCommitment, outputHash)",

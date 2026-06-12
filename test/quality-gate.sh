@@ -8,6 +8,10 @@ run_step() {
   local script="$2"
   echo
   echo "==== $label ===="
+  if [[ ! -f "$ROOT_DIR/$script" ]] && git -C "$ROOT_DIR" check-ignore -q "$script" 2>/dev/null; then
+    echo "[PASS] skipped (gitignored private): $script"
+    return 0
+  fi
   bash "$ROOT_DIR/$script"
 }
 

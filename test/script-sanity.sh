@@ -44,7 +44,9 @@ check_bash_syntax() {
 
 echo "== Shell syntax checks =="
 shell_files=(
-  "scripts/agent-playground-setup.sh"
+  "bin/caddy-ensure.sh"
+  "bin/validate-web-endpoints.sh"
+  "bin/deploy-hetzner-ci.sh"
   "scripts/load-sim.sh"
   "scripts/server-sync-start.sh"
   "skills/nightpay/scripts/bounty-board.sh"
@@ -62,6 +64,8 @@ shell_files=(
 for rel in "${shell_files[@]}"; do
   if [[ -f "$ROOT_DIR/$rel" ]]; then
     check_bash_syntax "$rel"
+  elif git -C "$ROOT_DIR" check-ignore -q "$rel" 2>/dev/null; then
+    pass "skipped (gitignored private): $rel"
   else
     fail "missing file: $rel"
   fi
@@ -78,6 +82,10 @@ python_files=(
 for rel in "${python_files[@]}"; do
   abs="$ROOT_DIR/$rel"
   if [[ ! -f "$abs" ]]; then
+    if git -C "$ROOT_DIR" check-ignore -q "$rel" 2>/dev/null; then
+      pass "skipped (gitignored private): $rel"
+      continue
+    fi
     fail "missing file: $rel"
     continue
   fi

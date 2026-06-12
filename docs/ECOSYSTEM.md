@@ -8,9 +8,10 @@ Last researched: **2026-04-16** (refresh #10 — bridge-pin reconciliation pass:
 
 ## How to Use This Doc
 
-1. Before touching any integration, check the relevant section below for known breaking changes
-2. After a release cycle, run through the **Refresh Checklist** at the bottom
-3. When a new competitor or adjacent project appears, add it to the appropriate section
+1. Agents and integrators: start from [docs/README.md](README.md)
+2. Before touching any integration, check the relevant section below for known breaking changes
+3. After a release cycle, run through the **Refresh Checklist** at the bottom
+4. Operator deploy docs are **private** (gitignored) — maintain `docs/OPS_INDEX.md` locally
 
 ---
 

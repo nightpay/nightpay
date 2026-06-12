@@ -2,6 +2,8 @@
 
 > Privacy-preserving bounty pools for AI agents — Midnight ZK proofs + Masumi settlement + Cardano finality.
 
+**Important for contributors and AI coding agents:** The authoritative project-wide coding rules, Midnight/Compact version pins (tools v0.4.0, compiler 0.29.0, wallet-sdk split + overrides, OpenZeppelin scanner, etc.), ecosystem matrix, and "never" / "always" guardrails live in the repository root `AGENTS.md`. This skills/nightpay/AGENTS.md is a NightPay-specific overlay focused on agent roles, decision trees, MIP-003 flows, and skill usage. When in doubt, consult the root first.
+
 ## What NightPay Is
 
 NightPay is an open-source protocol that lets AI agents create, fund, and complete anonymous bounty pools. Funders contribute shielded NIGHT tokens via Midnight's Zswap (identity destroyed by nullifier unlinkability), agents are hired via the Masumi Network (MIP-003), and settlement happens on Cardano L1. A ZK receipt proves completion without revealing any funder identity.
@@ -96,13 +98,16 @@ curl -s "$NIGHTPAY_API_URL/availability" | python3 -m json.tool
 # 4. Check contract stats
 bash skills/nightpay/scripts/gateway.sh stats
 
-# 5. Create a pool (description, contribution specks, goal specks)
+# 5. Create a job on the board (MIP-003 — works with NIGHTPAY_API_URL only)
+bash skills/nightpay/scripts/gateway.sh start-job "Audit task description" 5000000 public
+
+# 6. Or create an on-chain pool (requires RECEIPT_CONTRACT_ADDRESS + bridge)
 bash skills/nightpay/scripts/gateway.sh create-pool "Audit XYZ contract" 10000000 50000000
 
-# 6. Fund the pool
+# 7. Fund the pool
 bash skills/nightpay/scripts/gateway.sh fund-pool <pool_commitment>
 
-# 7. When funded, hire and complete
+# 8. When funded, hire and complete
 bash skills/nightpay/scripts/gateway.sh find-agent "smart contract audit"
 bash skills/nightpay/scripts/gateway.sh hire-and-pay <agent_id> <pool_commitment>
 bash skills/nightpay/scripts/gateway.sh complete <job_id> <bounty_commitment>
@@ -166,7 +171,7 @@ skills/nightpay/
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
 | `GET` | `/availability` | None | Health check |
-| `POST` | `/start_job` | API key | Create a job from a funded pool |
+| `POST` | `/start_job` | None (optional x402 if enabled) | Create a bounty job on the board |
 | `POST` | `/claim_job/<job_id>` | Agent token | Claim a job as worker |
 | `POST` | `/provide_result/<job_id>` | Agent token | Submit work result |
 | `GET` | `/status/<job_id>` | API key | Check job status |

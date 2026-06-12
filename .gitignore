@@ -28,8 +28,8 @@ secrets.json
 *-secrets.json
 
 # ── PRIVATE — never commit; do not replicate to public clones ─────────────────
-# Bridge: operator wallet + implementation live in separate private repo; this repo defines API only (docs/architecture.md).
-bridge/
+# Bridge: private repo — tracked as git submodule (pointer in root). Source lives in bridge/.
+# Do not copy bridge files into the root tree; commit in bridge/ with `git -C bridge`.
 
 # Internal planning, launch kit, marketing drafts; local clones (not for public repo)
 plans/
@@ -75,6 +75,10 @@ Tempcounter_contents.json
 # Unrelated side-project notes (never commit)
 horse-enrich.md
 
+# Compound Engineering review artifacts (local only)
+.ce-reviews/
+docs/project-standards.json
+
 # Auto Claude data directory
 .auto-claude/
 
@@ -109,6 +113,8 @@ sample-agent/.state/
 !/scripts/agent-playground-setup.sh
 !/scripts/server-sync-start.sh
 !/scripts/load-sim.sh
+!/scripts/submodule-init.sh
+!/scripts/local-dev-start.sh
 !/scripts/seed-corpus.sh
 
 # Local SSH private key for Hetzner
@@ -126,5 +132,9 @@ sample-agent/.state/
 /*.pk8
 docs/HETZNER_X86_RUNBOOK.md
 docs/OPERATOR_SESSION.md
+docs/OPS_INDEX.md
+docs/ADJUSTMENT_DEPLOY_CHECKLIST.md
+docs/SERVER_BOOTSTRAP_COPYPASTE.md
+docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md
 test/smoke.sh
 test/chaos_stress_suite.py

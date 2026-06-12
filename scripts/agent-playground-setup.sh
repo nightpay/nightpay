@@ -180,6 +180,13 @@ init_cmd() {
   operator_secret_key="$(generate_hex_32)"
 
   local masumi_api_key
+  if [[ ! -f "${ROOT_DIR}/ui/package.json" ]]; then
+    echo "WARN: ui/ submodule missing. Run: bash scripts/submodule-init.sh" >&2
+  fi
+  if [[ ! -f "${ROOT_DIR}/bridge/package.json" ]]; then
+    echo "WARN: bridge/ submodule missing. Run: bash scripts/submodule-init.sh" >&2
+  fi
+
   local operator_address
   local receipt_contract_address
   local bridge_admin_token
@@ -345,6 +352,44 @@ doctor_cmd() {
       && pass "Masumi payment API" || warn "Masumi payment API"
     curl -fsS --max-time 5 "http://localhost:3000/docs" >/dev/null \
       && pass "Masumi registry API" || warn "Masumi registry API"
+  fi
+
+  # Public surface checks (Caddy + TLS + DNS). Activated automatically on production
+  # deploys when .agent-playground.env overrides BRIDGE_URL / NIGHTPAY_API_URL / *_URL
+  # to https://*.nightpay.dev (or equivalent). Local playground keeps using localhost
+  # paths only — no behavior change. This directly surfaces ERR_SSL_PROTOCOL_ERROR,
+  # cert expiry, Caddy not running, firewall blocks on 443, etc.
+  local did_public_check=0
+  check_public() {
+    local label="$1"
+    local url="$2"
+    [[ -z "$url" ]] && return 0
+    if [[ "$url" =~ ^https?://(localhost|127\.0\.0\.1) ]]; then return 0; fi
+    did_public_check=1
+    local code err
+    code="$(curl -sS -L --max-time 15 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo "000")"
+    if [[ "$code" == "200" ]]; then
+      pass "public: $label"
+    else
+      err="$(curl -sS -L --max-time 15 -o /dev/null -w '%{errormsg}' "$url" 2>&1 || true)"
+      if [[ "$err" =~ (SSL|certificate|handshake|protocol|verify|timed? ?out) || "$code" == "000" ]]; then
+        fail "public: $label — TLS/SSL or connect error: $err (HTTP $code) url=$url"
+      else
+        fail "public: $label — HTTP $code url=$url"
+      fi
+    fi
+  }
+
+  check_public "API /availability (Caddy TLS)" "${NIGHTPAY_API_URL:+${NIGHTPAY_API_URL%/}/availability}"
+  check_public "Bridge /health (Caddy TLS)" "${BRIDGE_URL:+${BRIDGE_URL%/}/health}"
+  if [[ -n "${SITE_URL:-}" ]]; then
+    check_public "Site root (Caddy static + TLS)" "$SITE_URL"
+  fi
+  if [[ -n "${BOARD_URL:-}" ]]; then
+    check_public "Board (Caddy static + TLS)" "$BOARD_URL"
+  fi
+  if [[ $did_public_check -eq 1 ]]; then
+    pass "public TLS surface exercised via Caddy (nightpay.dev etc)"
   fi
 
   if [[ "$failures" -gt 0 ]]; then

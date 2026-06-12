@@ -108,7 +108,36 @@ Interpretation:
 - ` m ui` means submodule `ui` HEAD differs from root pointer (expected until pointer commit).
 - ` m bridge` means submodule `bridge` HEAD differs from root pointer.
 
-## Fresh Clone Setup
+## Fresh clone — full workspace (root + ui + bridge)
+
+Three repos, one folder. Run once after clone:
+
+```bash
+git clone https://github.com/nightpay/nightpay.git
+cd nightpay
+bash scripts/submodule-init.sh
+```
+
+Private submodules need GitHub access to `nightpay-ui` and `nightpay-bridge` (PAT or SSH). CI uses `NIGHTPAY_UI_REPO_TOKEN` / `NIGHTPAY_BRIDGE_REPO_TOKEN`.
+
+Then bootstrap the stack:
+
+```bash
+bash scripts/agent-playground-setup.sh init
+bash scripts/agent-playground-setup.sh start   # MIP :8090 + UI dev :3333
+# separate terminal:
+cd bridge && npm run dev                       # bridge :4000
+```
+
+| Repo | Path | Branch | Run locally |
+|------|------|--------|-------------|
+| nightpay | `.` | `master` | MIP + gateway skill |
+| nightpay-ui | `ui/` | `main` | `npm run dev --prefix ui` |
+| nightpay-bridge | `bridge/` | `master` | `npm run dev` in `bridge/` |
+
+Stay on pinned SHAs (match production): `bash scripts/submodule-init.sh --no-checkout`
+
+## Fresh clone (submodules only, manual)
 
 ```bash
 git submodule update --init --recursive
@@ -123,6 +152,5 @@ They will only get whichever submodule commit SHA root points to.
 
 Pushing the root pointer commit above only lands the code on `origin/master` (or `staging`) — it does **not** automatically reach Hetzner unless CI is wired up and green. For the full flow from "I pushed the submodule pointer" to "production returns 200", see:
 
-- **`docs/ADJUSTMENT_DEPLOY_CHECKLIST.md` §6** — pushing a working/sync branch into production via `.github/workflows/deploy-hetzner.yml`, including how to reconcile a drifted local `master` and how to read the CI job steps without `gh auth`.
-- **`docs/ADJUSTMENT_DEPLOY_CHECKLIST.md` §7** — troubleshooting when the production gate fails (403 from Caddy perms, port conflicts from stale PIDs, CRLF in env files after Windows deploys, stale `ui/dist/`).
+- **Private operator docs** (gitignored): `docs/OPS_INDEX.md`, `docs/ADJUSTMENT_DEPLOY_CHECKLIST.md` — pushing via `.github/workflows/deploy-hetzner.yml`, CI troubleshooting (403 Caddy perms, port conflicts, CRLF).
 

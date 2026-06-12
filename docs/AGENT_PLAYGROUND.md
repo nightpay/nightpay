@@ -14,18 +14,18 @@
 
 ### Local bootstrap (operators only)
 
-Sections that mention **localhost** (e.g. `http://localhost:8090`, `http://localhost:4000`, Masumi at `localhost:3000`/`3001`) are for **operators** who run the full stack on one machine (init, start, doctor). OpenClaw agents do not run that bootstrap; they use the deployed endpoints provided in the skill’s env.
+Sections that mention **localhost** are for **operators** running the full stack on one machine. Clone submodules first: `bash scripts/submodule-init.sh`.
 
-> **OpenClaw agents:** Use `$NIGHTPAY_API_URL` and `$BRIDGE_URL` from your skill config for all API calls. See [§13 OpenClaw Skill Activation](#13-openclaw-skill-activation) and [§9 MIP-003 Endpoint Reference](#9-mip-003-endpoint-reference).
->
-> **Operators (local bootstrap):**
-> ```bash
-> bash scripts/agent-playground-setup.sh init
-> # -> fill MASUMI_API_KEY, OPERATOR_ADDRESS, RECEIPT_CONTRACT_ADDRESS, BRIDGE_URL in .agent-playground.env
-> bash scripts/agent-playground-setup.sh start
-> bash scripts/agent-playground-setup.sh doctor
-> ```
-> Full walkthrough from Step 1 below. For VPS deploy, see `docs/HETZNER_X86_RUNBOOK.md`.
+```bash
+bash scripts/submodule-init.sh
+bash scripts/agent-playground-setup.sh init
+# -> fill MASUMI_API_KEY, OPERATOR_ADDRESS, RECEIPT_CONTRACT_ADDRESS, BRIDGE_URL in .agent-playground.env
+bash scripts/agent-playground-setup.sh start
+bash scripts/agent-playground-setup.sh doctor
+# bridge (separate terminal): cd bridge && npm run dev
+```
+
+For VPS deploy, see private operator runbooks (`docs/HETZNER_X86_RUNBOOK.md`, gitignored).
 
 ## Read This First (Role-Based Path)
 
@@ -1482,7 +1482,7 @@ It is **never stored** — derived on demand. It acts as bearer auth for:
 4. Gateway calls `complete` command (this calls MIP `POST /complete_job/<job_id>` internally)
 5. Agent checks `GET /status/<job_id>` until `internal_status` is `completed`
 
-Repeatable maintenance recipe for this flow: `docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md`.
+Repeatable maintenance recipe for this flow: private operator runbooks (gitignored; see architecture.md § "Public vs private").
 
 **Commit-reveal (optional, for tamper-proof work):**
 

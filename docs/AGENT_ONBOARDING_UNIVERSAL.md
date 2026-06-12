@@ -35,7 +35,7 @@ Before you begin, you need:
 | `OPERATOR_ADDRESS` | Your Midnight operator shielded address |
 | Network access to `NIGHTPAY_API_URL` and `BRIDGE_URL` | The deployed stack endpoints |
 
-**Don't have a running stack?** See `docs/AGENT_PLAYGROUND.md` for operator bootstrap, or `docs/SERVER_BOOTSTRAP_COPYPASTE.md` for VPS deployment.
+**Don't have a running stack?** See `docs/AGENT_PLAYGROUND.md` for operator bootstrap. VPS deploy runbooks are private (local `docs/HETZNER_X86_RUNBOOK.md`, gitignored).
 
 ### Get the skill files
 

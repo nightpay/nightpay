@@ -25,6 +25,7 @@
 #   agent-showcase    [search_query]
 #   hire-and-pay      <agent_id> <job_description> <commitment_hash> [refund_address]
 #   hire-direct       <agent_id> <job_description> <amount_specks>
+#   start-job         <job_description> <amount_specks> [public|private]
 #   check-job         <job_id>
 #   complete          <job_id> <commitment_hash> [--approvals sig1:ts1:nonce1,...]
 #   refund            <job_id> <commitment_hash> [refund_address]
@@ -69,10 +70,8 @@ MASUMI_PUBLIC_URL="${MASUMI_PUBLIC_URL:-}"
 if [[ -z "$MASUMI_PUBLIC_URL" && -n "$MASUMI_SAAS_BASE" ]]; then
   MASUMI_PUBLIC_URL="${MASUMI_SAAS_BASE}/api/v1"
 fi
-MASUMI_API_KEY="${MASUMI_API_KEY:?SECURITY: Set MASUMI_API_KEY}"
 # Keep preprod default until Midnight mainnet is live.
 MIDNIGHT_NETWORK="${MIDNIGHT_NETWORK:-preprod}"
-OPERATOR_ADDRESS="${OPERATOR_ADDRESS:?SECURITY: Set OPERATOR_ADDRESS}"
 OPERATOR_FEE_BPS="${OPERATOR_FEE_BPS:-200}"
 MAX_BOUNTY_SPECKS="${MAX_BOUNTY_SPECKS:-500000000}"
 MIN_BOUNTY_SPECKS="${MIN_BOUNTY_SPECKS:-1000}"  # SECURITY: reject dust bounties
@@ -80,10 +79,6 @@ MIN_BOUNTY_SPECKS="${MIN_BOUNTY_SPECKS:-1000}"  # SECURITY: reject dust bounties
 # Midnight bridge — if set, gateway calls the bridge for real on-chain transactions.
 # If not set, gateway runs in local/stub mode (computes hashes locally, no chain).
 BRIDGE_URL="${BRIDGE_URL:-}"
-
-# SECURITY: contract address is REQUIRED — fail loudly rather than silently
-# routing funds to a void address
-RECEIPT_CONTRACT="${RECEIPT_CONTRACT_ADDRESS:?SECURITY: Set RECEIPT_CONTRACT_ADDRESS — funds cannot be routed without it}"
 
 # ─── Rate limiting ────────────────────────────────────────────────────────────
 # SECURITY: prevent bounty spam that inflates activeCount and floods Masumi.
@@ -94,6 +89,36 @@ RATE_LIMIT_SECONDS="${RATE_LIMIT_SECONDS:-5}"
 
 COMMAND="${1:?Usage: gateway.sh <command> [args...]}"
 shift
+
+# Normalize for robust MIP-only dispatch (case-insensitive, trimmed). This makes
+# the MIP bypass tolerant of agent wrappers, OpenClaw, SDK, and manual casing.
+COMMAND=$(printf '%s' "$COMMAND" | tr '[:upper:]' '[:lower:]' | xargs)
+
+# MIP-only commands (POST /start_job, listings, schedule) do not need Masumi or
+# on-chain contract env — agents can create job requests with NIGHTPAY_API_URL alone.
+# Single source of truth: skills/nightpay/config/mip-only-commands.txt (one per line).
+# The list below is a safe fallback if the shared file is absent during packaging.
+MIP_ONLY_COMMANDS=$(cat "${SKILL_ROOT:-$(dirname "$0")/../config}/mip-only-commands.txt" 2>/dev/null | tr -d '\r' | tr '\n' ' ' || echo "start-job agent-showcase schedule hire-direct")
+
+require_masumi_env() {
+  MASUMI_API_KEY="${MASUMI_API_KEY:?SECURITY: Set MASUMI_API_KEY}"
+}
+require_operator_env() {
+  OPERATOR_ADDRESS="${OPERATOR_ADDRESS:?SECURITY: Set OPERATOR_ADDRESS}"
+}
+require_receipt_contract() {
+  RECEIPT_CONTRACT="${RECEIPT_CONTRACT_ADDRESS:?SECURITY: Set RECEIPT_CONTRACT_ADDRESS — funds cannot be routed without it}"
+}
+
+if [[ " ${MIP_ONLY_COMMANDS} " == *" ${COMMAND} "* ]]; then
+  MASUMI_API_KEY="${MASUMI_API_KEY:-}"
+  OPERATOR_ADDRESS="${OPERATOR_ADDRESS:-}"
+  RECEIPT_CONTRACT="${RECEIPT_CONTRACT_ADDRESS:-}"
+else
+  require_masumi_env
+  require_operator_env
+  require_receipt_contract
+fi
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -578,6 +603,27 @@ MULTISIG_N="${MULTISIG_N:-3}"
 APPROVER_KEYS="${APPROVER_KEYS:-}"
 MAX_APPROVAL_AGE_SECONDS="${MAX_APPROVAL_AGE_SECONDS:-86400}"
 
+# POST JSON to MIP-003 /start_job (shared by start-job and hire-direct).
+mip_post_start_job() {
+  local payload="$1"
+  local curl_args=(-sS --max-time 20 -X POST -H "Content-Type: application/json" -d "$payload")
+  if [[ -n "$MIP003_PAYMENT_SIGNATURE" ]]; then
+    curl_args+=(-H "PAYMENT-SIGNATURE: ${MIP003_PAYMENT_SIGNATURE}")
+  fi
+  local response http_code
+  response=$(curl "${curl_args[@]}" -w $'\n%{http_code}' "${MIP003_URL}/start_job" 2>/dev/null) || {
+    echo "ERROR: MIP-003 unreachable at ${MIP003_URL}/start_job" >&2
+    exit 1
+  }
+  http_code="${response##*$'\n'}"
+  response="${response%$'\n'*}"
+  if [[ "$http_code" != "200" ]]; then
+    echo "ERROR: start_job failed (HTTP ${http_code}): ${response}" >&2
+    exit 1
+  fi
+  printf '%s\n' "$response"
+}
+
 # Local fallback verifier for high-value completion in no-bridge mode.
 # Input blob format must match approve-multisig output: sig:ts:nonce
 verify_multisig_local() {
@@ -817,11 +863,36 @@ print(json.dumps({
     masumi_post "/purchases" "$PAYLOAD"
     ;;
 
+  start-job)
+    JOB_DESC="${1:?Usage: start-job <job_description> <amount_specks> [public|private]}"
+    AMOUNT="${2:?Usage: start-job <job_description> <amount_specks> [public|private]}"
+    VISIBILITY="${3:-public}"
+
+    rate_limit "start-job"
+    validate_amount "$AMOUNT"
+    safety_check "$JOB_DESC"
+    [[ "$VISIBILITY" == "public" || "$VISIBILITY" == "private" ]] || die "visibility must be public or private"
+
+    PAYLOAD=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'amount_specks': int(sys.argv[2]),
+    'visibility': sys.argv[3],
+    'input_data': {
+        'description': sys.argv[1],
+        'amount_specks': int(sys.argv[2]),
+    }
+}))
+" "$JOB_DESC" "$AMOUNT" "$VISIBILITY")
+    mip_post_start_job "$PAYLOAD"
+    ;;
+
   hire-direct)
     AGENT_ID="${1:?Usage: hire-direct <agent_id> <job_description> <amount_specks>}"
     JOB_DESC="${2:?Usage: hire-direct <agent_id> <job_description> <amount_specks>}"
     AMOUNT="${3:?Usage: hire-direct <agent_id> <job_description> <amount_specks>}"
 
+    rate_limit "hire-direct"
     validate_amount "$AMOUNT"
     safety_check "$JOB_DESC"
     [[ "$AGENT_ID" =~ ^[A-Za-z0-9._:@-]{2,128}$ ]] || die "agent_id must match [A-Za-z0-9._:@-] and be 2-128 chars"
@@ -840,16 +911,7 @@ print(json.dumps({
     }
 }))
 " "$AGENT_ID" "$JOB_DESC" "$AMOUNT")
-    MIP_X402_ARGS=()
-    if [[ -n "$MIP003_PAYMENT_SIGNATURE" ]]; then
-      MIP_X402_ARGS=(-H "PAYMENT-SIGNATURE: ${MIP003_PAYMENT_SIGNATURE}")
-    fi
-    curl -sf --max-time 20 \
-      -X POST \
-      -H "Content-Type: application/json" \
-      "${MIP_X402_ARGS[@]}" \
-      -d "$PAYLOAD" \
-      "${MIP003_URL}/start_job"
+    mip_post_start_job "$PAYLOAD"
     ;;
 
   check-job)
@@ -1828,7 +1890,7 @@ print(f'Contest split sweep: scanned={scanned}, candidates={candidates}, split={
     TARGET="${1:-}"
 
     # Allow the schedule command to be called without live network dependencies.
-    # We already validated RECEIPT_CONTRACT / OPERATOR_ADDRESS at script entry.
+    # schedule is MIP-only (guard at top); RECEIPT/OPERATOR not forced here.
     MIP_SCHED_BASE="${MIP003_URL%/}"
     BRIDGE_SCHED_BASE="${BRIDGE_URL:-}"
     MIP_SCHED_AUTH=()
@@ -2004,6 +2066,7 @@ print(json.dumps(out, indent=2))
     echo -e "  ${CYAN}agent-showcase${RESET}   [query]                    List profile showcase agents by credibility" >&2
     echo -e "  ${CYAN}hire-and-pay${RESET}     <agent> <desc> <hash>      Create escrow, start job" >&2
     echo -e "  ${CYAN}hire-direct${RESET}      <agent> <desc> <amount>    Create hidden direct-hire job" >&2
+    echo -e "  ${CYAN}start-job${RESET}        <desc> <amount> [vis]       Create MIP-003 job (public board)" >&2
     echo -e "  ${CYAN}check-job${RESET}        <job_id>                   Poll job status" >&2
     echo -e "  ${CYAN}complete${RESET}         <job_id> <hash>            Mint receipt, release payment" >&2
     echo -e "  ${CYAN}refund${RESET}           <job_id> <hash> [addr]     Cancel escrow, refund NIGHT" >&2

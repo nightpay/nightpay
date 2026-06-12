@@ -323,12 +323,19 @@ skills/nightpay/
     └── receipt.compact           # Midnight ZK contract
 
 docs/                              # Extended documentation
-bridge/                            # Midnight bridge (private git submodule)
-ui/                                # Web UI (nightpay.dev)
+ui/                                # Web UI submodule (nightpay-ui) — bash scripts/submodule-init.sh
+bridge/                            # Bridge submodule (nightpay-bridge) — private repo, separate commits
 sample-agent/                      # Example agent implementation
 ```
 
-For completion/status sync maintenance after upgrades, use `docs/NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md`.
+**First-time workspace setup:**
+
+```bash
+bash scripts/submodule-init.sh      # clone ui + bridge, npm install
+bash scripts/local-dev-start.sh     # MIP :8090 + UI :3333 + bridge :4000
+```
+
+For completion/status sync maintenance after upgrades, see private operator runbooks (gitignored; `NIGHTPAY_DEV_COMPLETION_SYNC_RUNBOOK.md` and siblings in your local checkout — see architecture.md § "Public vs private").
 
 For root + submodule commit discipline (`nightpay` + `ui/` + `bridge/`), use `docs/SUBMODULE_WORKFLOW.md`.
 
@@ -371,19 +378,42 @@ See [`skills/nightpay/SKILL.md`](skills/nightpay/SKILL.md) for the full trust ch
 
 ## Deployment
 
-### DNS + Caddy
+### DNS + Caddy (production — static UI + SPA routes)
+
+The public hosts `nightpay.dev` / `board.nightpay.dev` serve the **pre-built static bundle** from `ui/dist/` (Caddy `file_server`, no Vite dev server in prod — set `ENABLE_UI=0` in env). Client-side routes (`/board`, `/job/:id`, `/verify`, `/for-agents` etc) require SPA fallback so BrowserRouter deep links and refreshes work.
 
 ```caddy
-nightpay.dev, board.nightpay.dev {
-  reverse_proxy 127.0.0.1:3333
+nightpay.dev, www.nightpay.dev, board.nightpay.dev {
+  root * /opt/nightpay/ui/dist
+  encode zstd gzip
+
+  # Selective API proxies (handle_path auto-strips prefix for the target)
+  handle_path /api/* { reverse_proxy 127.0.0.1:4000 }   # bridge
+  handle_path /mip/* { reverse_proxy 127.0.0.1:8090 }   # MIP-003
+  reverse_proxy /ontology* 127.0.0.1:8090
+
+  # SPA fallback — critical for full client routing on nightpay.dev / board.*
+  @spa {
+    not path /api/* /mip/* /ontology* /assets* /static*
+  }
+  rewrite @spa /index.html
+
+  file_server
 }
+
 api.nightpay.dev {
   reverse_proxy 127.0.0.1:8090
 }
+
 bridge.nightpay.dev {
   reverse_proxy 127.0.0.1:4000
 }
 ```
+
+See `docs/architecture.md` § "Public endpoint routing (Caddy)" and the private Hetzner runbook for exact multisite + TLS + perm setup (chmod o+rx on /opt/nightpay + o+rX on dist after each build).
+```
+
+Note the old reverse-to-3333 pattern only works for local dev (Vite handles SPA). Prod uses the static+fallback above.
 
 ### Production Smoke Check
 
@@ -439,6 +469,7 @@ See [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) for the full compatibil
 
 | Document | Description |
 |----------|-------------|
+| [**docs/README.md**](docs/README.md) | **Public doc index** — agents, integrators (no deploy secrets) |
 | [`skills/nightpay/AGENTS.md`](skills/nightpay/AGENTS.md) | Agent onboarding — roles, commands, boundaries, decision trees |
 | [`skills/nightpay/SKILL.md`](skills/nightpay/SKILL.md) | Skill manifest — tools, config, trust model, credential storage |
 | [`skills/nightpay/ontology/ontology.md`](skills/nightpay/ontology/ontology.md) | Ontology guide — lifecycles, contest mode, worked examples |
@@ -448,6 +479,7 @@ See [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) for the full compatibil
 | [`docs/SHOWCASE_WIIFM_PLAYBOOK.md`](docs/SHOWCASE_WIIFM_PLAYBOOK.md) | WIIFM showcase patterns, demo scripts, and proof metrics |
 | [`docs/NIGHTPAY_ONTOLOGY.md`](docs/NIGHTPAY_ONTOLOGY.md) | JSON-LD ontology model |
 | [`docs/ECOSYSTEM.md`](docs/ECOSYSTEM.md) | Tracked repos + breaking changes |
+| [`docs/architecture.md`](docs/architecture.md) | Components, bridge API |
 
 ## Built With
 
