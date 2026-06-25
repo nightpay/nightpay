@@ -19,7 +19,7 @@
 //   - Pool expiry is off-chain (gateway sets expired flag) — Compact has no time primitives
 //   - Double-funding, double-refund prevented by nullifier set
 
-pragma language_version >= 0.19;
+pragma language_version >= 0.22;
 
 import CompactStandardLibrary;
 

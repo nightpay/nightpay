@@ -34,19 +34,19 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 | DeepWiki: masumi-docs | https://deepwiki.com/masumi-network/masumi-docs | Internal structure when docs are sparse |
 
 **Key rules for this codebase:**
-- Compact developer tools are **v0.4.0** (Jan 2026) — run `compact fixup --check` first, then `compact fixup`
-- Compact compiler inside tools is v0.29.0 — `fixup --check` mode was added in 0.4.0 (use it)
+- Compact developer tools are **v0.5.1** — run `compact fixup --check` first, then `compact fixup`
+- Compact compiler inside tools is v0.31.0 (Compact language v0.22) — `fixup --check` mode was added in 0.4.0 (use it)
 - Proof system is BLS12-381 — do NOT write Pluto-Eris code
 - `MerkleTree<25>` is our depth — max is 32, we are safe
-- Bridge SDK versions (enforced via `bridge/package.json` `overrides`): `midnight-js-*@3.1.0`, `ledger-v7@7.0.1`, `compact-js@2.4.2`, `compact-runtime@0.14.0`
-- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.0.0` + `wallet-sdk-hd@3.0.0` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@1.0.0` + `wallet-sdk-facade@1.0.0` + `wallet-sdk-shielded@1.0.0` + `wallet-sdk-unshielded-wallet@1.0.0` (wallet ops, v1 line). Do not unify — these are upstream's own major version split.
-- Why the `overrides`: preprod-matrix peer deps point at `compact-js@2.4.0` / `ledger-v7@7.0.0`, but we pin to the newer patch releases for bug fixes. Both patches are API-compatible with the matrix-declared majors; keep `overrides` in sync with `dependencies` when bumping.
-- Ledger 8 / `compactc-0.30.0` / `compact-v0.5.0` are **released but NOT on the preprod matrix yet** — do not upgrade the bridge SDK past ledger-7 until the preprod compatibility matrix at `docs.midnight.network/relnotes/overview` advances.
-- Proof server runs on `localhost:6300` via Docker — always local, never remote
-- **Mainnet (Kūkolu) launches last week of March 2026** — keep `preprod` default until then
-- **Midnight City simulation opens Feb 26, 2026** — good demo window before mainnet
+- Bridge SDK versions (enforced via `bridge/package.json` `overrides`): `midnight-js-*@4.1.1`, `ledger-v8@8.0.3`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `onchain-runtime-v3@3.0.0`, `platform-js@2.2.4`. Cardano `cardano-node` 11.0.1 (PV11 "van Rossem" hard fork, voted Jun 16 2026).
+- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.1.0` + `wallet-sdk-hd@3.0.1` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@3.0.0` + `wallet-sdk-facade@3.0.0` + `wallet-sdk-shielded@2.1.0` + `wallet-sdk-unshielded-wallet@2.1.0` (wallet ops, v2/v3 line). Do not unify — these are upstream's own major version split.
+- Why the `overrides`: the ledger-8 compatibility matrix is internally consistent, but we still pin `ledger-v8@8.0.3` + `compact-js@2.5.1` + `compact-runtime@0.16.0` because sub-1.0 packages may break on minor bumps per matrix guidance. Keep `overrides` in sync with `dependencies` when bumping.
+- Ledger 8 is live on **Preview, Preprod, AND Mainnet** — the ledger-v8 stack (`ledger-v8@8.0.3`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `midnight-js@4.1.1`) is the current baseline. Indexer GraphQL endpoint is now `/api/v4/graphql` (was `/api/v3/graphql`).
+- Proof server runs on `localhost:6300` via Docker (`midnightntwrk/proof-server:8.0.3`) — always local, never remote
+- **Mainnet (Kūkolu) is live with Ledger 8** — keep `preprod` as the default network until preprod end-to-end passes; mainnet is available but not the default
+- **Midnight City simulation opened Feb 26, 2026** — historical note; good demo window before mainnet
 - WebSocket polyfill (`globalThis.WebSocket = WebSocket`) must be set before any provider
-- Browser wallet is Lace (Chrome only, injected under `window.midnight.{walletId}`) — our bridge is server-side, no browser wallet needed
+- Browser wallet is Lace (Chrome only, injected under `window.midnight.{walletId}`) — our bridge is server-side; the UI optionally connects a browser wallet for in-browser signing (Phase 4-lite: wallet connect + address display + signed-payload echo; full signed on-chain submission ships in a future bridge release)
 - Compact is now formally named **Minokawa** under LF Decentralized Trust — docs still say "Compact"
 
 **Critical env vars — format reference:**

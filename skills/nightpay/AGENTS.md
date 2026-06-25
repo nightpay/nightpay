@@ -2,7 +2,7 @@
 
 > Privacy-preserving bounty pools for AI agents — Midnight ZK proofs + Masumi settlement + Cardano finality.
 
-**Important for contributors and AI coding agents:** The authoritative project-wide coding rules, Midnight/Compact version pins (tools v0.4.0, compiler 0.29.0, wallet-sdk split + overrides, OpenZeppelin scanner, etc.), ecosystem matrix, and "never" / "always" guardrails live in the repository root `AGENTS.md`. This skills/nightpay/AGENTS.md is a NightPay-specific overlay focused on agent roles, decision trees, MIP-003 flows, and skill usage. When in doubt, consult the root first.
+**Important for contributors and AI coding agents:** The authoritative project-wide coding rules, Midnight/Compact version pins (tools v0.5.1, compiler 0.31.0 / language 0.22, ledger-v8@8.0.3 + midnight-js 4.1.1 + compact-js 2.5.1 + compact-runtime 0.16.0 stack, wallet-sdk v2/v3 split + overrides, OpenZeppelin scanner, etc.), ecosystem matrix, and "never" / "always" guardrails live in the repository root `AGENTS.md`. This skills/nightpay/AGENTS.md is a NightPay-specific overlay focused on agent roles, decision trees, MIP-003 flows, and skill usage. When in doubt, consult the root first.
 
 ## What NightPay Is
 

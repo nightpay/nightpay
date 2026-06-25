@@ -2,7 +2,7 @@
 
 **Purpose:** Stay current with every project we depend on or compete with. Check this before making architectural decisions. Update when you spot version bumps, breaking changes, or new entrants.
 
-Last researched: **2026-04-16** (refresh #10 — bridge-pin reconciliation pass: synced `Current Versions` to `bridge/package.json` `overrides` (`compact-js@2.4.2`, `ledger-v7@7.0.1`, `compact-runtime@0.14.0`) and documented the v1/v3 wallet-sdk major split. Refresh #9 on 2026-04-15 verified `masumi-saas` HEAD `dcc1c46` for SaaS proxy surfaces, OIDC/API auth scopes, and mainnet-aware route expectations.)
+Last researched: **2026-06-25** (refresh #11 — ledger-v8 migration: bumped all Midnight pins to the ledger-8 compatibility matrix; cardano-node 11.0.1 / PV11 van Rossem hard fork). Refresh #10 on 2026-04-16 was the bridge-pin reconciliation pass: synced `Current Versions` to `bridge/package.json` `overrides` (`compact-js@2.4.2`, `ledger-v7@7.0.1`, `compact-runtime@0.14.0`) and documented the v1/v3 wallet-sdk major split. Refresh #9 on 2026-04-15 verified `masumi-saas` HEAD `dcc1c46` for SaaS proxy surfaces, OIDC/API auth scopes, and mainnet-aware route expectations.
 
 ---
 
@@ -35,30 +35,34 @@ Our `receipt.compact` runs here. Everything privacy-related depends on this.
 | [Olanetsoft/midnight-mcp](https://github.com/Olanetsoft/midnight-mcp) | 29-tool MCP server for Midnight (compile, analyze, deploy Compact via Claude, 19 ⭐) | Complementary to our skill; use when Claude Code needs to touch `receipt.compact` directly |
 | [OpenZeppelin/compact-security-detectors-sdk](https://github.com/OpenZeppelin/compact-security-detectors-sdk) | Static analysis / vulnerability scanner for Compact contracts (OpenZeppelin) | **Run on `receipt.compact` before every deployment** — AST-based, CLI, pre-built detectors |
 
-### Current Versions (updated 2026-04-16 — reconciled against `bridge/package.json` `overrides`)
+### Current Versions (updated 2026-06-25 — ledger-v8 migration, reconciled against `bridge/package.json` `overrides`)
 
 | Component | Version | Notes |
 |---|---|---|
-| Compact Compiler | 0.29.0 | Preprod compatibility matrix (`docs.midnight.network/relnotes/overview`, updated Mar 17, 2026) |
-| **Compact Developer Tools** | **0.4.0** (preprod baseline) | `compact-v0.5.0` is released, but preprod matrix still targets compiler 0.29.0 (ledger 7) |
-| Wallet SDK | 1.0.0 | Preprod compatibility matrix |
-| Wallet API | 1.0.0 | Preprod compatibility matrix |
-| DApp Connector API | 4.0.0 | Preprod compatibility matrix |
-| Midnight.js | 3.1.0 | [midnight-js](https://github.com/midnightntwrk/midnight-js); see [MIDNIGHT_JS_INTEGRATION.md](MIDNIGHT_JS_INTEGRATION.md) for bridge adoption options |
-| Midnight Node | 0.21.0 | Preprod compatibility matrix |
-| Midnight Indexer | 3.1.0 | Preprod compatibility matrix |
-| ledger-v7 | 7.0.1 | Bridge pinned via `overrides` (matrix peer declares 7.0.0; 7.0.1 is API-compatible patch) |
-| compact-js | 2.4.2 | Bridge pinned via `overrides` (matrix peer declares 2.4.0; 2.4.2 is API-compatible patch) |
-| compact-runtime | 0.14.0 | Transitive of `compact-js@2.4.2`; installed exactly |
-| Proof Server | 7.0.0 | Preprod compatibility matrix |
+| Compact Compiler | 0.31.0 | Ledger-8 compatibility matrix (`docs.midnight.network/relnotes/overview`); Compact language v0.22 |
+| **Compact Developer Tools** | **0.5.1** | Ledger-8 baseline; run `compact fixup --check` then `compact fixup` |
+| Wallet SDK (facade) | 3.0.0 | Ledger-8 compatibility matrix (major bump from 1.0.0) |
+| Wallet SDK (shielded / unshielded / dust) | 2.1.0 / 2.1.0 / 3.0.0 | Ledger-8 compatibility matrix |
+| Wallet SDK (address-format / hd) | 3.1.0 / 3.0.1 | Ledger-8 compatibility matrix (v3 keys/addresses line) |
+| DApp Connector API | 4.0.1 | Ledger-8 compatibility matrix |
+| Midnight.js | 4.1.1 | [midnight-js](https://github.com/midnightntwrk/midnight-js); see [MIDNIGHT_JS_INTEGRATION.md](MIDNIGHT_JS_INTEGRATION.md) for bridge adoption options. Breaking change: `IndexerFormattedError.cause` → `.errors` |
+| Midnight Node | 0.22.5 | Ledger-8 compatibility matrix (preprod/mainnet) |
+| Midnight Indexer | 4.0.1 (preprod/mainnet) / 4.3.3 (preview) | Ledger-8 compatibility matrix; GraphQL endpoint now `/api/v4/graphql` |
+| ledger-v8 | 8.0.3 | Bridge pinned via `overrides` (was `ledger-v7@7.0.1`) |
+| compact-js | 2.5.1 | Bridge pinned via `overrides` (was 2.4.2) |
+| compact-runtime | 0.16.0 | Bridge pinned via `overrides` (was 0.14.0); Simulator API changed to `Simulator.make(Contract, witnesses)` + `sim.state(...)` |
+| onchain-runtime-v3 | 3.0.0 | New explicit dependency (pulled transitively by compact-js@2.5.x) |
+| platform-js | 2.2.4 | New explicit dependency (transitive pin for deterministic resolution) |
+| Proof Server | 8.0.3 | Ledger-8 compatibility matrix; Docker image `midnightntwrk/proof-server:8.0.3` |
 | Midnight Lace Wallet | 3.0.0 | |
 | VS Code Extension | 0.2.13 | |
 
-> ⚠️ **Compatibility note:** `compact-v0.5.0` / `compactc-v0.30.0` (ledger 8) released on March 17, 2026. Preprod matrix remains on compiler `0.29.0` (ledger 7), so keep the preprod toolchain pinned until the matrix changes.
+> ✅ **Ledger 8 is live on Preview, Preprod, AND Mainnet.** The `ledger-v8@8.0.3` / `compact-js@2.5.1` / `compact-runtime@0.16.0` / `midnight-js@4.1.1` stack is the current baseline. The previous gate ("preprod matrix remains on compiler 0.29.0 / ledger 7") is now cleared.
 
 ### Known Breaking Changes (History)
 
 - **Compact tools 0.4.0 (Jan 21 2026)**: `fixup` subcommand interface changed — new `--check` mode; run `compact fixup --check` before `compact fixup`
+- **Ledger 8 (June 2026)**: `ledger-v7` → `ledger-v8` package rename; `compact-runtime` Simulator API changed (`new Contract()` / `impureCircuits` / `createCircuitContext` → `Simulator.make(Contract, witnesses)` + `sim.state('<module>').data`); `midnight-js` 3.x → 4.x renamed `IndexerFormattedError.cause` → `.errors`; `wallet-sdk-facade` 1.0 → 3.0 major (and shielded/unshielded 1.0 → 2.1, dust 1.0 → 3.0); Compact language 0.19 → 0.22 (pragma bump); indexer GraphQL `/api/v3/graphql` → `/api/v4/graphql`
 - **ledger 6.2.0-rc.2**: broke `LedgerState::post_block_update`, `StorageBackend::pre_fetch`, `FeePrices` structure
 - **ledger 7.0.0-alpha.1**: proof system migration Pluto-Eris → BLS12-381
 - **Testnet-02 upgrade (May 12, 2025)**: Full chain reset + contract redeployment required after BLS12-381 migration
@@ -77,7 +81,7 @@ Our `receipt.compact` runs here. Everything privacy-related depends on this.
 |---|---|---|
 | Testnet-02 | Live and active | — |
 | Hilo (NIGHT token distribution) | Active | Done (Dec 2025) |
-| Kukolu (Federated mainnet, IOG + partners) | **Upcoming** | Last week of March 2026 |
+| Kukolu (Federated mainnet, IOG + partners) | **Live** | Launched with Ledger 8 |
 | Mohalu (Incentivized testnet, SPO participation) | Planned | Q2 2026 |
 | Hua (Cross-chain interop, full Zswap) | Planned | Q3 2026 |
 
@@ -265,7 +269,7 @@ Masumi's smart contracts run here. NIGHT token lives here. ADA is the base settl
 
 | Repo | Purpose | Watch For |
 |---|---|---|
-| [IntersectMBO/cardano-node](https://github.com/IntersectMBO/cardano-node) | Core node software (v10.6.2) | Node version bumps, hard fork announcements |
+| [IntersectMBO/cardano-node](https://github.com/IntersectMBO/cardano-node) | Core node software (v11.0.1) | Node version bumps, hard fork announcements |
 | [IntersectMBO/cardano-cli](https://github.com/IntersectMBO/cardano-cli) | Command-line interface | CLI breaking changes affecting scripts |
 | [IntersectMBO/cardano-api](https://github.com/IntersectMBO/cardano-api) | Haskell API for building on Cardano | API changes that flow through Masumi |
 | [IntersectMBO/cardano-node-emulator](https://github.com/IntersectMBO/cardano-node-emulator) | Local emulator for dev/testing | Useful for testing payment flows without testnet |
@@ -277,7 +281,7 @@ Masumi's smart contracts run here. NIGHT token lives here. ADA is the base settl
 
 | Item | Status |
 |---|---|
-| Node version | 10.6.2 (stable) |
+| Node version | 11.0.1 (stable; PV11 "van Rossem" intra-era hard fork voted Jun 16, 2026) |
 | Governance | Intersect MBO (community-governed via Chang hard fork) |
 | NIGHT token | Live on mainnet since Dec 4, 2025; redemption until Dec 4, 2026 + 90-day grace |
 | Masumi on-chain | 16,900+ transactions, $23K+ mainnet volume |
@@ -294,7 +298,7 @@ Masumi's smart contracts run here. NIGHT token lives here. ADA is the base settl
 The NIGHT token (Midnight's native token) launched on Cardano mainnet December 4, 2025:
 - Redemption period: Dec 10, 2025 → Dec 4, 2026 (+ 90-day grace period ending March 2027)
 - Distribution prioritized community claims over VC/private sales
-- Midnight mainnet (Kūkolu) launches last week of March 2026
+- Midnight mainnet (Kūkolu) is live with Ledger 8
 - NIGHT will be used for Midnight network operations; currently tradeable on Cardano DEXs
 - NightPay bounties are denominated in NIGHT (specks unit)
 
@@ -441,13 +445,14 @@ Run these checks periodically (suggest: before each release, or at minimum month
 
 ### Midnight
 
-- [x] **Re-check Midnight preprod compatibility matrix (Mar 17, 2026)** — keep compiler pinned at `0.29.0` for preprod and defer ledger-8 toolchain upgrades
+- [x] **Re-check Midnight preprod compatibility matrix (Jun 25, 2026)** — ledger-8 now the baseline on Preview/Preprod/Mainnet; bumped all Midnight pins (`ledger-v8@8.0.3`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `midnight-js@4.1.1`, wallet-sdk v2/v3 set, `compact` 0.5.1, `compactc` 0.31.0, proof-server 8.0.3, indexer v4, cardano-node 11.0.1 / PV11 van Rossem hard fork)
+- [x] **Ledger-8 migration (Jun 25, 2026)** — `AGENTS.md` (root + skills), `docs/ECOSYSTEM.md`, `docs/architecture.md`, `docs/MIDNIGHT_JS_INTEGRATION.md`, `docs/AGENT_PLAYGROUND.md` §3 + §17, `bridge/SETUP.md` all updated to ledger-v8 pins; `ledger-v7` gate removed
 - [ ] Check [compact releases](https://github.com/midnightntwrk/compact/releases) — any new version? Run `compact fixup --check` then `compact fixup` on `receipt.compact`
 - [ ] Check [midnight-ledger releases](https://github.com/midnightntwrk/midnight-ledger/releases) — any proof system changes?
 - [ ] Check [midnight-zk releases](https://github.com/midnightntwrk/midnight-zk/releases) — BLS12-381 or PLONK primitive changes invalidate our circuits
 - [ ] Check [relnotes overview](https://docs.midnight.network/relnotes/overview) — breaking changes?
 - [ ] Verify Testnet-02 is still live: https://explorer.masumi.network/?network=preprod (swap to Midnight explorer when available)
-- [ ] Check mainnet launch status — target late March 2026; update `midnightNetwork` default in `SKILL.md` when mainnet is live
+- [ ] Check mainnet launch status — Kūkolu is live with Ledger 8; `preprod` remains the default network until preprod end-to-end passes; flip `midnightNetwork` default in `SKILL.md` only after explicit human approval
 - [ ] **Run `OpenZeppelin/compact-security-detectors-sdk` against `receipt.compact`** — CLI static analysis before any deployment
 - [ ] Check [midnight-awesome-dapps](https://github.com/midnightntwrk/midnight-awesome-dapps) — submit NightPay PR once mainnet is live; watch for new competitor dApps listed there
 - [ ] Check [Olanetsoft/midnight-mcp](https://github.com/Olanetsoft/midnight-mcp) — new tools or Compact compiler versions exposed via MCP?
@@ -517,4 +522,4 @@ Run these checks periodically (suggest: before each release, or at minimum month
 
 ---
 
-*Updated: 2026-04-16 (refresh #10, bridge-pin reconciliation). Next review: Masumi SaaS + payment-service surface recheck (~2026-04-22).*
+*Updated: 2026-06-25 (refresh #11, ledger-v8 migration). Next review: Masumi SaaS + payment-service surface recheck (~2026-07-02).*

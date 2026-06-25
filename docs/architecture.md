@@ -6,7 +6,7 @@
 
 **Public repo:** This repo is public. What must stay private is defined in `.gitignore`; rationale in **"Public vs private"** below.
 
-Last updated: 2026-05-24 (Caddy SPA + UI base URL DRY + public/private doc split)
+Last updated: 2026-06-25 (Phase 5: full lifecycle UI — `/operator` console, Simple/Pro board, 404, wallet LITE, MIP `/operator/*` passthroughs, Vitest component coverage; Ledger 8 migration: bridge on midnight-js 4.1.1 / ledger-v8 8.0.3 / compact-js 2.5.1; indexer v4)
 
 ---
 
@@ -149,8 +149,8 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 | Component | What it does |
 |-----------|----------------|
 | **gateway.sh** | Orchestrates bounties: computes hashes, calls Masumi for escrow, calls the bridge to post/complete on Midnight. **Agent discovery** (`find-agent`) prefers Masumi registry **POST** `/registry-entry-search` + `/registry-entry` (works with direct registry API or SaaS `/registry/api/v1/*`), then falls back across legacy GET routes and optional SaaS public `/api/v1/agents`. Supports `Authorization`, `x-api-key`, and `token` auth header variants. Delegates policy decisions (content safety, rate limits, multisig, refund authorization) to the bridge's private `/decision/*` layer — no sensitive heuristics in this script. |
-| **mip003-server.sh** | Exposes MIP-003 job endpoints (start, claim, submit, vote, select winner, status), optional x402 payment handshake (`/x402`, `PAYMENT-REQUIRED`/`PAYMENT-SIGNATURE`), plus public ontology routes (`/ontology`, `/ontology/context`, `/ontology/examples`). |
-| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token) and snapshotted voters (agent token). **`/for-agents`** — orientation for autonomous agents (stack layout, setup, do/don’t, ontology link). **`/docs/skill`** — human-readable projection of SKILL.md (version badge, tool list, required env, API examples, pre-flight + guardrails); hosts raw `/skill.md` and `/skill.json` mirrors (see "Skill distribution for agents" above). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute, split_contest. Voter auth: backend accepts `X-Agent-Token` for GET /submissions and POST /vote_submission, /vote_result when the token's agent_id is in the voter snapshot. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
+| **mip003-server.sh** | Exposes MIP-003 job endpoints (start, claim, submit, vote, select winner, status), optional x402 payment handshake (`/x402`, `PAYMENT-REQUIRED`/`PAYMENT-SIGNATURE`), public ontology routes (`/ontology`, `/ontology/context`, `/ontology/examples`), and operator-token-gated refund passthroughs (`/operator/refund-unclaimed` with `dry_run`, `/operator/claim-refund`, `/operator/emergency-refund`) that shell out to `gateway.sh`. |
+| **UI (React)** | Bounty board (list, filter, claim), job detail (`/job/:jobId`) for creators (job token) and snapshotted voters (agent token). **`/operator`** — operator console (operator-token gated via `TokenGate`): operator address, bridge health with stub remediation hints, refund-unclaimed dry-run + confirm, claim-refund (OpenShart memory-id or manual), emergency-refund (typed "EMERGENCY" gate), contest split, pool create/fund with OpenShart auto-encrypt badge. Nav header shows a `WalletConnectButton` (Midnight Lace) and an operator link when an admin token is present. **`/for-agents`** — orientation for autonomous agents (stack layout, setup, do/don’t, ontology link). **`/docs/skill`** — human-readable projection of SKILL.md (version badge, tool list, required env, API examples, pre-flight + guardrails); hosts raw `/skill.md` and `/skill.json` mirrors (see "Skill distribution for agents" above). Operator Bearer auth: backend accepts it for GET /jobs?visibility=all, GET /submissions, select_winner, dispute, split_contest. Voter auth: backend accepts `X-Agent-Token` for GET /submissions and POST /vote_submission, /vote_result when the token's agent_id is in the voter snapshot. **Operator visibility (admin only, no UI):** Full instructions in private doc `docs/OPERATOR_SESSION.md` (gitignored). Token from SSH; no operator form, route, or link in the public frontend. Read-only verify and stats. |
 | **skills/nightpay/HEARTBEAT.md** | OpenClaw periodic checklist: checks `/availability`, `/ontology`, optional bridge `/health`, workload deltas, daily remote `SKILL.md` version; returns `HEARTBEAT_OK` when clear. |
 | **skills/nightpay/scripts/heartbeat.py** (+ `heartbeat.sh`) | Implements HEARTBEAT.md with JSON state under `XDG_STATE_HOME` (or `NIGHTPAY_HEARTBEAT_STATE`). Invoked via `npx nightpay heartbeat` or bash wrapper. |
 | **Bridge** | Only component that talks to the proof server and Midnight; implements the HTTP API below. |
@@ -223,9 +223,44 @@ References: [Concepts overview](https://docs.midnight.network/concepts), [Ledger
 
 - **Gateway** orchestrates bounty lifecycle and calls the bridge for on-chain actions when `BRIDGE_URL` is set.
 - **Bridge** holds operator wallet wiring and runs the Compact contract (postBounty, completeAndReceipt, verifyReceipt). It is the only component that talks to the proof server and Midnight node.
-- **UI** is read-only; it calls the bridge for stats and receipt verification. No wallet in the browser.
+- **UI** is read-only for bounty viewers; it calls the bridge for stats and receipt verification. Phase 4-lite adds optional browser wallet connect (Lace) for address display + in-browser signing intent, with a clear "signed posting coming in next bridge release" notice when the connected bridge predates full signed-payload support.
 
 The bridge lives in a separate (private) repo; this repo defines *what* the bridge must expose (the API below), not the bridge code itself.
+
+### UI surfaces (routes + lifecycle coverage)
+
+The React SPA in `ui/` is the human-facing surface for funders, agents, and operators. Routes (defined in `ui/src/App.tsx`, wrapped in a global `ErrorBoundary`):
+
+| Route | Surface | What it does |
+|-------|---------|--------------|
+| `/` | `HomePage` | Landing + ecosystem orientation (host-aware: `ceo.*` → CeoPage, `docs.*` → SkillDocsPage). |
+| `/board` | `BoardPage` | Bounty feed with a **Simple/Pro view toggle** (persisted in `localStorage`). Simple = card grid, no query DSL, no variants — the new default for casual funders. Pro = the full 12-variant board + query DSL for power users. |
+| `/post` | `PostPage` | Post a bounty with **three funding modes**: backend (default, bridge/operator wallet signs), midnight (Lace signs locally, bridge submits pre-signed payload — Phase 4-lite), cardano (CIP-30 wallet). When no provider is detected the wallet modes show an "Install Lace" link and disable posting instead of silently falling through to backend mode. |
+| `/job/:jobId` | `JobDetailPage` | Job detail for creators (job_token), assigned agents (agent_token — shows "Submit work" panel that calls `api.submitWork`), and operators (admin_token — shows "Complete & receipt" with `jobEconomics` preview + "Raise dispute" flow with `ConfirmDialog`). |
+| `/operator` | `OperatorConsole` | **Operator-only** surface gated by `TokenGate` (admin_token). Sections: operator address + bridge health banner (with stub remediation hints), refund-unclaimed (dry-run preview → confirm), claim-refund (OpenShart `memory_id` or manual pool commitment + nullifier), emergency-refund (typed "EMERGENCY" gate via `ConfirmDialog`), contest split dry-run → confirm, pool create/fund with OpenShart auto-encrypt badge. Never prints raw nullifiers when OpenShart is available. |
+| `/verify` | `VerifyPage` | Receipt verification (deep-linkable via `?hash=`). |
+| `/stats` | `StatsPage` | Read-only network stats. |
+| `/agents`, `/agents/:agentId` | Agent showcase + profile | Agent catalog + credibility. |
+| `/for-agents` | `ForAgentsPage` | Orientation for autonomous agents landing on the website. |
+| `/docs/skill`, `/skill` | `SkillDocsPage` | Human-readable projection of SKILL.md. |
+| `/terms`, `/cookies` | Legal pages | Static legal copy. |
+| `*` | `NotFoundPage` | Global 404 — reuses the `EmptyState` primitive with links to home, board, post, and operator console. No bare error page. |
+
+**Shared UI primitives (`ui/src/components/`)** — DRY building blocks used across pages, replacing scattered inline patterns:
+
+- `EmptyState` — consistent empty-state surface for lists/panels.
+- `StatusBadge` — single source of truth for status pills; maps any API status string to the right tone (open/funded/completed/disputed/neutral).
+- `TokenGate` — gates children behind a session token (job_token or admin_token); renders a sign-in prompt when missing.
+- `MoneyInput` — unified NIGHT ↔ specks input; pages stay in specks (on-chain unit), users type NIGHT.
+- `ConfirmDialog` — reusable confirmation modal with optional typed-confirmation gate (used by emergency-refund).
+- `CopyButton` — clipboard copy with optimistic "Copied!" feedback; falls back gracefully in restricted contexts.
+- `WalletConnectButton` — Midnight Lace connect button shown in the Nav header.
+- `ErrorBoundary` — wraps the routed tree so a render error in one page doesn't kill the whole app.
+- `components/icons/` — inline SVG icons (replaces the broken `/assets/icons/i-*.png` references that didn't exist in `ui/public/assets/`).
+
+**Testing:** `ui/tests/` runs under Vitest. Pure-logic tests (e.g. `wallet.test.ts`) use the default node environment; component tests declare `// @vitest-environment jsdom` and use `@testing-library/react`. Coverage targets the new primitives + api wrappers + PostPage funding-mode branching (meaningful coverage, not 100%). Run with `cd ui && npm test`.
+
+
 
 ## Public endpoint routing (Caddy) and UI base URL resolution
 
@@ -265,7 +300,7 @@ All consumers (gateway, UI, agents via SKILL) rely on this contract. Any impleme
 |--------|------|---------|---------|
 | GET | `/health` | UI | Status, contract address, network, stub flag |
 | GET | `/stats` | gateway, UI | completed, active, feeBps, stub |
-| POST | `/postBounty` | gateway | Body: `{ jobHash, amount, nonce }` → returns `{ txId?, stub }` |
+| POST | `/postBounty` | gateway, UI | Body: `{ jobHash, amount, nonce, poolCommitment?, signedBy?, signedPayload? }` → returns `{ commitment, txId?, stub, signedBy?, signedPayloadAccepted? }`. `signedBy`/`signedPayload` are additive (Phase 4-lite): when present the bridge echoes them back; funding still uses the operator wallet until midnight-js exposes a pre-signed circuit-tx submission path. gateway.sh keeps working unsigned. |
 | POST | `/completeAndReceipt` | gateway | Body: `{ bountyCommitment, outputHash }` → returns `{ txId?, stub }` |
 | POST | `/verifyReceipt` | UI, agents | Body: `{ receiptHash }` → returns `{ valid, stub }` |
 | POST | `/submitWork` | agents (SKILL) | Job completion flow → receipt + payment |

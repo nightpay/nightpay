@@ -98,7 +98,7 @@ echo -e "${DIM}  mip003 mode: ${MIP003_MODE}${RESET}" >&2
 echo -e "${DIM}  ontology dir: ${ONTOLOGY_DIR}${RESET}" >&2
 
 "$PYTHON_BIN" - "$PORT" "$DB_PATH" "$JOB_TOKEN_SECRET" "$OPERATOR_SECRET_KEY" "$OPTIMISTIC_WINDOW_HOURS" "$MULTISIG_THRESHOLD_SPECKS" "$OPERATOR_FEE_BPS" "$IDEMPOTENCY_TTL_SECONDS" "$MIP003_MODE" "$ONTOLOGY_DIR" <<'PYCODE'
-import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math, base64, traceback
+import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math, base64, traceback, subprocess, shlex
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
 from urllib import request as urlrequest, error as urlerror
@@ -3525,6 +3525,119 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 history=history,
             )
             self.respond(200, payload)
+            return
+
+        # ── Operator passthrough refunds (Phase 3) ────────────────────────────
+        # Shell out to gateway.sh so the UI OperatorConsole can trigger the same
+        # refund/claim/emergency flows the CLI uses, behind operator bearer auth.
+        # Never accept raw secret material in the body — OpenShart memory-id
+        # recall happens inside gateway.sh (_shart_recall).
+        if path_only == '/operator/refund-unclaimed':
+            if not self._operator_bearer_ok():
+                self.respond(403, {'error': 'operator bearer auth required'})
+                return
+            dry_run = bool(body.get('dry_run', False))
+            gw = os.environ.get('NIGHTPAY_GATEWAY_PATH') or os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'gateway.sh'
+            )
+            cmd = ['bash', gw, 'refund-unclaimed']
+            if dry_run:
+                cmd.append('--dry-run')
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=120, env=os.environ.copy(),
+                )
+            except FileNotFoundError:
+                self.respond(500, {'error': f'gateway.sh not found at {gw}', 'dry_run': dry_run})
+                return
+            except subprocess.TimeoutExpired:
+                self.respond(504, {'error': 'refund-unclaimed sweep timed out', 'dry_run': dry_run})
+                return
+            self.respond(200 if proc.returncode == 0 else 502, {
+                'ok': proc.returncode == 0,
+                'dry_run': dry_run,
+                'exit_code': proc.returncode,
+                'stdout': proc.stdout,
+                'stderr': proc.stderr,
+            })
+            return
+
+        if path_only == '/operator/claim-refund':
+            if not self._operator_bearer_ok():
+                self.respond(403, {'error': 'operator bearer auth required'})
+                return
+            memory_id = str(body.get('memory_id', '')).strip()
+            pool_commitment = str(body.get('pool_commitment', '')).strip()
+            funder_nullifier = str(body.get('funder_nullifier', '')).strip()
+            if memory_id:
+                args = ['--memory-id', memory_id]
+            elif pool_commitment and funder_nullifier:
+                args = [pool_commitment, funder_nullifier]
+            else:
+                self.respond(400, {'error': 'provide memory_id OR (pool_commitment + funder_nullifier)'})
+                return
+            gw = os.environ.get('NIGHTPAY_GATEWAY_PATH') or os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'gateway.sh'
+            )
+            try:
+                proc = subprocess.run(
+                    ['bash', gw, 'claim-refund', *args],
+                    capture_output=True, text=True, timeout=120, env=os.environ.copy(),
+                )
+            except FileNotFoundError:
+                self.respond(500, {'error': f'gateway.sh not found at {gw}'})
+                return
+            except subprocess.TimeoutExpired:
+                self.respond(504, {'error': 'claim-refund timed out'})
+                return
+            self.respond(200 if proc.returncode == 0 else 502, {
+                'ok': proc.returncode == 0,
+                'exit_code': proc.returncode,
+                'stdout': proc.stdout,
+                'stderr': proc.stderr,
+            })
+            return
+
+        if path_only == '/operator/emergency-refund':
+            if not self._operator_bearer_ok():
+                self.respond(403, {'error': 'operator bearer auth required'})
+                return
+            memory_id = str(body.get('memory_id', '')).strip()
+            pool_commitment = str(body.get('pool_commitment', '')).strip()
+            funder_nullifier = str(body.get('funder_nullifier', '')).strip()
+            contribution_specks = str(body.get('contribution_specks', '')).strip()
+            funded_at_tx = str(body.get('funded_at_tx', '')).strip()
+            nonce = str(body.get('nonce', '')).strip()
+            if memory_id:
+                if not (contribution_specks and funded_at_tx):
+                    self.respond(400, {'error': 'memory_id path also requires contribution_specks and funded_at_tx'})
+                    return
+                args = ['--memory-id', memory_id, contribution_specks, funded_at_tx]
+            elif pool_commitment and funder_nullifier and contribution_specks and funded_at_tx and nonce:
+                args = [pool_commitment, funder_nullifier, contribution_specks, funded_at_tx, nonce]
+            else:
+                self.respond(400, {'error': 'provide memory_id (+contribution_specks+funded_at_tx) OR all five positional fields'})
+                return
+            gw = os.environ.get('NIGHTPAY_GATEWAY_PATH') or os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'gateway.sh'
+            )
+            try:
+                proc = subprocess.run(
+                    ['bash', gw, 'emergency-refund', *args],
+                    capture_output=True, text=True, timeout=120, env=os.environ.copy(),
+                )
+            except FileNotFoundError:
+                self.respond(500, {'error': f'gateway.sh not found at {gw}'})
+                return
+            except subprocess.TimeoutExpired:
+                self.respond(504, {'error': 'emergency-refund timed out'})
+                return
+            self.respond(200 if proc.returncode == 0 else 502, {
+                'ok': proc.returncode == 0,
+                'exit_code': proc.returncode,
+                'stdout': proc.stdout,
+                'stderr': proc.stderr,
+            })
             return
 
         if path_only == '/agent/challenge':
