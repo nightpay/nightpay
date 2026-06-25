@@ -1789,9 +1789,10 @@ compact-security-detectors scan skills/nightpay/contracts/receipt.compact
 [ ] Verify bridge is on the ledger-v8 stack: midnight-js 4.1.1 / ledger-v8 8.0.3 / compact-js 2.5.1 / compact-runtime 0.16.0 / wallet-sdk-facade 3.0.0
 [ ] Verify indexer endpoints are /api/v4/graphql (was /api/v3)
 [ ] compact fixup --check on receipt.compact → clean (compiler 0.31.0 / language 0.22)
-[ ] OpenZeppelin compact-security-detectors scan → clean
+[ ] OpenZeppelin compact-security-detectors scan → clean (Rust workspace: `git clone https://github.com/OpenZeppelin/compact-security-detectors-sdk && cargo build && ./target/release/compact-security-detectors scan skills/nightpay/contracts/receipt.compact`)
+[ ] ⚠️ LevelDB state-migration: the `secret ledger` → public-`ledger` redesign changed the private-state shape. Existing `nightpay-private-state` LevelDB stores from the ledger-v7 contract are INCOMPATIBLE — operators must delete the old LevelDB directory and re-provision (the gateway key re-provisions on `initialize()`; funded pool commitments must be re-established). Set `BRIDGE_PRIVATE_STATE_PASSWORD` (min 16 chars, 3 of upper/lower/digit/special) for the new encrypted LevelDB provider.
 [ ] Preprod end-to-end passes (createPool → fundPool → activatePool round-trip)
-[ ] Deploy fresh contract instance on mainnet
+[ ] Deploy fresh contract instance on mainnet (full proving-key compile: `compact compile` without `--skip-zk`)
 [ ] Record new RECEIPT_CONTRACT_ADDRESS (mainnet)
 [ ] Record new OPERATOR_ADDRESS (mainnet wallet)
 [ ] Update MIDNIGHT_NETWORK=mainnet in production env

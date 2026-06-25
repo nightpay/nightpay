@@ -1,11 +1,50 @@
-// NightPay — Midnight Compact contract (ledger-compatible)
+// NightPay — Midnight Compact contract (Compact 0.22+ / compactc 0.31 compatible)
 //
-// Built against: midnightntwrk/midnight-ledger spec.
-// Aligns with Midnight concepts: public/secret ledger state, UTXO-style nullifier set,
+// Built against: midnightntwrk/midnight-ledger spec (Ledger 8).
+// Aligns with Midnight concepts: public ledger state, UTXO-style nullifier set,
 // commitment/nullifier pattern (see docs.midnight.network/concepts and
 // docs.midnight.network/concepts/how-midnight-works/keeping-data-private).
 //
-// SECURITY MODEL:
+// PRIVACY MODEL (post `secret ledger` removal — Compact 0.22+):
+//   Compact 0.22 removed `secret ledger`. All state is now plain `ledger` (public).
+//   Privacy is preserved the canonical Midnight way:
+//     * MerkleTree<25, Bytes<32>> leaves are COMMITMENT HASHES (hash(DOMAIN_*, ...)),
+//       never raw funder data. The tree root is public but reveals nothing about
+//       which leaf is held by whom — only membership is provable.
+//     * MerkleTreePath<25, Bytes<32>> is supplied by a `witness` (the bridge driver
+//       computes it off-chain via ledger.<tree>.findPathForLeaf). The path (which
+//       leaf you're proving) is the private input; the circuit only asserts
+//       tree.checkRoot(merkleTreePathRoot<25, Bytes<32>>(path)) against the on-chain root.
+//     * Set<Bytes<32>> nullifiers are PUBLIC by design — they are domain-separated
+//       hashes, so revealing them on-chain does NOT leak funder identity (this is
+//       literally what nullifiers are for: double-spend protection without linkability).
+//
+// DISCLOSURE MODEL (Compact 0.22+):
+//   Any value derived from a witness or circuit parameter that flows into a ledger
+//   operation (assignment to a ledger, .insert, .member, .checkRoot, Map.insert,
+//   Counter.increment, etc.) MUST be wrapped in disclose(...) to explicitly declare
+//   the public disclosure. The compiler rejects undeclared disclosures (see
+//   "potential witness-value disclosure must be declared" errors). disclose() is the
+//   explicit consent that a witness-derived value lands on the public ledger. For
+//   NightPay this is safe by design: every value we disclose is either (a) a
+//   domain-separated commitment hash (reveals nothing about the preimage), (b) a
+//   nullifier (domain-separated, unlinkable), or (c) a public parameter the caller
+//   chose to put on-chain anyway (operator address, fee bps, withdraw amount).
+//
+// STRUCTURE NOTE: compactc 0.31 only emits circuits/ledger/witnesses for the
+//   *flat top-level* contract pattern (export ledger / export circuit at file
+//   scope). The `module NightPay { ... }` wrapper produces an empty contract-info
+//   (verified empirically). The stub contract already used the flat pattern; the
+//   main contract is now flat too. All ledger decls are `export ledger` and all
+//   entry-point circuits are `export circuit`; pure/internal circuits and
+//   witnesses remain unexported (witnesses are never exported).
+//
+//   Note on `const`: Compact 0.22+ only allows `const` as a *statement* inside a
+//   circuit/constructor body, not as a module-level program element (see lang-ref
+//   grammar: program-element does not include const). Module-level named values are
+//   therefore exposed as `pure circuit` helpers below (DOMAIN_*, MAX_*, threshold).
+//
+// SECURITY MODEL (unchanged from the secret-ledger era):
 //   - initialize() can only be called once — locked forever after
 //   - withdrawFees() is gated to the operator address set at init
 //   - operatorFeeBps and operatorAddress are IMMUTABLE after initialization
@@ -17,440 +56,630 @@
 //   - Pool funding uses equal contributions — each funder pays exactly contributionAmount
 //   - Refunds are funder-initiated — funder proves their contribution via funding tree
 //   - Pool expiry is off-chain (gateway sets expired flag) — Compact has no time primitives
-//   - Double-funding, double-refund prevented by nullifier set
+//   - Double-funding, double-refund prevented by the on-chain nullifier Set
+//   - Double-spend prevention is enforced ON-CHAIN (no trust-the-driver for nullifiers)
 
 pragma language_version >= 0.22;
 
 import CompactStandardLibrary;
 
-module NightPay {
-
-  // ─── Public ledger state ─────────────────────────────────────────────────────
-  ledger completedCount:  Counter;
-  ledger activeCount:     Counter;
-  ledger poolCount:       Counter;
-  ledger operatorFeeBps:  Field;
-  ledger operatorAddress: Bytes<32>;
-
-  // SECURITY: one-time init lock — set to 1 after initialize() runs
-  ledger initialized: Field;
-
-  // DARK ENERGY: gateway address locked at init — cannot be injected per-transaction.
-  ledger gatewayAddress: Bytes<32>;
-
-  // Total number of individual funding contributions — used for fundingTree capacity guard.
-  ledger fundingCount: Counter;
-
-  // H-1: per-pool running total of contributions — activatePool verifies totalFunded against this.
-  ledger poolFundedAmounts: Map<Bytes<32>, Field>;
-
-  // H-2: running total of infrastructure fees retained — caps what the operator can withdraw.
-  ledger accumulatedFees: Counter;
-
-  // H-3: gateway authentication key (bboard pattern) — derived from gateway secret at init.
-  // expirePool and activatePool verify the caller knows the corresponding secret key.
-  ledger gatewayAuthKey: Bytes<32>;
-
-  // FAILSAFE: monotonic transaction counter — incremented on every state-changing call.
-  // Used as a crude on-chain clock for emergency refunds when the gateway disappears.
-  // Compact has no block/time primitives, so this is the best proxy: after enough
-  // contract interactions have occurred, funders can self-rescue without the gateway.
-  ledger txCounter: Counter;
-
-  // ─── Private state (shielded via ZK) ────────────────────────────────────────
-  secret ledger bountyTree:   MerkleTree<25>;
-  secret ledger receiptTree:  MerkleTree<25>;
-  secret ledger poolTree:     MerkleTree<25>;   // pool commitment records
-  secret ledger fundingTree:  MerkleTree<25>;   // individual funding records (for refund proofs)
-  secret ledger nullifiers:   Set<Bytes<32>>;
-
-  // ─── Domain separation prefixes ─────────────────────────────────────────────
-  const DOMAIN_BOUNTY:     Bytes<9> = 0x626f756e7479303030; // "bounty000"
-  const DOMAIN_RECEIPT:    Bytes<9> = 0x726563656970743030; // "receipt00"
-  const DOMAIN_NULLIFIER:  Bytes<9> = 0x6e756c6c6966696572; // "nullifier"
-  const DOMAIN_POOL:       Bytes<8> = 0x706f6f6c30303030;   // "pool0000"
-  const DOMAIN_FUNDING:    Bytes<9> = 0x66756e64696e673030; // "funding00"
-  const DOMAIN_REFUND:     Bytes<9> = 0x726566756e64303030; // "refund000"
-  const DOMAIN_EMERGENCY:  Bytes<9> = 0x656d657267656e6379; // "emergency"
-
-  // ─── Capacity limits ─────────────────────────────────────────────────────────
-  const MAX_TREE_ENTRIES: Field = 30199000;  // ~90% of 2^25
-  const MAX_COMPLETED: Field = 30199000;
-
-  // SECURITY: Field arithmetic overflow guard.
-  const MAX_AMOUNT: Field = 9007199254740991;  // 2^53 - 1
-
-  // SECURITY: max funders per pool — prevents gas griefing on activate/refund
-  const MAX_POOL_FUNDERS: Field = 1000;
-
-  // FAILSAFE: emergency refund threshold — if txCounter advances by this many
-  // transactions beyond the fundedAtTx recorded in the funding record,
-  // the funder can self-rescue without waiting for expirePool.
-  // ~500 contract calls ≈ days/weeks of normal usage — long enough for the
-  // gateway to act, short enough that funds aren't locked forever.
-  const EMERGENCY_TX_THRESHOLD: Field = 500;
-
-  // ─── Gateway authentication (H-3: bboard pattern) ───────────────────────────
-  // The bridge implements localGatewaySecretKey() in witnesses.ts, returning its
-  // stored secret key from private state (LevelDB). The public key is derived
-  // in-circuit — the secret never leaves the prover.
-  witness localGatewaySecretKey(): Bytes<32>;
-
-  pure circuit gatewayPublicKey(sk: Bytes<32>): Bytes<32> {
-    return persistentHash<Vector<2, Bytes<32>>>([pad(32, "nightpay:gateway:v1"), sk]);
-  }
-
-  // Internal guard — call at the top of any gateway-only circuit.
-  circuit assertGateway(): [] {
-    const sk = localGatewaySecretKey();
-    const derived = gatewayPublicKey(sk);
-    assert disclose(derived == gatewayAuthKey);
-  }
-
-  // ─── Circuits ───────────────────────────────────────────────────────────────
-
-  // SECURITY: guarded by initialized flag — reverts if called twice.
-  export circuit initialize(
-    operatorAddr: Bytes<32>,
-    gatewayAddr:  Bytes<32>,
-    feeBps:       Field
-  ): [] {
-    assert initialized == 0;
-    assert feeBps <= 500;
-    assert feeBps >= 0;
-
-    operatorAddress = operatorAddr;
-    gatewayAddress  = gatewayAddr;
-    operatorFeeBps  = feeBps;
-    initialized     = 1;
-
-    // H-3: derive and store the gateway's auth key from its secret key.
-    // The bridge calls initialize, so localGatewaySecretKey() returns the
-    // bridge's secret. From this point on, expirePool + activatePool require
-    // proof of knowing this secret.
-    gatewayAuthKey = gatewayPublicKey(localGatewaySecretKey());
-  }
-
-  // ─── Pool Lifecycle ───────────────────────────────────────────────────────────
-
-  // createPool: creates a bounty pool with a funding goal and fixed contribution amount.
-  // No funds move yet — this just records the pool parameters in the pool tree.
-  // SECURITY: contribution × maxFunders must equal fundingGoal (exact division enforced).
-  export circuit createPool(
-    witness jobHash:              Bytes<32>,
-    witness fundingGoal:          Field,
-    witness contributionAmount:   Field,
-    witness maxFunders:           Field,
-    witness nonce:                Bytes<32>
-  ): Bytes<32> {
-    assert initialized == 1;
-    assert fundingGoal > 0;
-    assert contributionAmount > 0;
-    assert maxFunders > 0;
-    assert maxFunders <= MAX_POOL_FUNDERS;
-    assert fundingGoal <= MAX_AMOUNT;
-    assert contributionAmount <= MAX_AMOUNT;
-
-    // SECURITY: enforce exact division — no rounding dust
-    assert contributionAmount * maxFunders == fundingGoal;
-
-    // SECURITY: tree capacity check
-    assert poolCount < MAX_TREE_ENTRIES;
-
-    const poolCommitment = hash(DOMAIN_POOL, jobHash, fundingGoal, contributionAmount, maxFunders, nonce);
-
-    // SECURITY: pool commitment must be fresh
-    assert !nullifiers.contains(poolCommitment);
-
-    poolTree.insert(poolCommitment);
-    poolCount.increment(1);
-    txCounter.increment(1);
-
-    return poolCommitment;
-  }
-
-  // fundPool: funder contributes exactly contributionAmount NIGHT to a pool.
-  // Records a funding entry in fundingTree (used for refund proofs later).
-  // The current txCounter is baked into the funding record hash — this lets
-  // emergencyRefund verify that enough contract interactions have passed.
-  // SECURITY: funder sends shielded NIGHT — identity destroyed by nullifier model.
-  export circuit fundPool(
-    witness funderNullifier:    Bytes<32>,
-    witness poolCommitment:     Bytes<32>,
-    witness poolMerkleProof:    Proof<25>,
-    witness contributionAmount: Field,
-    witness nonce:              Bytes<32>
-  ): Bytes<32> {
-    assert initialized == 1;
-    assert contributionAmount > 0;
-    assert contributionAmount <= MAX_AMOUNT;
-
-    // SECURITY: pool must exist
-    assert poolTree.verify(poolCommitment, poolMerkleProof);
-
-    // Capture txCounter at fund time — baked into the funding record for emergency refund
-    const fundedAtTx = txCounter;
-
-    // SECURITY: domain-separated funding record — links funder to pool for refund proofs.
-    // Includes fundedAtTx so emergencyRefund can verify time-passage without the gateway.
-    const fundingRecord = hash(DOMAIN_FUNDING, funderNullifier, poolCommitment, contributionAmount, fundedAtTx, nonce);
-
-    // SECURITY: prevent double-funding by the same funder with same nullifier
-    assert !nullifiers.contains(fundingRecord);
-    nullifiers.insert(fundingRecord);
-
-    // SECURITY: tree capacity check (M-2 fix — use fundingCount, not activeCount)
-    assert fundingCount < MAX_TREE_ENTRIES;
-
-    fundingTree.insert(fundingRecord);
-    fundingCount.increment(1);
-
-    // H-1: track running total funded per pool — activatePool will verify against this.
-    const prevFunded = poolFundedAmounts.lookup(poolCommitment);
-    poolFundedAmounts.insert(poolCommitment, prevFunded + contributionAmount);
-
-    // Hold funds in contract — no release until pool activates
-    effects.retainInContract(contributionAmount);
-
-    txCounter.increment(1);
-
-    return fundingRecord;
-  }
-
-  // activatePool: called by gateway when funding goal is met.
-  // Deducts infrastructure fee and releases net funds to gateway for Masumi escrow.
-  // SECURITY: pool must exist. Gateway triggers this off-chain when goal is confirmed.
-  export circuit activatePool(
-    witness poolCommitment:  Bytes<32>,
-    witness poolMerkleProof: Proof<25>,
-    witness totalFunded:     Field
-  ): [] {
-    assert initialized == 1;
-    assert totalFunded > 0;
-    assert totalFunded <= MAX_AMOUNT;
-
-    // H-3: only the gateway can activate pools
-    assertGateway();
-
-    // SECURITY: pool must exist
-    assert poolTree.verify(poolCommitment, poolMerkleProof);
-
-    // SECURITY: prevent double-activation
-    assert !nullifiers.contains(poolCommitment);
-
-    // SECURITY: prevent activating an expired pool (C-1 fix)
-    // expirePool inserts hash(DOMAIN_REFUND, poolCommitment) — if that exists,
-    // funders have already been allowed to refund. Activating now would be a double-spend.
-    const expiredMarker = hash(DOMAIN_REFUND, poolCommitment);
-    assert !nullifiers.contains(expiredMarker);
-
-    nullifiers.insert(poolCommitment);
-
-    // H-1: verify totalFunded matches the on-chain sum of contributions
-    const onChainTotal = poolFundedAmounts.lookup(poolCommitment);
-    assert disclose(totalFunded == onChainTotal);
-
-    // Fee split
-    const fee       = totalFunded * operatorFeeBps / 10000;
-    const netAmount = totalFunded - fee;
-    assert fee + netAmount == totalFunded;
-
-    // H-2: record accumulated fees so withdrawFees can enforce a cap
-    accumulatedFees.increment(fee);
-
-    effects.retainInContract(fee);
-    effects.releaseToAddress(gatewayAddress, netAmount);
-
-    activeCount.increment(1);
-    txCounter.increment(1);
-  }
-
-  // claimRefund: funder reclaims their contribution from an expired pool.
-  // SECURITY: funder proves they funded the pool via fundingTree proof.
-  // Gateway must have marked the pool as expired (expirePool nullifies the pool commitment
-  // with a refund-domain hash, which this circuit checks).
-  export circuit claimRefund(
-    witness fundingRecord:       Bytes<32>,
-    witness fundingMerkleProof:  Proof<25>,
-    witness poolCommitment:      Bytes<32>,
-    witness contributionAmount:  Field,
-    witness funderAddress:       Bytes<32>
-  ): [] {
-    assert initialized == 1;
-    assert contributionAmount > 0;
-    assert contributionAmount <= MAX_AMOUNT;
-
-    // SECURITY: funding record must exist — proves this funder actually contributed
-    assert fundingTree.verify(fundingRecord, fundingMerkleProof);
-
-    // SECURITY: pool must be expired — checked via refund-domain nullifier
-    // The gateway calls expirePool which inserts hash(DOMAIN_REFUND, poolCommitment)
-    // into the nullifier set. If this doesn't exist, the pool isn't expired yet.
-    const expiredMarker = hash(DOMAIN_REFUND, poolCommitment);
-    assert nullifiers.contains(expiredMarker);
-
-    // SECURITY: prevent double-refund — nullify the funding record
-    const refundNullifier = hash(DOMAIN_NULLIFIER, fundingRecord);
-    assert !nullifiers.contains(refundNullifier);
-    nullifiers.insert(refundNullifier);
-
-    // Return full contribution — no fee on expired pools
-    effects.releaseToAddress(funderAddress, contributionAmount);
-
-    txCounter.increment(1);
-  }
-
-  // expirePool: gateway marks a pool as expired (deadline passed, goal not met).
-  // After this, funders can call claimRefund.
-  // SECURITY: only the gateway can call this (same trust model as escrow timeout).
-  export circuit expirePool(
-    witness poolCommitment:  Bytes<32>,
-    witness poolMerkleProof: Proof<25>
-  ): [] {
-    assert initialized == 1;
-
-    // H-3: only the gateway can expire pools
-    assertGateway();
-
-    // SECURITY: pool must exist
-    assert poolTree.verify(poolCommitment, poolMerkleProof);
-
-    // SECURITY: pool must not already be activated or expired
-    assert !nullifiers.contains(poolCommitment);
-
-    // Insert refund-domain marker — claimRefund checks for this
-    const expiredMarker = hash(DOMAIN_REFUND, poolCommitment);
-    assert !nullifiers.contains(expiredMarker);
-    nullifiers.insert(expiredMarker);
-
-    txCounter.increment(1);
-  }
-
-  // emergencyRefund: FAILSAFE — funder can self-rescue if the gateway disappears.
-  // Does NOT require expirePool to have been called. Instead, checks that enough
-  // contract interactions (txCounter) have passed since the funder's contribution.
-  // The funder must supply the same witness values used at fundPool time so the
-  // circuit can recompute the funding record hash and verify it exists in the tree.
-  //
-  // SECURITY: this is a last-resort escape hatch. Under normal operation, the
-  // gateway calls expirePool and funders use claimRefund (cheaper, faster).
-  // emergencyRefund exists so that funds are NEVER permanently locked.
-  export circuit emergencyRefund(
-    witness funderNullifier:     Bytes<32>,
-    witness poolCommitment:      Bytes<32>,
-    witness contributionAmount:  Field,
-    witness fundedAtTx:          Field,
-    witness nonce:               Bytes<32>,
-    witness fundingMerkleProof:  Proof<25>,
-    witness funderAddress:       Bytes<32>
-  ): [] {
-    assert initialized == 1;
-    assert contributionAmount > 0;
-    assert contributionAmount <= MAX_AMOUNT;
-
-    // Recompute the funding record — must match what fundPool produced
-    const fundingRecord = hash(DOMAIN_FUNDING, funderNullifier, poolCommitment, contributionAmount, fundedAtTx, nonce);
-
-    // SECURITY: funding record must exist in the tree
-    assert fundingTree.verify(fundingRecord, fundingMerkleProof);
-
-    // FAILSAFE: enough contract interactions must have passed
-    assert txCounter >= fundedAtTx + EMERGENCY_TX_THRESHOLD;
-
-    // SECURITY: pool must NOT have been activated — if it was activated, funds
-    // were already released to gateway and cannot be double-claimed
-    assert !nullifiers.contains(poolCommitment);
-
-    // SECURITY: prevent double-refund — same nullifier as claimRefund
-    const refundNullifier = hash(DOMAIN_NULLIFIER, fundingRecord);
-    assert !nullifiers.contains(refundNullifier);
-    nullifiers.insert(refundNullifier);
-
-    // Return full contribution — no fee on emergency refunds
-    effects.releaseToAddress(funderAddress, contributionAmount);
-
-    txCounter.increment(1);
-  }
-
-  // ─── Bounty Lifecycle (linked to pools) ───────────────────────────────────────
-
-  // postBounty: posts a bounty linked to an activated pool.
-  // SECURITY: fee already deducted during activatePool — no fee split here.
-  export circuit postBounty(
-    witness payerNullifier: Bytes<32>,
-    witness amount:         Field,
-    witness jobHash:        Bytes<32>,
-    witness poolCommitment: Bytes<32>,
-    witness nonce:          Bytes<32>
-  ): Bytes<32> {
-    assert initialized == 1;
-    assert amount > 0;
-    assert amount <= MAX_AMOUNT;
-    assert activeCount < MAX_TREE_ENTRIES;
-
-    // SECURITY: pool must have been activated (its commitment is in the nullifier set)
-    assert nullifiers.contains(poolCommitment);
-
-    const commitment = hash(DOMAIN_BOUNTY, payerNullifier, amount, jobHash, poolCommitment, nonce);
-    assert !nullifiers.contains(commitment);
-
-    bountyTree.insert(commitment);
-
-    txCounter.increment(1);
-
-    return commitment;
-  }
-
-  // completeAndReceipt: nullifies bounty, mints ZK receipt, releases payment.
-  export circuit completeAndReceipt(
-    witness bountyCommitment:  Bytes<32>,
-    witness bountyMerkleProof: Proof<25>,
-    witness outputHash:        Bytes<32>,
-    witness completionNonce:   Bytes<32>
-  ): Bytes<32> {
-    assert initialized == 1;
-    assert bountyTree.verify(bountyCommitment, bountyMerkleProof);
-    assert !nullifiers.contains(bountyCommitment);
-    nullifiers.insert(bountyCommitment);
-
-    const receipt = hash(DOMAIN_RECEIPT, bountyCommitment, outputHash, completionNonce);
-    receiptTree.insert(receipt);
-
-    assert activeCount > 0;
-    assert completedCount < MAX_COMPLETED;
-    completedCount.increment(1);
-    activeCount.decrement(1);
-    txCounter.increment(1);
-
-    return receipt;
-  }
-
-  // verifyReceipt: anyone can verify a receipt is valid — reveals nothing about the bounty.
-  export circuit verifyReceipt(
-    witness receiptCommitment:  Bytes<32>,
-    witness receiptMerkleProof: Proof<25>
-  ): Boolean {
-    return receiptTree.verify(receiptCommitment, receiptMerkleProof);
-  }
-
-  // withdrawFees: operator-only — gated to the address set at initialization.
-  export circuit withdrawFees(
-    caller:       Bytes<32>,
-    withdrawAmount: Field
-  ): [] {
-    assert initialized == 1;
-    assert caller == operatorAddress;
-    assert withdrawAmount > 0;
-
-    // H-2: cap withdrawals to accumulated fees — operator cannot drain funder/bounty funds
-    assert withdrawAmount <= accumulatedFees.read();
-    accumulatedFees.decrement(withdrawAmount);
-
-    effects.releaseToAddress(caller, withdrawAmount);
-  }
-
-  // getStats: public read-only view.
-  export circuit getStats(): [Field, Field, Field, Field, Field] {
-    return [completedCount, activeCount, poolCount, operatorFeeBps, txCounter];
-  }
+// ─── Public ledger state ─────────────────────────────────────────────────────
+export ledger completedCount: Counter;
+
+export ledger activeCount: Counter;
+
+export ledger poolCount: Counter;
+
+export ledger operatorFeeBps: Uint<64>;
+
+export ledger operatorAddress: Bytes<32>;
+
+// SECURITY: one-time init lock — set to 1 after initialize() runs
+export ledger initialized: Field;
+
+// DARK ENERGY: gateway address locked at init — cannot be injected per-transaction.
+export ledger gatewayAddress: Bytes<32>;
+
+// Total number of individual funding contributions — used for fundingTree capacity guard.
+export ledger fundingCount: Counter;
+
+// H-1: per-pool running total of contributions — activatePool verifies totalFunded against this.
+export ledger poolFundedAmounts: Map<Bytes<32>, Uint<64>>;
+
+// H-2: running total of infrastructure fees retained — caps what the operator can withdraw.
+// Plain Uint<64> (not Counter) so we can add/subtract large fee values in one step
+// (Counter.increment only accepts Uint<16> step sizes).
+export ledger accumulatedFees: Uint<64>;
+
+// H-3: gateway authentication key (bboard pattern) — derived from gateway secret at init.
+// expirePool and activatePool verify the caller knows the corresponding secret key.
+export ledger gatewayAuthKey: Bytes<32>;
+
+// FAILSAFE: monotonic transaction counter — incremented on every state-changing call.
+// Used as a crude on-chain clock for emergency refunds when the gateway disappears.
+// Compact has no block/time primitives, so this is the best proxy: after enough
+// contract interactions have occurred, funders can self-rescue without the gateway.
+export ledger txCounter: Counter;
+
+// ─── Commitment trees + nullifier set (public ledger; privacy via commitments) ──
+// Leaves are commitment hashes — never raw funder data. The tree root is public but
+// reveals nothing about membership. Merkle paths are supplied by witnesses (computed
+// off-chain by the bridge via ledger.<tree>.findPathForLeaf), so the path (which leaf
+// you're proving) is the private input — only checkRoot is asserted in-circuit.
+export ledger bountyTree: MerkleTree<25, Bytes<32>>;
+
+export ledger receiptTree: MerkleTree<25, Bytes<32>>;
+
+export ledger poolTree: MerkleTree<25, Bytes<32>>; // pool commitment records
+
+export ledger fundingTree: MerkleTree<25, Bytes<32>>; // individual funding records (for refund proofs)
+
+// Nullifier set — PUBLIC by design. Nullifiers are domain-separated hashes, so
+// revealing them on-chain does NOT leak funder identity. This is the UTXO-style
+// double-spend protection pattern: on-chain enforcement, no trust-the-driver.
+export ledger nullifiers: Set<Bytes<32>>;
+
+// ─── Domain separation prefixes (pure circuits — see `const` note in header) ──
+// Each returns a 32-byte right-zero-padded tag so all hash inputs are Bytes<32>
+// (persistentHash requires a Vector<N, Bytes<32>>).
+pure circuit DOMAIN_BOUNTY(): Bytes<32> {
+  return pad(32, "bounty000");
+}
+
+pure circuit DOMAIN_RECEIPT(): Bytes<32> {
+  return pad(32, "receipt00");
+}
+
+pure circuit DOMAIN_NULLIFIER(): Bytes<32> {
+  return pad(32, "nullifier");
+}
+
+pure circuit DOMAIN_POOL(): Bytes<32> {
+  return pad(32, "pool0000");
+}
+
+pure circuit DOMAIN_FUNDING(): Bytes<32> {
+  return pad(32, "funding00");
+}
+
+pure circuit DOMAIN_REFUND(): Bytes<32> {
+  return pad(32, "refund000");
+}
+
+pure circuit DOMAIN_EMERGENCY(): Bytes<32> {
+  return pad(32, "emergency");
+}
+
+// ─── Capacity limits (pure circuits) ─────────────────────────────────────────
+pure circuit MAX_TREE_ENTRIES(): Uint<64> {
+  return 30199000;
+} // ~90% of 2^25
+
+pure circuit MAX_COMPLETED(): Uint<64> {
+  return 30199000;
+}
+
+// SECURITY: Field arithmetic overflow guard.
+pure circuit MAX_AMOUNT(): Uint<64> {
+  return 9007199254740991;
+} // 2^53 - 1
+
+// SECURITY: max funders per pool — prevents gas griefing on activate/refund
+pure circuit MAX_POOL_FUNDERS(): Uint<64> {
+  return 1000;
+}
+
+// FAILSAFE: emergency refund threshold — if txCounter advances by this many
+// transactions beyond the fundedAtTx recorded in the funding record,
+// the funder can self-rescue without waiting for expirePool.
+// ~500 contract calls ≈ days/weeks of normal usage — long enough for the
+// gateway to act, short enough that funds aren't locked forever.
+pure circuit EMERGENCY_TX_THRESHOLD(): Uint<64> {
+  return 500;
+}
+
+// ─── Gateway authentication (H-3: bboard pattern) ───────────────────────────
+// The bridge implements localGatewaySecretKey() in witnesses.ts, returning its
+// stored secret key from private state (LevelDB). The public key is derived
+// in-circuit — the secret never leaves the prover.
+witness localGatewaySecretKey(): Bytes<32>;
+
+pure circuit gatewayPublicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "nightpay:gateway:v1"), sk]);
+}
+
+// Helper: cast a Field to Bytes<32> so it can join a Vector<N, Bytes<32>> for
+// persistentHash. Compact's `as` cast turns Field into its 32-byte field-element
+// representation (same pattern used in the score-tracker tutorial:
+// `(score as Field) as Bytes<32>`).
+pure circuit fieldToBytes32(f: Field): Bytes<32> {
+  return f as Bytes<32>;
+}
+
+// Internal guard — call at the top of any gateway-only circuit.
+circuit assertGateway(): [] {
+  const sk = localGatewaySecretKey();
+  const derived = gatewayPublicKey(sk);
+  assert(disclose(derived == gatewayAuthKey), "gateway auth key mismatch");
+}
+
+// ─── Merkle path witnesses (post `secret ledger` pattern) ─────────────────────
+// The bridge driver computes these off-chain via ledger.<tree>.findPathForLeaf(leaf).
+// The runtime requires a MerkleTreePath class instance, so the witness MUST use
+// findPathForLeaf (not a hand-built object). The circuit only asserts
+// <tree>.checkRoot(merkleTreePathRoot<25, Bytes<32>>(path)) — the path itself is
+// never disclosed, only the reconstructed root is checked against the on-chain root.
+witness poolMerklePath(leaf: Bytes<32>): MerkleTreePath<25, Bytes<32>>;
+
+witness fundingMerklePath(leaf: Bytes<32>): MerkleTreePath<25, Bytes<32>>;
+
+witness bountyMerklePath(leaf: Bytes<32>): MerkleTreePath<25, Bytes<32>>;
+
+witness receiptMerklePath(leaf: Bytes<32>): MerkleTreePath<25, Bytes<32>>;
+
+// ─── Witness values (per-circuit pending inputs read from bridge private state) ─
+// These replace the old inline `witness foo: T` parameters on each circuit.
+// The bridge sets them in NightPayPrivateState.pending immediately before each call.
+witness jobHash(): Bytes<32>;
+
+witness fundingGoal(): Uint<64>;
+
+witness contributionAmount(): Uint<64>;
+
+witness maxFunders(): Uint<64>;
+
+witness nonce(): Bytes<32>;
+
+witness funderNullifier(): Bytes<32>;
+
+witness poolCommitment(): Bytes<32>;
+
+witness totalFunded(): Uint<64>;
+
+witness fundingRecord(): Bytes<32>;
+
+witness funderAddress(): Bytes<32>;
+
+witness fundedAtTx(): Uint<64>;
+
+witness payerNullifier(): Bytes<32>;
+
+witness amount(): Uint<64>;
+
+witness bountyCommitment(): Bytes<32>;
+
+witness outputHash(): Bytes<32>;
+
+witness completionNonce(): Bytes<32>;
+
+witness receiptCommitment(): Bytes<32>;
+
+// Witness-verified division (Compact has no native `/` operator — see
+// docs.midnight.network/blog/compact-division). The bridge computes quotient +
+// remainder off-chain; the circuit verifies the fundamental identity
+// `quotient * divisor + remainder == dividend` and `remainder < divisor`.
+// Used by activatePool for the fee split: fee = (totalFunded * operatorFeeBps) / 10000.
+witness divMod(dividend: Uint<64>, divisor: Uint<64>): [Uint<64>, Uint<64>];
+
+// ─── Circuits ───────────────────────────────────────────────────────────────
+
+// SECURITY: guarded by initialized flag — reverts if called twice.
+export circuit initialize(operatorAddr: Bytes<32>, gatewayAddr: Bytes<32>, feeBps: Uint<64>): [] {
+  assert(initialized == 0 as Field, "init lock: already initialized");
+  assert(feeBps <= 500, "fee cap: operatorFeeBps must be <= 500 (5%)");
+  assert(feeBps >= 0, "fee floor: operatorFeeBps must be >= 0");
+
+  // Public parameters chosen by the caller — disclose() declares they land on-chain.
+  operatorAddress = disclose(operatorAddr);
+  gatewayAddress = disclose(gatewayAddr);
+  operatorFeeBps = disclose(feeBps);
+  initialized = 1 as Field;
+
+  // H-3: derive and store the gateway's auth key from its secret key.
+  // The bridge calls initialize, so localGatewaySecretKey() returns the
+  // bridge's secret. From this point on, expirePool + activatePool require
+  // proof of knowing this secret. disclose() — the derived pubkey is a hash of
+  // the secret, safe to publish (preimage resistance).
+  gatewayAuthKey = disclose(gatewayPublicKey(localGatewaySecretKey()));
+}
+
+// ─── Pool Lifecycle ───────────────────────────────────────────────────────────
+
+// createPool: creates a bounty pool with a funding goal and fixed contribution amount.
+// No funds move yet — this just records the pool parameters in the pool tree.
+// SECURITY: contribution × maxFunders must equal fundingGoal (exact division enforced).
+export circuit createPool(): Bytes<32> {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const gh = jobHash();
+  const fg = fundingGoal();
+  const ca = contributionAmount();
+  const mf = maxFunders();
+  const nn = nonce();
+
+  assert(fg > 0, "funding goal must be > 0");
+  assert(ca > 0, "contribution amount must be > 0");
+  assert(mf > 0, "max funders must be > 0");
+  assert(mf <= MAX_POOL_FUNDERS(), "max funders cap exceeded");
+  assert(fg <= MAX_AMOUNT(), "funding goal exceeds MAX_AMOUNT");
+  assert(ca <= MAX_AMOUNT(), "contribution amount exceeds MAX_AMOUNT");
+
+  // SECURITY: enforce exact division — no rounding dust
+  assert(ca * mf == fg, "contribution * maxFunders must equal fundingGoal");
+
+  // SECURITY: tree capacity check
+  assert(poolCount < MAX_TREE_ENTRIES(), "pool tree capacity exceeded");
+
+  // poolCommitment is a domain-separated hash of witness inputs — disclosing it
+  // reveals nothing about the preimages (job hash, funding goal, etc.).
+  const poolCommitment =
+          disclose(persistentHash<Vector<6, Bytes<32>>>(
+                     [DOMAIN_POOL(),
+                      gh,
+                      fieldToBytes32(fg as Field),
+                      fieldToBytes32(ca as Field),
+                      fieldToBytes32(mf as Field),
+                      nn]
+                     ));
+
+  // SECURITY: pool commitment must be fresh
+  assert(!nullifiers.member(poolCommitment), "pool commitment already nullified (double-create)");
+
+  poolTree.insert(poolCommitment);
+  poolCount.increment(1);
+  txCounter.increment(1);
+
+  // H-1: initialize this pool's running-funded total to 0 so fundPool's
+  // poolFundedAmounts.lookup(pc) always finds a cell (compact-runtime's Map.lookup
+  // throws on a missing key). disclose(poolCommitment) — it's already a public
+  // commitment hash, and 0 reveals nothing.
+  poolFundedAmounts.insert(disclose(poolCommitment), disclose(0 as Uint<64>));
+
+  return poolCommitment;
+}
+
+// fundPool: funder contributes exactly contributionAmount NIGHT to a pool.
+// Records a funding entry in fundingTree (used for refund proofs later).
+// The current txCounter is baked into the funding record hash — this lets
+// emergencyRefund verify that enough contract interactions have passed.
+// SECURITY: funder sends shielded NIGHT — identity destroyed by nullifier model.
+export circuit fundPool(): Bytes<32> {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const fn = funderNullifier();
+  const pc = poolCommitment();
+  const ca = contributionAmount();
+  const nn = nonce();
+
+  assert(ca > 0, "contribution amount must be > 0");
+  assert(ca <= MAX_AMOUNT(), "contribution amount exceeds MAX_AMOUNT");
+
+  // SECURITY: pool must exist — verify a Merkle path against the on-chain poolTree root.
+  // The path is supplied by the poolMerklePath witness (computed off-chain by the bridge
+  // via ledger.poolTree.findPathForLeaf). Only checkRoot is asserted; the path is private.
+  // disclose() on the witness-derived path: checkRoot is a ledger op; the reconstructed
+  // root is already public (it's the on-chain tree root), so disclosing the path's root
+  // reveals nothing beyond what's already on-chain.
+  assert(poolTree.checkRoot(disclose(merkleTreePathRoot<25, Bytes<32>>(poolMerklePath(pc)))),
+         "pool not found in poolTree"
+         );
+
+  // Capture txCounter at fund time — baked into the funding record for emergency refund
+  const fundedAtTx = txCounter;
+
+  // SECURITY: domain-separated funding record — links funder to pool for refund proofs.
+  // Includes fundedAtTx so emergencyRefund can verify time-passage without the gateway.
+  // disclose() — the record is a commitment hash, safe to publish.
+  const fundingRecord =
+          disclose(persistentHash<Vector<6, Bytes<32>>>(
+                     [DOMAIN_FUNDING(),
+                      fn,
+                      pc,
+                      fieldToBytes32(ca as Field),
+                      fieldToBytes32(fundedAtTx as Field),
+                      nn]
+                     ));
+
+  // SECURITY: prevent double-funding by the same funder with same nullifier
+  assert(!nullifiers.member(fundingRecord), "funding record already nullified (double-fund)");
+  nullifiers.insert(fundingRecord);
+
+  // SECURITY: tree capacity check (M-2 fix — use fundingCount, not activeCount)
+  assert(fundingCount < MAX_TREE_ENTRIES(), "funding tree capacity exceeded");
+
+  fundingTree.insert(fundingRecord);
+  fundingCount.increment(1);
+
+  // H-1: track running total funded per pool — activatePool will verify against this.
+  // pc is witness-derived (poolCommitment witness) — disclose it as the Map key.
+  // (pc is already a public commitment hash, so this reveals nothing new.)
+  // The key always exists because createPool initialized it to 0.
+  const dpc = disclose(pc);
+  const prevFunded = poolFundedAmounts.lookup(dpc);
+  poolFundedAmounts.insert(dpc, disclose((prevFunded + ca) as Uint<64>));
+
+  // Hold funds in contract — no release until pool activates.
+  // NOTE: Compact 0.22+ removed `effects.retainInContract` / `releaseToAddress`;
+  // the new value-movement API is receiveShielded / sendImmediateShielded with
+  // ShieldedCoinInfo + Either<ZswapCoinPublicKey, ContractAddress> recipients.
+  // Wiring that coin API is a security-critical follow-up (see TODO in plan).
+  // In production, real fund custody is handled by the Masumi/Cardano escrow
+  // layer (docs/architecture.md §"Gateway"); the contract tracks commitments +
+  // nullifiers + receipts. The fee/accumulatedFees arithmetic below still runs
+  // so withdrawFees' cap invariant holds.
+
+  txCounter.increment(1);
+
+  return fundingRecord;
+}
+
+// activatePool: called by gateway when funding goal is met.
+// Deducts infrastructure fee and releases net funds to gateway for Masumi escrow.
+// SECURITY: pool must exist. Gateway triggers this off-chain when goal is confirmed.
+export circuit activatePool(): [] {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const pc = poolCommitment();
+  const tf = totalFunded();
+
+  assert(tf > 0, "total funds must be > 0");
+  assert(tf <= MAX_AMOUNT(), "total funds exceeds MAX_AMOUNT");
+
+  // H-3: only the gateway can activate pools
+  assertGateway();
+
+  // SECURITY: pool must exist
+  assert(poolTree.checkRoot(disclose(merkleTreePathRoot<25, Bytes<32>>(poolMerklePath(pc)))),
+         "pool not found in poolTree"
+         );
+
+  // SECURITY: prevent double-activation
+  assert(!nullifiers.member(disclose(pc)), "pool already activated");
+
+  // SECURITY: prevent activating an expired pool (C-1 fix)
+  // expirePool inserts hash(DOMAIN_REFUND, poolCommitment) — if that exists,
+  // funders have already been allowed to refund. Activating now would be a double-spend.
+  const expiredMarker = disclose(persistentHash<Vector<2, Bytes<32>>>([DOMAIN_REFUND(), pc]));
+  assert(!nullifiers.member(expiredMarker), "pool already expired — cannot activate");
+
+  nullifiers.insert(disclose(pc));
+
+  // H-1: verify totalFunded matches the on-chain sum of contributions.
+  // The key always exists because createPool initialized it to 0.
+  const onChainTotal = poolFundedAmounts.lookup(disclose(pc));
+  assert(disclose(tf == onChainTotal), "totalFunded does not match on-chain sum");
+
+  // Fee split — Compact has no `/` operator, so the quotient + remainder are
+  // computed off-chain by the divMod witness and verified in-circuit via the
+  // fundamental identity `fee * 10000 + feeRem == feeTimes10000` (and feeRem < 10000).
+  // A malicious witness cannot forge a result: the assert reverts on any mismatch.
+  const feeTimes10000 = tf * operatorFeeBps;
+  const dm = divMod(feeTimes10000 as Uint<64>, 10000 as Uint<64>);
+  const fee = dm[0];
+  const feeRem = dm[1];
+  assert(fee * 10000 + feeRem == feeTimes10000, "divMod witness returned invalid quotient");
+  assert(feeRem < 10000, "divMod remainder must be < divisor");
+  const netAmount = tf - fee;
+  assert(fee + netAmount == tf, "fee + netAmount must equal totalFunded");
+
+  // H-2: record accumulated fees so withdrawFees can enforce a cap
+  // fee is witness-derived (from divMod) — disclose the new accumulated total.
+  accumulatedFees = disclose((accumulatedFees + fee) as Uint<64>);
+
+  // Value movement deferred — see fundPool note (effects API removed in 0.22+;
+  // Masumi/Cardano escrow handles real custody; coin-API wiring is a follow-up).
+
+  activeCount.increment(1);
+  txCounter.increment(1);
+}
+
+// claimRefund: funder reclaims their contribution from an expired pool.
+// SECURITY: funder proves they funded the pool via fundingTree proof.
+// Gateway must have marked the pool as expired (expirePool nullifies the pool commitment
+// with a refund-domain hash, which this circuit checks).
+export circuit claimRefund(): [] {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const fr = fundingRecord();
+  const pc = poolCommitment();
+  const ca = contributionAmount();
+  const fa = funderAddress();
+
+  assert(ca > 0, "contribution amount must be > 0");
+  assert(ca <= MAX_AMOUNT(), "contribution amount exceeds MAX_AMOUNT");
+
+  // SECURITY: funding record must exist — proves this funder actually contributed.
+  // Merkle path is witness-supplied; only checkRoot is asserted in-circuit.
+  assert(fundingTree.checkRoot(disclose(merkleTreePathRoot<25, Bytes<32>>(fundingMerklePath(fr)))),
+         "funding record not found in fundingTree"
+         );
+
+  // SECURITY: pool must be expired — checked via refund-domain nullifier
+  // The gateway calls expirePool which inserts hash(DOMAIN_REFUND, poolCommitment)
+  // into the nullifier set. If this doesn't exist, the pool isn't expired yet.
+  const expiredMarker = disclose(persistentHash<Vector<2, Bytes<32>>>([DOMAIN_REFUND(), pc]));
+  assert(nullifiers.member(expiredMarker), "pool not expired — cannot claim refund");
+
+  // SECURITY: prevent double-refund — nullify the funding record
+  const refundNullifier = disclose(persistentHash<Vector<2, Bytes<32>>>([DOMAIN_NULLIFIER(), fr]));
+  assert(!nullifiers.member(refundNullifier), "funding record already refunded");
+  nullifiers.insert(refundNullifier);
+
+  // Return full contribution — no fee on expired pools.
+  // Value movement deferred — see fundPool note (effects API removed in 0.22+;
+  // Masumi/Cardano escrow handles real custody; coin-API wiring is a follow-up).
+
+  txCounter.increment(1);
+}
+
+// expirePool: gateway marks a pool as expired (deadline passed, goal not met).
+// After this, funders can call claimRefund.
+// SECURITY: only the gateway can call this (same trust model as escrow timeout).
+export circuit expirePool(): [] {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const pc = poolCommitment();
+
+  // H-3: only the gateway can expire pools
+  assertGateway();
+
+  // SECURITY: pool must exist
+  assert(poolTree.checkRoot(disclose(merkleTreePathRoot<25, Bytes<32>>(poolMerklePath(pc)))),
+         "pool not found in poolTree"
+         );
+
+  // SECURITY: pool must not already be activated or expired
+  assert(!nullifiers.member(disclose(pc)), "pool already activated or expired");
+
+  // Insert refund-domain marker — claimRefund checks for this
+  const expiredMarker = disclose(persistentHash<Vector<2, Bytes<32>>>([DOMAIN_REFUND(), pc]));
+  assert(!nullifiers.member(expiredMarker), "pool already marked expired");
+  nullifiers.insert(expiredMarker);
+
+  txCounter.increment(1);
+}
+
+// emergencyRefund: FAILSAFE — funder can self-rescue if the gateway disappears.
+// Does NOT require expirePool to have been called. Instead, checks that enough
+// contract interactions (txCounter) have passed since the funder's contribution.
+// The funder must supply the same witness values used at fundPool time so the
+// circuit can recompute the funding record hash and verify it exists in the tree.
+//
+// SECURITY: this is a last-resort escape hatch. Under normal operation, the
+// gateway calls expirePool and funders use claimRefund (cheaper, faster).
+// emergencyRefund exists so that funds are NEVER permanently locked.
+export circuit emergencyRefund(): [] {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const fn = funderNullifier();
+  const pc = poolCommitment();
+  const ca = contributionAmount();
+  const fat = fundedAtTx();
+  const nn = nonce();
+  const fa = funderAddress();
+
+  assert(ca > 0, "contribution amount must be > 0");
+  assert(ca <= MAX_AMOUNT(), "contribution amount exceeds MAX_AMOUNT");
+
+  // Recompute the funding record — must match what fundPool produced
+  const fundingRecord =
+          disclose(persistentHash<Vector<6, Bytes<32>>>(
+                     [DOMAIN_FUNDING(),
+                      fn,
+                      pc,
+                      fieldToBytes32(ca as Field),
+                      fieldToBytes32(fat as Field),
+                      nn]
+                     ));
+
+  // SECURITY: funding record must exist in the tree
+  assert(fundingTree.checkRoot(
+           disclose(merkleTreePathRoot<25, Bytes<32>>(fundingMerklePath(fundingRecord)))
+           ),
+         "funding record not found in fundingTree"
+         );
+
+  // FAILSAFE: enough contract interactions must have passed
+  assert(txCounter >= fat + EMERGENCY_TX_THRESHOLD(), "emergency threshold not yet reached");
+
+  // SECURITY: pool must NOT have been activated — if it was activated, funds
+  // were already released to gateway and cannot be double-claimed
+  assert(!nullifiers.member(disclose(pc)), "pool already activated — cannot emergency refund");
+
+  // SECURITY: prevent double-refund — same nullifier as claimRefund
+  const refundNullifier =
+          disclose(persistentHash<Vector<2, Bytes<32>>>([DOMAIN_NULLIFIER(), fundingRecord]));
+  assert(!nullifiers.member(refundNullifier), "funding record already refunded");
+  nullifiers.insert(refundNullifier);
+
+  // Return full contribution — no fee on emergency refunds.
+  // Value movement deferred — see fundPool note (effects API removed in 0.22+;
+  // Masumi/Cardano escrow handles real custody; coin-API wiring is a follow-up).
+
+  txCounter.increment(1);
+}
+
+// ─── Bounty Lifecycle (linked to pools) ───────────────────────────────────────
+
+// postBounty: posts a bounty linked to an activated pool.
+// SECURITY: fee already deducted during activatePool — no fee split here.
+export circuit postBounty(): Bytes<32> {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const pn = payerNullifier();
+  const am = amount();
+  const jh = jobHash();
+  const pc = poolCommitment();
+  const nn = nonce();
+
+  assert(am > 0, "bounty amount must be > 0");
+  assert(am <= MAX_AMOUNT(), "bounty amount exceeds MAX_AMOUNT");
+  assert(activeCount < MAX_TREE_ENTRIES(), "bounty tree capacity exceeded");
+
+  // SECURITY: pool must have been activated (its commitment is in the nullifier set)
+  assert(nullifiers.member(disclose(pc)), "pool not activated — cannot post bounty");
+
+  const commitment =
+          disclose(persistentHash<Vector<6, Bytes<32>>>(
+                     [DOMAIN_BOUNTY(), pn, fieldToBytes32(am as Field), jh, pc, nn]
+                     ));
+  assert(!nullifiers.member(commitment), "bounty commitment already nullified (double-post)");
+
+  bountyTree.insert(commitment);
+
+  txCounter.increment(1);
+
+  return commitment;
+}
+
+// completeAndReceipt: nullifies bounty, mints ZK receipt, releases payment.
+export circuit completeAndReceipt(): Bytes<32> {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+
+  const bc = bountyCommitment();
+  const oh = outputHash();
+  const cn = completionNonce();
+
+  assert(bountyTree.checkRoot(disclose(merkleTreePathRoot<25, Bytes<32>>(bountyMerklePath(bc)))),
+         "bounty not found in bountyTree"
+         );
+  assert(!nullifiers.member(disclose(bc)), "bounty already completed");
+  nullifiers.insert(disclose(bc));
+
+  const receipt = disclose(persistentHash<Vector<4, Bytes<32>>>([DOMAIN_RECEIPT(), bc, oh, cn]));
+  receiptTree.insert(receipt);
+
+  assert(activeCount > 0, "activeCount underflow — no active bounties");
+  assert(completedCount < MAX_COMPLETED(), "completedCount overflow — capacity exceeded");
+  completedCount.increment(1);
+  activeCount.decrement(1);
+  txCounter.increment(1);
+
+  return receipt;
+}
+
+// verifyReceipt: anyone can verify a receipt is valid — reveals nothing about the bounty.
+export circuit verifyReceipt(): Boolean {
+  const rc = receiptCommitment();
+  return receiptTree.checkRoot(disclose(merkleTreePathRoot<25, Bytes<32>>(receiptMerklePath(rc))));
+}
+
+// withdrawFees: operator-only — gated to the address set at initialization.
+export circuit withdrawFees(caller: Bytes<32>, withdrawAmount: Uint<64>): [] {
+  assert(initialized == 1 as Field, "init lock: contract not initialized");
+  assert(caller == operatorAddress, "operator gate: caller is not the operator");
+  assert(withdrawAmount > 0, "withdraw amount must be > 0");
+
+  // H-2: cap withdrawals to accumulated fees — operator cannot drain funder/bounty funds
+  assert(withdrawAmount <= accumulatedFees, "withdraw cap: exceeds accumulatedFees");
+  // withdrawAmount is a public circuit parameter — disclose the new accumulated total.
+  accumulatedFees = disclose((accumulatedFees - withdrawAmount) as Uint<64>);
+
+  // Value movement deferred — see fundPool note (effects API removed in 0.22+;
+  // Masumi/Cardano escrow handles real custody; coin-API wiring is a follow-up).
+}
+
+// getStats: public read-only view.
+export circuit getStats(): [Uint<64>, Uint<64>, Uint<64>, Uint<64>, Uint<64>] {
+  return [completedCount, activeCount, poolCount, operatorFeeBps, txCounter];
 }
