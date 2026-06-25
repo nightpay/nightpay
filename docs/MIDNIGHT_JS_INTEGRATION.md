@@ -2,7 +2,7 @@
 
 **Purpose:** How to adopt [midnightntwrk/midnight-js](https://github.com/midnightntwrk/midnight-js) in the NightPay bridge and reduce boilerplate across gateway, UI, and bridge. This doc explains the ideas in plain language and gives concrete options.
 
-Last updated: 2026-02-19
+Last updated: 2026-06-25 (bridge now targets midnight-js 4.1.1 / ledger-v8 8.0.3 / compact-js 2.5.1; `IndexerFormattedError.cause` → `.errors`; indexer `/api/v4/graphql`)
 
 ---
 
@@ -78,7 +78,7 @@ Our bridge currently follows “example-bboard” patterns (witnesses, server-si
 **Steps (summary):**
 
 1. **Dependencies** (align with AGENTS.md and [midnight-js](https://github.com/midnightntwrk/midnight-js)):
-   - Use the same versions the ecosystem expects: e.g. `midnight-js-*@3.1.0`, `wallet-sdk-*@1.0.0`, `ledger-v7@7.0.1`, `compact-js@2.4.0`. Check [release notes](https://docs.midnight.network/relnotes/overview) when upgrading.
+   - Use the ledger-8 compatibility matrix versions: e.g. `midnight-js-*@4.1.1`, `wallet-sdk-facade@3.0.0` (+ shielded/unshielded `2.1.0`, dust `3.0.0`, address-format `3.1.0`, hd `3.0.1`), `ledger-v8@8.0.3`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `onchain-runtime-v3@3.0.0`, `platform-js@2.2.4`. Check [release notes](https://docs.midnight.network/relnotes/overview) when upgrading. Note the breaking change: `IndexerFormattedError.cause` was renamed to `.errors` in midnight-js 4.x; indexer GraphQL endpoint moved to `/api/v4/graphql`.
 2. **Provider wiring:**
    - In the bridge, create a ProofProvider that points at your proof server (e.g. `localhost:6300`) and a ZKConfigProvider that fetches or reads ZK artifacts. Pass these into the Midnight.js contract utilities.
    - You only need a PrivateStateProvider if the bridge stores private state between requests. For NightPay, witnesses can be built from each request (jobHash, amount, nonce, etc.), so you may not need persistent private state on the server.
@@ -152,7 +152,7 @@ Our bridge currently follows “example-bboard” patterns (witnesses, server-si
 |------|--------|
 | **Bridge (other repo)** | Use Midnight.js provider pattern + Compact-generated types; keep stub behaviour so gateway/UI get consistent responses when offline. |
 | **This repo** | Keep bridge API spec in `architecture.md`; optionally add shared types (Option B) and a small bridge-json helper (Option C). |
-| **ECOSYSTEM.md** | Track Midnight.js version (e.g. 3.1.0); refresh when SDK or Compact tools change. |
+| **ECOSYSTEM.md** | Track Midnight.js version (e.g. 4.1.1); refresh when SDK or Compact tools change. |
 
 **Takeaway:** Implementing **Option A** in the bridge gives the largest benefit (type safety, less custom SDK code, easier upgrades). **Options B and C** in this repo improve consistency and reduce boilerplate without requiring the bridge code to live here. You can do B and C even if the bridge hasn’t adopted Midnight.js yet.
 

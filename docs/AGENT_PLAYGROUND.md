@@ -183,10 +183,10 @@ export RECEIPT_CONTRACT_ADDRESS="<64-char-lowercase-hex>"
 
 ```bash
 # Install from https://docs.midnight.network/develop/tutorial/building
-npm install -g @midnight-ntwrk/compact-tools@0.4.0
+npm install -g @midnight-ntwrk/compact-tools@0.5.1
 
 # Verify
-compact --version   # expect: compact 0.4.0 / compiler 0.29.0
+compact --version   # expect: compact 0.5.1 / compiler 0.31.0 (language 0.22)
 
 # Run fixup check before any recompile
 compact fixup --check skills/nightpay/contracts/receipt.compact
@@ -259,7 +259,7 @@ This requires the Midnight proof server running locally (Docker) and the Compact
 # Step 1: Start the Midnight proof server
 docker run -d --name proof-server \
   -p 6300:6300 \
-  ghcr.io/midnight-ntwrk/proof-server:4.0.0
+  ghcr.io/midnight-ntwrk/proof-server:8.0.3
 
 # Step 2: Compile the contract
 compact compile skills/nightpay/contracts/receipt.compact \
@@ -328,7 +328,7 @@ curl "${BRIDGE_URL}/operator-address"
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MIDNIGHT_NETWORK` | `preprod` | `preprod` or `mainnet` — do not change to `mainnet` until March 2026 launch |
+| `MIDNIGHT_NETWORK` | `preprod` | `preprod` or `mainnet` — Kūkolu mainnet is live with Ledger 8, but `preprod` remains the default until preprod end-to-end passes; flip only with explicit human approval (see §17) |
 | `MASUMI_SAAS_URL` | _(empty)_ | Optional Masumi SaaS base (`https://<host>`). When set, gateway derives `MASUMI_PAYMENT_URL=${MASUMI_SAAS_URL}/pay/api/v1` and `MASUMI_REGISTRY_URL=${MASUMI_SAAS_URL}/registry/api/v1` unless explicitly overridden. |
 | `MASUMI_PAYMENT_URL` | `http://localhost:3001/api/v1` | Masumi payment service base URL (explicit override; supersedes SaaS-derived value) |
 | `MASUMI_REGISTRY_URL` | `http://localhost:3000/api/v1` | Masumi registry service base URL (explicit override; supersedes SaaS-derived value) |
@@ -715,6 +715,19 @@ Privacy notes:
 - `OPERATOR_SECRET_KEY` is private and must never be shared or committed.
 - Treat the signed withdrawal payload as sensitive operational data; do not log it.
 - The operator identity uses a Midnight shielded `OPERATOR_ADDRESS` (64-char hex).
+
+### 8.11 — Operator Console UI (`/operator`)
+
+For human operators (not agents), the UI ships a dedicated **operator console** at `https://nightpay.dev/operator` (route `/operator`). It is gated by `TokenGate` against the `nightpay.admin_token` sessionStorage key — set it via your browser devtools or the operator session flow described in `docs/OPERATOR_SESSION.md` (private). The console surfaces:
+
+- **Operator address + bridge health banner** — shows `GET /operator-address` + `GET /health` with stub-mode remediation hints.
+- **Refund-unclaimed** — dry-run preview (`POST /operator/refund-unclaimed` with `dry_run: true`) then confirm. Mirrors `gateway.sh refund-unclaimed --dry-run`.
+- **Claim-refund** — OpenShart `memory_id` recall OR manual `pool_commitment` + `funder_nullifier`. Manual nullifier fields are hidden when the OpenShart toggle is on (never print raw nullifiers when OpenShart is available).
+- **Emergency-refund** — destructive; requires typing `EMERGENCY` in a `ConfirmDialog` gate before the call fires.
+- **Contest split** — dry-run → confirm for stale contests past the 7-day grace window.
+- **Pools** — `createPool` / `fundPool` with an OpenShart auto-encrypt badge.
+
+These are the same operations `gateway.sh` exposes from the CLI; the console is the human-facing equivalent. Agents continue to use the CLI/gateway path.
 
 ---
 
@@ -1685,7 +1698,7 @@ The rate limiter is preventing spam. Wait `RATE_LIMIT_SECONDS` (default 5s) befo
 The proof server is not running or the Midnight node is unreachable. This is expected in dev. The gateway and UI handle stub mode gracefully. To get real on-chain behaviour, start the proof server:
 ```bash
 docker run -d --name proof-server -p 6300:6300 \
-  ghcr.io/midnight-ntwrk/proof-server:4.0.0
+  ghcr.io/midnight-ntwrk/proof-server:8.0.3
 ```
 
 ### hire-and-pay returns 401 / 403 from Masumi
@@ -1769,13 +1782,17 @@ compact-security-detectors scan skills/nightpay/contracts/receipt.compact
 
 ## 17. Mainnet Migration Checklist
 
-**Do not execute this checklist without explicit human approval.** Target: Midnight Kukolu mainnet, last week of March 2026.
+**Do not execute this checklist without explicit human approval.** Kūkolu (Federated mainnet) is now **live with Ledger 8** — this checklist is a "verify you're on ledger-8 and flip the default network" checklist rather than "prepare for mainnet".
 
 ```
-[ ] Human gives explicit "migrate to mainnet" instruction
-[ ] compact fixup --check on receipt.compact → clean
-[ ] OpenZeppelin compact-security-detectors scan → clean
-[ ] Deploy fresh contract instance on mainnet
+[ ] Human gives explicit "flip default to mainnet" instruction
+[ ] Verify bridge is on the ledger-v8 stack: midnight-js 4.1.1 / ledger-v8 8.0.3 / compact-js 2.5.1 / compact-runtime 0.16.0 / wallet-sdk-facade 3.0.0
+[ ] Verify indexer endpoints are /api/v4/graphql (was /api/v3)
+[ ] compact fixup --check on receipt.compact → clean (compiler 0.31.0 / language 0.22)
+[ ] OpenZeppelin compact-security-detectors scan → clean (Rust workspace: `git clone https://github.com/OpenZeppelin/compact-security-detectors-sdk && cargo build && ./target/release/compact-security-detectors scan skills/nightpay/contracts/receipt.compact`)
+[ ] ⚠️ LevelDB state-migration: the `secret ledger` → public-`ledger` redesign changed the private-state shape. Existing `nightpay-private-state` LevelDB stores from the ledger-v7 contract are INCOMPATIBLE — operators must delete the old LevelDB directory and re-provision (the gateway key re-provisions on `initialize()`; funded pool commitments must be re-established). Set `BRIDGE_PRIVATE_STATE_PASSWORD` (min 16 chars, 3 of upper/lower/digit/special) for the new encrypted LevelDB provider.
+[ ] Preprod end-to-end passes (createPool → fundPool → activatePool round-trip)
+[ ] Deploy fresh contract instance on mainnet (full proving-key compile: `compact compile` without `--skip-zk`)
 [ ] Record new RECEIPT_CONTRACT_ADDRESS (mainnet)
 [ ] Record new OPERATOR_ADDRESS (mainnet wallet)
 [ ] Update MIDNIGHT_NETWORK=mainnet in production env
@@ -1783,7 +1800,7 @@ compact-security-detectors scan skills/nightpay/contracts/receipt.compact
 [ ] Update midnightNetwork default in skills/nightpay/openclaw-fragment.json
 [ ] Run full smoke test: bash test/smoke.sh
 [ ] Register with Masumi mainnet registry (network: "Mainnet")
-[ ] Update ECOSYSTEM.md network table (Kukolu → Live)
+[ ] ECOSYSTEM.md network table already shows Kukolu → Live (done in ledger-8 refresh)
 [ ] Submit PR to midnightntwrk/midnight-awesome-dapps
 [ ] Submit PR to VoltAgent/awesome-openclaw-skills
 [ ] Announce on Midnight Discord, Masumi Discord, Cardano Forum

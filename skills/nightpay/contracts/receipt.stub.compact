@@ -1,4 +1,4 @@
-pragma language_version >= 0.19;
+pragma language_version >= 0.22;
 import CompactStandardLibrary;
 
 export ledger completedCount: Counter;
