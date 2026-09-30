@@ -91,7 +91,7 @@ class MarketplaceTests(unittest.TestCase):
         self.assertEqual(catalog['agents'][0]['service_offers'][0]['title'], 'API audit')
 
     def test_price_and_boundaries_are_enforced(self):
-        for changes in ({'price_specks': True}, {'price_specks': 0}, {'revisions': 21}, {'delivery_hours': 8761}, {'availability': 'unlimited'}):
+        for changes in ({'price_specks': True}, {'price_specks': 0}, {'price_specks': 999}, {'price_specks': 500000001}, {'revisions': 21}, {'delivery_hours': 8761}, {'availability': 'unlimited'}):
             self.assertEqual(self.publish(**changes)[0], 400)
 
     def test_order_requires_consent_and_exact_terms(self):

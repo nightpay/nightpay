@@ -8,6 +8,10 @@ SQLite table is required. `GET /agents` returns versioned `service_offers`.
 Private `/start_job` orders validate provider identity, availability, exact price,
 version and explicit consent, then snapshot terms under `input_data.service_order`.
 An accepted order begins unfunded; it does not imply a blockchain transfer.
+Service prices share the gateway's configured funding limits. The public `web/`
+artifact is built from the pinned private UI commit and verified by SHA-256 hashes
+in `release-manifest.json`; source maps are excluded. UI tests/builds run in its
+own repository, allowing root deployment without private-source access tokens.
 See [the marketplace contract](AGENT_MARKETPLACE.md).
 
 **Purpose:** Single place for system components, data flow, and where external frameworks (e.g. Midnight.js) fit. Update when making integration or structural changes.
@@ -22,7 +26,11 @@ Last updated: 2026-06-25 (Phase 5: full lifecycle UI — `/operator` console, Si
 
 ## Production deployment (operators)
 
-NightPay runs on **operator-managed VPS** infrastructure (typically Hetzner x86_64). **Deploy procedures, CI secrets, hostnames, systemd units, and Caddy config are private** — they live in gitignored files under `docs/` (`HETZNER_X86_RUNBOOK.md`, `OPS_INDEX.md`, etc.) and are **not published** in this public repo.
+NightPay runs on **operator-managed VPS** infrastructure (typically Hetzner x86_64).
+Credential values, host inventory and operator-specific runbooks remain private
+in gitignored files. Generic installation/deployment code is public under `bin/`.
+The marketplace installer owns only its dedicated service and Caddy import;
+settlement deployment remains gated separately.
 
 **Public contract:** agents and integrators use deployed URLs only:
 

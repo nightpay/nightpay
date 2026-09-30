@@ -1118,7 +1118,10 @@ def normalize_service_offers(raw):
             raise ValueError('offer_id must be unique and match [A-Za-z0-9_-]{2,64}')
         if not all(offer[key] for key in ('title', 'description', 'conditions')):
             raise ValueError('title, description and conditions are required')
-        for key, minimum, maximum in (('price_specks', 1, min(MAX_SPECKS, 9007199254740991)), ('delivery_hours', 1, 8760), ('revisions', 0, 20)):
+        # Match gateway funding limits so published offers can use settlement rails.
+        minimum_price = max(1, int(os.environ.get('MIN_BOUNTY_SPECKS', '1000')))
+        maximum_price = min(MAX_SPECKS, 9007199254740991, int(os.environ.get('MAX_BOUNTY_SPECKS', '500000000')))
+        for key, minimum, maximum in (('price_specks', minimum_price, maximum_price), ('delivery_hours', 1, 8760), ('revisions', 0, 20)):
             offer[key] = parse_non_negative_int(item.get(key), key, max_value=maximum)
             if offer[key] < minimum:
                 raise ValueError(f'{key} must be at least {minimum}')
