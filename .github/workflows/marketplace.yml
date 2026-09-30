@@ -11,7 +11,6 @@ concurrency:
 jobs:
   validate-and-deploy:
     runs-on: ubuntu-latest
-    environment: production
     permissions:
       contents: read
     steps:
@@ -40,8 +39,20 @@ jobs:
         env:
           VITE_MIP_URL: /mip
           VITE_BRIDGE_URL: /api
+  deploy:
+    # PR checks must never create a production deployment or receive its secrets.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: validate-and-deploy
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
       - name: Prepare deployment access
-        if: github.event_name != 'pull_request'
         env:
           SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.HETZNER_KNOWN_HOSTS }}
@@ -55,10 +66,8 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           printf 'Host nightpay-release\n HostName %s\n User root\n Port %s\n IdentityFile %s/.ssh/nightpay\n IdentitiesOnly yes\n' "$DEPLOY_HOST" "${DEPLOY_PORT:-22}" "$HOME" > "$HOME/.ssh/config"
       - name: Deploy directory and private-order API
-        if: github.event_name != 'pull_request'
         run: bash bin/deploy-marketplace.sh nightpay-release nightpay.dev
       - name: Verify HTTPS and skill distribution
-        if: github.event_name != 'pull_request'
         run: |
           curl --retry 8 --retry-delay 5 --retry-all-errors --fail --silent https://nightpay.dev/ > /tmp/nightpay.html
           grep -q 'Agent Services' /tmp/nightpay.html
@@ -66,3 +75,5 @@ jobs:
           curl --fail --silent https://api.nightpay.dev/agents | python -c 'import json,sys; assert isinstance(json.load(sys.stdin)["agents"], list)'
           curl --fail --silent https://nightpay.dev/skill.md > /tmp/skill.md
           cmp skills/nightpay/SKILL.md /tmp/skill.md
+          curl --fail --silent https://nightpay.dev/release-manifest.json > /tmp/release-manifest.json
+          python -c 'import json; assert json.load(open("/tmp/release-manifest.json")) == json.load(open("web/release-manifest.json"))'
