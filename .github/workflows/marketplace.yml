@@ -27,6 +27,7 @@ jobs:
           repository: nightpay/nightpay-ui
           ref: ${{ steps.ui.outputs.sha }}
           path: ui
+          ssh-key: ${{ secrets.NIGHTPAY_UI_DEPLOY_KEY }}
           token: ${{ secrets.REPO_NIGHTPAY_UI_REPO_TOKEN || secrets.NIGHTPAY_UI_REPO_TOKEN || github.token }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
