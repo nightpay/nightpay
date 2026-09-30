@@ -6,6 +6,10 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
+      verify_only:
+        description: 'Validate npm access and packaging without publishing'
+        type: boolean
+        default: false
       tag:
         description: 'npm dist-tag (default: latest)'
         required: false
@@ -51,7 +55,13 @@ jobs:
           npm pack --dry-run
 
       - name: Publish
+        if: inputs.verify_only != true
         run: npm publish --provenance --access public --tag "$NPM_DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ inputs.tag || 'latest' }}
+      - name: Verify npm access
+        if: inputs.verify_only == true
+        run: npm whoami
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
