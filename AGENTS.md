@@ -34,13 +34,13 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 | DeepWiki: masumi-docs | https://deepwiki.com/masumi-network/masumi-docs | Internal structure when docs are sparse |
 
 **Key rules for this codebase:**
-- Compact developer tools are **v0.5.1** — run `compact fixup --check` first, then `compact fixup`
-- Compact compiler inside tools is v0.31.0 (Compact language v0.22) — `fixup --check` mode was added in 0.4.0 (use it)
+- Compact developer tools are **v0.5.3** (official native release, 2026-09-29). Select compiler **0.31.0** explicitly with `compact update 0.31.0` for this ledger-8 bridge. Run `compact fixup --check` first, then `compact fixup`.
+- The developer-tools CLI and compiler have separate versions; compiler 0.31.0 reports Compact language 0.23.0 and accepts this contract's `>= 0.22` pragma. `fixup --check` mode was added in tools 0.4.0 (use it).
 - Proof system is BLS12-381 — do NOT write Pluto-Eris code
 - `MerkleTree<25>` is our depth — max is 32, we are safe
 - Bridge SDK versions (enforced via `bridge/package.json` `overrides`): `midnight-js-*@4.1.1`, `ledger-v8@8.1.2`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `onchain-runtime-v3@3.0.0`, `platform-js@2.2.4`. Keep the compatible ledger-8 family pinned: compact-js 2.5.3 currently requires an unpublished ledger-v9 alpha package. Build and simulator tests are required before advancing this family.
-- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.1.0` + `wallet-sdk-hd@3.0.1` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@3.0.0` + `wallet-sdk-facade@3.0.0` + `wallet-sdk-shielded@2.1.0` + `wallet-sdk-unshielded-wallet@2.1.0` (wallet ops, v2/v3 line). Do not unify — these are upstream's own major version split.
-- Why the `overrides`: the ledger-8 compatibility matrix is internally consistent, but we still pin `ledger-v8@8.0.3` + `compact-js@2.5.1` + `compact-runtime@0.16.0` because sub-1.0 packages may break on minor bumps per matrix guidance. Keep `overrides` in sync with `dependencies` when bumping.
+- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.1.2` + `wallet-sdk-hd@3.0.2` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@3.0.0` + `wallet-sdk-facade@3.0.0` + `wallet-sdk-shielded@2.1.0` + `wallet-sdk-unshielded-wallet@2.1.0` (wallet ops, v2/v3 line). Do not unify — these are upstream's own major version split.
+- Why the `overrides`: pin the tested `ledger-v8@8.1.2` + `compact-js@2.5.1` + `compact-runtime@0.16.0` family because sub-1.0 packages may break on minor bumps. Keep `overrides` in sync with `dependencies` when bumping.
 - Ledger 8 is live on **Preview, Preprod, AND Mainnet** — the ledger-v8 stack (`ledger-v8@8.0.3`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `midnight-js@4.1.1`) is the current baseline. Indexer GraphQL endpoint is now `/api/v4/graphql` (was `/api/v3/graphql`).
 - Proof server runs on `localhost:6300` via Docker (`midnightntwrk/proof-server:8.0.3`) — always local, never remote
 - **Mainnet (Kūkolu) is live with Ledger 8** — keep `preprod` as the default network until preprod end-to-end passes; mainnet is available but not the default

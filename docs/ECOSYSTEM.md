@@ -4,6 +4,14 @@
 
 Last researched: **2026-09-30**. See [current marketplace comparison](MARKET_POSITION.md) and [agent onboarding](AGENT_MARKETPLACE.md). Frontend/tooling use current stable releases. The bridge retains the compatible ledger-8 family, with ledger-v8 8.1.2: compact-js 2.5.3 requires an unpublished ledger-v9 alpha. Scanner v0.0.3 fails parsing this contract; contract deployment is held. The historical network/compiler matrix below is not freshly verified and must not be authority for a production migration.
 
+The [official Compact developer-tools release](https://github.com/midnightntwrk/compact/releases/tag/compact-v0.5.3)
+is 0.5.3 (2026-09-29). Its separately selected compiler remains 0.31.0 for this
+bridge. An isolated WSL compile with `--skip-zk` succeeds on the production source;
+the generated JavaScript matches the bridge bindings apart from line endings.
+Compiler 0.31.0 reports language 0.23.0 and runtime 0.16.0. This does not generate
+proving keys or clear the failed security-scan gate. `fixup --check` also reports
+formatting changes; a fixed-up temporary copy still triggers the scanner panic.
+
 ---
 
 ## How to Use This Doc
