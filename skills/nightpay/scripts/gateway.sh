@@ -212,51 +212,52 @@ except socket.gaierror as e:
 
 # ─── SSRF error (colored) — used by _ssrf_safe_curl ───────────────────────────
 
-_masumi_request_with_auth_fallback() {
+_masumi_request() {
   local method="$1"
   local base_url="$2"
   local endpoint="$3"
   local payload="${4:-}"
-  local auth_headers=(
-    "Authorization: Bearer $MASUMI_API_KEY"
-    "x-api-key: $MASUMI_API_KEY"
-    "token: $MASUMI_API_KEY"
-  )
+  # Current Masumi uses token. Legacy deployments must select their header
+  # explicitly: retrying a payment POST after an ambiguous error can charge twice.
   local hdr out
-
-  for hdr in "${auth_headers[@]}"; do
-    if [[ "$method" == "GET" ]]; then
-      if out="$(_ssrf_safe_curl "${base_url}${endpoint}" -H "$hdr" 2>/dev/null)"; then
-        printf '%s\n' "$out"
-        return 0
-      fi
-    else
-      if out="$(_ssrf_safe_curl "${base_url}${endpoint}" \
-        -X POST \
-        -H "$hdr" \
-        -H "Content-Type: application/json" \
-        -d "$payload" 2>/dev/null)"; then
-        printf '%s\n' "$out"
-        return 0
-      fi
+  case "${MASUMI_AUTH_STYLE:-token}" in
+    token) hdr="token: $MASUMI_API_KEY" ;;
+    bearer) hdr="Authorization: Bearer $MASUMI_API_KEY" ;;
+    x-api-key) hdr="x-api-key: $MASUMI_API_KEY" ;;
+    *) echo 'ERROR: MASUMI_AUTH_STYLE must be token, bearer or x-api-key' >&2; return 1 ;;
+  esac
+  if [[ "$MASUMI_API_KEY" == *$'\r'* || "$MASUMI_API_KEY" == *$'\n'* ]]; then
+    echo 'ERROR: MASUMI_API_KEY contains invalid header characters' >&2
+    return 1
+  fi
+  if [[ "$method" == "GET" ]]; then
+    if out="$(_ssrf_safe_curl "${base_url}${endpoint}" -H "$hdr" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
     fi
-  done
-
-  echo "ERROR: Masumi request failed after trying Authorization/x-api-key/token headers (${method} ${endpoint})" >&2
+  else
+    if out="$(_ssrf_safe_curl "${base_url}${endpoint}" \
+      -X POST -H "$hdr" -H "Content-Type: application/json" \
+      -d "$payload" 2>/dev/null)"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+  echo "ERROR: Masumi request failed (${method} ${endpoint}); not retried" >&2
   return 1
 }
 
 masumi_get() {
-  _masumi_request_with_auth_fallback "GET" "$MASUMI_REGISTRY_URL" "$1"
+  _masumi_request "GET" "$MASUMI_PAYMENT_URL" "$1"
 }
 
 masumi_post() {
-  _masumi_request_with_auth_fallback "POST" "$MASUMI_PAYMENT_URL" "$1" "$2"
+  _masumi_request "POST" "$MASUMI_PAYMENT_URL" "$1" "$2"
 }
 
 # Masumi registry service (port 3000) — distinct from payment POSTs.
 masumi_registry_post() {
-  _masumi_request_with_auth_fallback "POST" "$MASUMI_REGISTRY_URL" "$1" "$2"
+  _masumi_request "POST" "$MASUMI_REGISTRY_URL" "$1" "$2"
 }
 
 # Best-effort compatibility layer for registry endpoint changes.

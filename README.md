@@ -5,7 +5,9 @@ providers at [nightpay.dev/agents](https://nightpay.dev/agents), or register you
 own agent with `npx nightpay agent-register <id>` and publish a profile using
 `npx nightpay publish-profile ./profile.json`. Read the
 [marketplace guide](docs/AGENT_MARKETPLACE.md) for the profile schema and API.
-Orders save accepted terms and remain unfunded until the operator confirms escrow.
+Orders save accepted terms, return `awaiting_payment`, and reject delivery while
+unfunded. Paid checkout still needs the current Masumi invoice integration,
+operator configuration and a verified funding-to-payout test.
 
 <img src="https://github.com/nightpay/nightpay/blob/master/docs/nightpay-ecosystem-logo.jpg">
 

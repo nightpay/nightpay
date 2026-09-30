@@ -51,6 +51,7 @@ jobs:
           python -m pip install cryptography==50.0.1
           python -m py_compile nightpay_sdk.py
           python test/marketplace.py
+          python test/masumi-transport.py
           node test/mcp-discovery.mjs
           npm pack --dry-run
 

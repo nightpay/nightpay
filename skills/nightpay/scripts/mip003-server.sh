@@ -106,8 +106,10 @@ from urllib import request as urlrequest, error as urlerror
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 except Exception:
     Ed25519PublicKey = None
+    AESGCM = None
 
 PORT                     = int(sys.argv[1])
 DB_PATH                  = sys.argv[2]
@@ -217,7 +219,7 @@ if X402_VERIFY_MODE == 'facilitator' and not X402_FACILITATOR_URL:
 X402_SETTLE_ON_SUCCESS = _coerce_bool_env('X402_SETTLE_ON_SUCCESS', False) and X402_VERIFY_MODE == 'facilitator'
 X402_BYPASS_OPERATOR = _coerce_bool_env('X402_BYPASS_OPERATOR', True)
 
-KNOWN_STATUSES = ('running', 'awaiting_approval', 'multisig_pending', 'disputed', 'completed')
+KNOWN_STATUSES = ('awaiting_payment', 'running', 'awaiting_approval', 'multisig_pending', 'disputed', 'completed')
 MAX_ATTACHMENT_BYTES = 256 * 1024  # .md or .txt attachment at start_job (authenticated only)
 MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024
 MAX_DESCRIPTION_CHARS = 8192
@@ -1686,6 +1688,8 @@ def ensure_voting_session(db, job_id, contest_cfg, now_dt, fallback_voter_id=Non
     return started_at, voting_ends_at, voter_snapshot, None
 
 def external_status_from_internal(internal_status, amount_specks):
+    if internal_status == 'awaiting_payment':
+        return 'awaiting_payment'
     if internal_status == 'completed':
         return 'completed'
     if internal_status == 'disputed':
@@ -1703,6 +1707,28 @@ def canonical_json_sha256(payload):
 
 def canonical_input_hash(input_data):
     return canonical_json_sha256(input_data)
+
+def encode_service_input(job_id, input_data):
+    # Never persist the new private service brief or attachment as plaintext.
+    if AESGCM is None:
+        raise RuntimeError('private service input encryption unavailable')
+    key = hmac.new(OPERATOR_SECRET_KEY.encode(), b'nightpay-service-input-v1', hashlib.sha256).digest()
+    nonce = secrets.token_bytes(12)
+    plaintext = json.dumps(input_data, sort_keys=True, separators=(',', ':')).encode()
+    encrypted = AESGCM(key).encrypt(nonce, plaintext, job_id.encode())
+    return {'encrypted_service_input': {'version': 1,
+            'nonce': base64.b64encode(nonce).decode(), 'ciphertext': base64.b64encode(encrypted).decode()}}
+
+def decode_service_input(job_id, stored_input):
+    envelope = stored_input.get('encrypted_service_input') if isinstance(stored_input, dict) else None
+    if envelope is None:
+        return stored_input
+    if AESGCM is None or not isinstance(envelope, dict) or envelope.get('version') != 1:
+        raise RuntimeError('private service input unavailable')
+    key = hmac.new(OPERATOR_SECRET_KEY.encode(), b'nightpay-service-input-v1', hashlib.sha256).digest()
+    nonce = base64.b64decode(envelope['nonce'], validate=True)
+    ciphertext = base64.b64decode(envelope['ciphertext'], validate=True)
+    return json.loads(AESGCM(key).decrypt(nonce, ciphertext, job_id.encode()))
 
 def make_input_ack_signature(job_id, status_id, input_hash):
     msg = f'nightpay-provide-input-v1:{job_id}:{status_id}:{input_hash}'
@@ -1730,7 +1756,7 @@ def resolve_identifier_from_purchaser(body):
         return None
     return str(value)
 
-def strict_start_job_response(job_id, body, now_dt, amount_specks):
+def strict_start_job_response(job_id, body, now_dt, amount_specks, internal_status='running'):
     input_data = resolve_input_data(body)
     identifier_from_purchaser = resolve_identifier_from_purchaser(body)
     input_data_hash = canonical_input_hash(input_data)
@@ -1751,13 +1777,13 @@ def strict_start_job_response(job_id, body, now_dt, amount_specks):
         'identifierFromPurchaser': identifier_from_purchaser,
         'input_data_hash': input_data_hash,
         'input_hash': input_data_hash,
-        'status': external_status_from_internal('running', amount_specks),
-        'internal_status': 'running',
+        'status': external_status_from_internal(internal_status, amount_specks),
+        'internal_status': internal_status,
         'legacy': {
             'job_id': job_id,
             'job_token': make_job_token(job_id),
-            'status': external_status_from_internal('running', amount_specks),
-            'internal_status': 'running'
+            'status': external_status_from_internal(internal_status, amount_specks),
+            'internal_status': internal_status
         }
     }
 
@@ -2837,6 +2863,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             active = db.execute('SELECT COUNT(*) FROM jobs WHERE status = ?', ('running',)).fetchone()[0]
             self.respond(200, {
                 'status': 'available',
+                'service_orders': {'paid_checkout_available': False, 'initial_status': 'awaiting_payment'},
                 'total_jobs': total,
                 'active_jobs': active,
                 'potential_use_cases_count': len(POTENTIAL_USE_CASES),
@@ -3053,6 +3080,12 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 ).fetchone()
                 if job.get('input_data'):
                     job['input_data'] = json.loads(job['input_data'])
+                    # Hidden-job authorization above must precede decryption.
+                    try:
+                        job['input_data'] = decode_service_input(job_id, job['input_data'])
+                    except Exception:
+                        self.respond(503, {'error': 'private service input unavailable; operator must restore the encryption key or data'})
+                        return
                 if job.get('extra_input'):
                     job['extra_input'] = json.loads(job['extra_input'])
                 if job.get('result'):
@@ -4246,6 +4279,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     return
 
             input_payload = dict(input_data)
+            # Only the server may create the accepted-terms/payment snapshot.
+            input_payload.pop('service_order', None)
+            input_payload.pop('encrypted_service_input', None)
+            initial_status = 'awaiting_payment' if body.get('service_offer_id') is not None else 'running'
+            initial_event_status = 'awaiting_payment' if initial_status == 'awaiting_payment' else 'awaiting_input'
             input_payload['visibility'] = visibility
             if direct_agent_id:
                 input_payload['direct_agent_id'] = direct_agent_id
@@ -4258,6 +4296,9 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 offer_id = body.get('service_offer_id')
                 if offer_id is None:
                     return True
+                if AESGCM is None:
+                    self.respond(503, {'error': 'private service input encryption unavailable'})
+                    return False
                 if not direct_agent_id or body.get('accept_service_terms') is not True:
                     self.respond(400, {'error': 'service orders require direct_agent_id and accept_service_terms=true'})
                     return False
@@ -4315,7 +4356,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                             return
 
                         if MIP003_MODE == 'strict':
-                            strict_payload = strict_start_job_response(job_id, body, now_dt, row['amount_specks'])
+                            strict_payload = strict_start_job_response(job_id, body, now_dt, row['amount_specks'], row['status'])
                             strict_payload['idempotent_replay'] = True
                             strict_payload['visibility'] = visibility_for_api(normalize_visibility(row['visibility'], default='public') or 'public')
                             strict_payload['assigned_agent_id'] = row['assigned_agent_id']
@@ -4336,10 +4377,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                         db.rollback()
                         return
                     job_id = str(uuid.uuid4())
+                    stored_input = encode_service_input(job_id, input_payload) if initial_status == 'awaiting_payment' else input_payload
                     db.execute(
                         '''INSERT INTO jobs(job_id, status, assigned_agent_id, visibility, input_data, work_commit, amount_specks, contest_config, started_at, updated_at)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (job_id, 'running', direct_agent_id or None, visibility, json.dumps(input_payload),
+                        (job_id, initial_status, direct_agent_id or None, visibility, json.dumps(stored_input),
                          work_commit, amount_specks, contest_json, now, now)
                     )
                     if direct_agent_id:
@@ -4350,7 +4392,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     record_status_event(
                         db,
                         job_id,
-                        'awaiting_input',
+                        initial_event_status,
                         input_schema={'required': ['input_data'], 'job_id': job_id}
                     )
                     db.execute(
@@ -4368,10 +4410,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     db.rollback()
                     return
                 job_id = str(uuid.uuid4())
+                stored_input = encode_service_input(job_id, input_payload) if initial_status == 'awaiting_payment' else input_payload
                 db.execute(
                     '''INSERT INTO jobs(job_id, status, assigned_agent_id, visibility, input_data, work_commit, amount_specks, contest_config, started_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                    (job_id, 'running', direct_agent_id or None, visibility, json.dumps(input_payload),
+                    (job_id, initial_status, direct_agent_id or None, visibility, json.dumps(stored_input),
                      work_commit, amount_specks, contest_json, now, now)
                 )
                 if direct_agent_id:
@@ -4382,22 +4425,22 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 record_status_event(
                     db,
                     job_id,
-                    'awaiting_input',
+                    initial_event_status,
                     input_schema={'required': ['input_data'], 'job_id': job_id}
                 )
                 db.commit()
 
             # SECURITY: job_token is ephemeral - derived on demand, never stored
             if MIP003_MODE == 'strict':
-                response = strict_start_job_response(job_id, body, now_dt, amount_specks)
+                response = strict_start_job_response(job_id, body, now_dt, amount_specks, initial_status)
                 response['visibility'] = visibility_for_api(visibility)
                 response['assigned_agent_id'] = direct_agent_id or None
             else:
                 response = {
                     'job_id':    job_id,
                     'job_token': make_job_token(job_id),
-                    'status':    external_status_from_internal('running', amount_specks),
-                    'internal_status': 'running',
+                    'status':    external_status_from_internal(initial_status, amount_specks),
+                    'internal_status': initial_status,
                     'assigned_agent_id': direct_agent_id or None,
                     'visibility': visibility_for_api(visibility),
                 }

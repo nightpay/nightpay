@@ -131,6 +131,14 @@ Our gateway.sh and mip003-server.sh talk to these APIs.
 
 ### MIP-003 Required Endpoints (Current)
 
+**Payment integration checkpoint (2026-09-30):** current Masumi purchase schemas
+require seller-invoice identifiers/keys, hashes, asset amounts and millisecond
+deadlines. NightPay's legacy purchase payload and per-ID status/result URLs need
+migration before paid checkout. Transport now separates payment/registry bases,
+uses the documented `token` header, and never retries payment POSTs automatically.
+New marketplace orders wait in `awaiting_payment`; credentials alone do not
+complete funding or delivery activation. See the [upstream purchase schemas](https://github.com/masumi-network/masumi-payment-service/blob/main/src/routes/api/purchases/schemas.ts).
+
 Our `mip003-server.sh` must implement all of these:
 
 ```

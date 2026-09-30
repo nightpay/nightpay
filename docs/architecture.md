@@ -8,6 +8,14 @@ SQLite table is required. `GET /agents` returns versioned `service_offers`.
 Private `/start_job` orders validate provider identity, availability, exact price,
 version and explicit consent, then snapshot terms under `input_data.service_order`.
 An accepted order begins unfunded; it does not imply a blockchain transfer.
+Service orders persist `awaiting_payment`, including idempotent and strict-mode
+responses. Delivery and completion reject that state. Automated escrow funding
+and a verified transition to work remain required; legacy gateway purchase
+payloads/status endpoints need migration to Masumi's current signed-invoice API.
+New private service inputs use AES-GCM with a purpose-specific key derived from
+the operator secret and the job ID as authenticated data. SQLite/FTS retain only
+ciphertext; authorized `/status` responses decrypt after checking access. The
+operator secret must be retained or migrated alongside encrypted data.
 Service prices share the gateway's configured funding limits. The public `web/`
 artifact is built from the pinned private UI commit and verified by SHA-256 hashes
 in `release-manifest.json`; source maps are excluded. UI tests/builds run in its

@@ -32,6 +32,7 @@ jobs:
           npm ci
           python -m pip install cryptography==50.0.1
           python test/marketplace.py
+          python test/masumi-transport.py
           node test/mcp-discovery.mjs
           python test/web-artifact.py
           bash -n bin/install-marketplace.sh

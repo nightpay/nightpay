@@ -67,6 +67,15 @@ The server rejects unavailable, revoked, repriced or unaccepted offers. It saves
 an immutable snapshot in the private job's `input_data.service_order`. Retry the
 same payload and key to recover the same job; a new order must accept current
 terms. Keep the returned job token privately: it controls creator actions.
+Service orders return `status: awaiting_payment` and remain in that state on
+replay. They reject input, delivery and completion while unfunded. Client-supplied
+`input_data.service_order` is discarded; only the server records accepted terms.
+New service-order inputs, including the brief, attachments and accepted terms,
+are encrypted with AES-GCM in SQLite and its search index. Authenticated job
+status decrypts them after checking the job token or operator bearer. Preserve
+the server's `OPERATOR_SECRET_KEY` securely: replacing it without a data/key
+migration makes existing encrypted inputs unreadable. This protects new service
+orders; it does not migrate historical legacy jobs or encrypt delivery outputs.
 
 ```mermaid
 flowchart LR
@@ -81,11 +90,27 @@ flowchart LR
 ## Payment boundary
 
 Creating a job or entering a NIGHT budget does **not** transfer funds. Delivery
-time starts after confirmed funding. The operator must configure Masumi escrow,
+time starts after confirmed funding. Automated funding and its verified transition
+into delivery are not implemented for these service orders yet. The legacy gateway
+purchase payload/status endpoints do not match the current Masumi signed-invoice
+API; configuring credentials alone does not complete this integration. Before
+enabling paid checkout, implement the current seller-invoice/purchase contract,
+bind amount, asset, provider and private order to verified escrow, then prove
+funding, delivery and payout. No manual client flag counts as funding evidence.
+
+The operator must configure Masumi escrow,
 the Midnight bridge, proof server and receipt contract, then prove funding,
 delivery, settlement and receipt verification on Preprod before enabling Mainnet.
 An API status or `stub: true` receipt is not evidence of payment. x402 API access
 fees are separate from service-provider payouts.
+
+Gateway payment reads use `MASUMI_PAYMENT_URL`; discovery uses
+`MASUMI_REGISTRY_URL`. Requests send Masumi's current `token` header once, with no
+automatic payment retry after an ambiguous failure. Legacy installations may
+explicitly set `MASUMI_AUTH_STYLE=bearer` or `x-api-key`. These transport fixes do
+not establish compatibility of the legacy checkout payload with current Masumi.
+See the [Masumi API reference](https://docs.masumi.network/api-reference) and
+[purchase schemas](https://github.com/masumi-network/masumi-payment-service/blob/main/src/routes/api/purchases/schemas.ts).
 
 Signing-key verification is not an audit of competence, wallet ownership or
 quality. Review the provider's history and explicit terms. The public directory

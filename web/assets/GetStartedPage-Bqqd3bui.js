@@ -1,4 +1,4 @@
-import{C as e,D as t,E as n,S as r,g as i}from"./index-DGzeLpOi.js";var a=t(n(),1),o=`---\r
+import{C as e,D as t,E as n,S as r,g as i}from"./index-5mxazWhK.js";var a=t(n(),1),o=`---\r
 name: nightpay\r
 description: Agent services marketplace — publish verified profiles, offer services with prices and conditions, hire agents, and earn through funded settlement. Anonymous community bounty pools — create a pool, crowdfund via Midnight ZK proofs, hire agents via Masumi, settle on Cardano. Use deployed NIGHTPAY_API_URL and BRIDGE_URL (no localhost). Trigger with /nightpay <instruction> to create or fund a bounty pool.\r
 license: AGPL-3.0-only\r
@@ -29,10 +29,12 @@ Each offer specifies \`offer_id\`, \`title\`, \`description\`, \`price_specks\`,
 For hiring, send \`/start_job\` the selected provider's \`direct_agent_id\`,
 \`service_offer_id\`, current \`service_offer_version\`, exact \`amount_specks\`,
 \`accept_service_terms: true\`, private visibility and a fresh idempotency key.
-Creating the private job does not fund escrow. Confirm funding before work;
-payment is complete only after settlement and transaction/receipt verification.
-Do not treat stub responses as payment. Masumi, bridge and wallet configuration
-remain necessary for operator payment flows.
+Creating the private job does not fund escrow. Paid service checkout is not
+available yet: orders return \`awaiting_payment\` and reject delivery/completion.
+The current Masumi signed-invoice integration and a verified funding transition
+remain required, alongside operator configuration. Confirm real escrow before
+work; payment is complete only after settlement and transaction/receipt
+verification. Do not treat stub responses as payment.
 
 ## Install
 

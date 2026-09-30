@@ -55,9 +55,10 @@ class MarketplaceTests(unittest.TestCase):
         self.token = self.module['make_verified_agent_token'](self.agent_id, 'test-fingerprint')
         self.offer = {'offer_id': 'audit', 'title': 'API audit', 'description': 'A written review with actionable findings.', 'price_specks': 25000000, 'delivery_hours': 24, 'revisions': 1, 'conditions': 'Read-only review. Begins after funded escrow. No credentials in briefs.', 'availability': 'available'}
 
-    def request(self, path, body=None, token=None):
+    def request(self, path, body=None, token=None, bearer=None):
         headers = {'Content-Type': 'application/json'}
         if token: headers['X-Agent-Token'] = token
+        if bearer: headers['Authorization'] = f'Bearer {bearer}'
         req = Request(self.url + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
         try:
             with urlopen(req, timeout=5) as response: return response.status, json.load(response)
@@ -84,6 +85,9 @@ class MarketplaceTests(unittest.TestCase):
         self.module['AGENT_IDENTITY_ENFORCE'] = True
 
     def test_offer_discovery_without_showcase(self):
+        status, availability = self.request('/availability')
+        self.assertEqual(status, 200)
+        self.assertFalse(availability['service_orders']['paid_checkout_available'])
         status, _ = self.publish()
         self.assertEqual(status, 200)
         status, catalog = self.request('/agents?showcase_only=1')
@@ -102,9 +106,11 @@ class MarketplaceTests(unittest.TestCase):
         body = self.order()
         status, order = self.request('/start_job', body)
         self.assertEqual(status, 200)
+        self.assertEqual(order['status'], 'awaiting_payment')
+        self.assertEqual(order['internal_status'], 'awaiting_payment')
         with sqlite3.connect(self.db_path) as db:
             payload, visibility = db.execute('SELECT input_data,visibility FROM jobs WHERE job_id=?', (order['job_id'],)).fetchone()
-            terms = json.loads(payload)['service_order']
+            terms = self.module['decode_service_input'](order['job_id'], json.loads(payload))['service_order']
         self.assertEqual(terms['offer']['price_specks'], 25000000)
         self.assertEqual(terms['payment_status'], 'unfunded')
         self.assertNotEqual(visibility, 'public')
@@ -113,8 +119,82 @@ class MarketplaceTests(unittest.TestCase):
         status, replay = self.request('/start_job', body)
         self.assertEqual(status, 200)
         self.assertEqual(replay['job_id'], order['job_id'])
+        self.assertEqual(replay['status'], 'awaiting_payment')
         self.assertTrue(replay['idempotent_replay'])
         self.assertEqual(self.request('/start_job', dict(body, idempotency_key='marketplace-order-02'))[0], 409)
+
+    def test_unfunded_order_rejects_delivery_and_completion(self):
+        body = self.order(input_data={'description': 'Review this API.', 'service_order': {'payment_status': 'funded'}})
+        code, order = self.request('/start_job', body)
+        self.assertEqual(code, 200)
+        job_id, job_token = order['job_id'], order['job_token']
+        code, status = self.request(f'/status/{job_id}', bearer=job_token)
+        self.assertEqual(code, 200)
+        self.assertEqual(status['status'], 'awaiting_payment')
+        self.assertEqual(status['input_data']['service_order']['payment_status'], 'unfunded')
+        for path, payload, bearer in (
+            ('provide_input', {'agent_id': self.agent_id, 'input_data': {'work': 'Review delivered'}}, job_token),
+            ('provide_result', {'agent_id': self.agent_id, 'work_output': 'Complete review with findings.'}, job_token),
+            ('complete_job', {'onChain': True, 'receiptHash': 'aa' * 32}, 'operator-test-secret'),
+        ):
+            code, result = self.request(f'/{path}/{job_id}', payload, self.token, bearer=bearer)
+            self.assertEqual(code, 409, result)
+        with sqlite3.connect(self.db_path) as db:
+            self.assertEqual(db.execute('SELECT status FROM jobs WHERE job_id=?', (job_id,)).fetchone()[0], 'awaiting_payment')
+            self.assertEqual(db.execute('SELECT status FROM job_status_events WHERE job_id=?', (job_id,)).fetchone()[0], 'awaiting_payment')
+
+    def test_private_brief_is_encrypted_and_bound_to_authorized_job(self):
+        brief = 'Private service brief: unique customer requirements 7d8146.'
+        code, order = self.request('/start_job', self.order(input_data={'description': brief}))
+        self.assertEqual(code, 200)
+        job_id = order['job_id']
+        self.assertEqual(self.request(f'/status/{job_id}')[0], 403)
+        with sqlite3.connect(self.db_path) as db:
+            stored = db.execute('SELECT input_data FROM jobs WHERE job_id=?', (job_id,)).fetchone()[0]
+            self.assertNotIn(brief, stored)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM jobs_fts WHERE input_data LIKE ?', ('%' + brief + '%',)).fetchone()[0], 0)
+        for path in Path(self.tmp.name).glob('jobs.db*'):
+            self.assertNotIn(brief.encode(), path.read_bytes())
+        code, status = self.request(f'/status/{job_id}', bearer=order['job_token'])
+        self.assertEqual(code, 200)
+        self.assertEqual(status['input_data']['description'], brief)
+        envelope = json.loads(stored)
+        with self.assertRaises(Exception):
+            self.module['decode_service_input']('another-job', envelope)
+        encrypted = envelope['encrypted_service_input']
+        encrypted['ciphertext'] = encrypted['ciphertext'][:-4] + 'AAAA'
+        with sqlite3.connect(self.db_path) as db:
+            db.execute('UPDATE jobs SET input_data=? WHERE job_id=?', (json.dumps(envelope), job_id))
+        code, status = self.request(f'/status/{job_id}', bearer=order['job_token'])
+        self.assertEqual(code, 503)
+        self.assertNotIn(brief, json.dumps(status))
+
+    def test_strict_order_and_replay_keep_payment_status(self):
+        body = self.order(agentIdentifier=self.agent_id, identifier_from_purchaser='buyer.example')
+        self.module['MIP003_MODE'] = 'strict'
+        try:
+            code, order = self.request('/start_job', body)
+            self.assertEqual(code, 200, order)
+            for result in (order, self.request('/start_job', body)[1]):
+                self.assertEqual(result['status'], 'awaiting_payment')
+                self.assertEqual(result['internal_status'], 'awaiting_payment')
+                self.assertEqual(result['legacy']['status'], 'awaiting_payment')
+        finally:
+            self.module['MIP003_MODE'] = 'compat'
+
+    def test_non_idempotent_order_and_reserved_snapshot(self):
+        body = self.order()
+        del body['idempotency_key']
+        code, order = self.request('/start_job', body)
+        self.assertEqual(code, 200)
+        self.assertEqual(order['status'], 'awaiting_payment')
+        plain_body = {'amount_specks': 25000000, 'input_data': {'description': 'Ordinary job', 'service_order': {'payment_status': 'funded'}}}
+        code, ordinary = self.request('/start_job', plain_body)
+        self.assertEqual(code, 200)
+        self.assertEqual(ordinary['internal_status'], 'running')
+        with sqlite3.connect(self.db_path) as db:
+            payload = db.execute('SELECT input_data FROM jobs WHERE job_id=?', (ordinary['job_id'],)).fetchone()[0]
+        self.assertNotIn('service_order', json.loads(payload))
 
     def test_paused_offer_cannot_be_ordered(self):
         body = self.order()
