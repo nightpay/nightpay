@@ -19,22 +19,11 @@ jobs:
         with:
           submodules: false
           persist-credentials: false
-      - name: Resolve pinned UI commit
-        id: ui
-        run: echo "sha=$(git ls-tree HEAD ui | awk '{print $3}')" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: nightpay/nightpay-ui
-          ref: ${{ steps.ui.outputs.sha }}
-          path: ui
-          ssh-key: ${{ secrets.NIGHTPAY_UI_DEPLOY_KEY }}
-          token: ${{ secrets.REPO_NIGHTPAY_UI_REPO_TOKEN || secrets.NIGHTPAY_UI_REPO_TOKEN || github.token }}
-          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: package-lock.json
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -44,10 +33,7 @@ jobs:
           python -m pip install cryptography==50.0.1
           python test/marketplace.py
           node test/mcp-discovery.mjs
-          python test/skill-readable.py
-          npm ci --prefix ui
-          npm test --prefix ui
-          npm run build --prefix ui
+          python test/web-artifact.py
           bash -n bin/install-marketplace.sh
           bash -n bin/deploy-marketplace.sh
         env:
