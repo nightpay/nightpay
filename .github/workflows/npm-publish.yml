@@ -18,13 +18,13 @@ jobs:
       contents: read
       id-token: write  # for npm provenance
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Verify version matches tag
@@ -37,7 +37,21 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Validate distributed code
+        run: |
+          npm ci
+          python -m pip install cryptography==50.0.1
+          python -m py_compile nightpay_sdk.py
+          python test/marketplace.py
+          node test/mcp-discovery.mjs
+          npm pack --dry-run
+
       - name: Publish
-        run: npm publish --provenance --access public --tag ${{ inputs.tag || 'latest' }}
+        run: npm publish --provenance --access public --tag "$NPM_DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_DIST_TAG: ${{ inputs.tag || 'latest' }}

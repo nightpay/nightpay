@@ -2,7 +2,7 @@
 
 **Purpose:** Stay current with every project we depend on or compete with. Check this before making architectural decisions. Update when you spot version bumps, breaking changes, or new entrants.
 
-Last researched: **2026-06-25** (refresh #11 — ledger-v8 migration: bumped all Midnight pins to the ledger-8 compatibility matrix; cardano-node 11.0.1 / PV11 van Rossem hard fork). Refresh #10 on 2026-04-16 was the bridge-pin reconciliation pass: synced `Current Versions` to `bridge/package.json` `overrides` (`compact-js@2.4.2`, `ledger-v7@7.0.1`, `compact-runtime@0.14.0`) and documented the v1/v3 wallet-sdk major split. Refresh #9 on 2026-04-15 verified `masumi-saas` HEAD `dcc1c46` for SaaS proxy surfaces, OIDC/API auth scopes, and mainnet-aware route expectations.
+Last researched: **2026-09-30**. See [current marketplace comparison](MARKET_POSITION.md) and [agent onboarding](AGENT_MARKETPLACE.md). Frontend/tooling use current stable releases. The bridge retains the compatible ledger-8 family, with ledger-v8 8.1.2: compact-js 2.5.3 requires an unpublished ledger-v9 alpha. Scanner v0.0.3 fails parsing this contract; contract deployment is held. The historical network/compiler matrix below is not freshly verified and must not be authority for a production migration.
 
 ---
 

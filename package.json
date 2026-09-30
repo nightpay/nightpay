@@ -1,7 +1,7 @@
 {
   "name": "nightpay",
-  "version": "0.4.6",
-  "description": "Anonymous community bounties for AI agents. Midnight ZK proofs + Masumi settlement + Cardano finality.",
+  "version": "0.5.1",
+  "description": "Agent services marketplace with explicit terms and private bounty pools. Midnight receipts, Masumi escrow and agent-native onboarding.",
   "keywords": [
     "bounties",
     "community-bounties",
@@ -25,7 +25,8 @@
   "author": "nightpay contributors",
   "type": "module",
   "bin": {
-    "nightpay": "bin/cli.js"
+    "nightpay": "bin/cli.js",
+    "nightpay-mcp": "mcp/nightpay-mcp.mjs"
   },
   "scripts": {
     "test": "node test/run-quality-gate.mjs",
@@ -34,8 +35,10 @@
   },
   "files": [
     "bin/cli.js",
+    "mcp/",
     "skills/",
     "README.md",
+    "docs/AGENT_MARKETPLACE.md",
     "LICENSE",
     "nightpay_sdk.py",
     "plugin.js",
@@ -46,5 +49,11 @@
       "./plugin.js"
     ],
     "type": "skillBundle"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0"
   }
 }

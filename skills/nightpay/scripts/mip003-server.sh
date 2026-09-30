@@ -17,6 +17,7 @@
 #   MULTISIG_THRESHOLD_SPECKS  — above this value, multisig required (default: 1000000)
 #   MIP003_MODE                — "compat" (default) or "strict"
 #   ONTOLOGY_DIR               — override JSON-LD ontology directory (default: ../ontology)
+#   MIP_BIND_HOST              — bind address (default: 127.0.0.1); expose via TLS proxy
 #   AGENT_IDENTITY_ENFORCE     — 1/true to require verified agent identity on claim/submit (default: 0)
 #   AGENT_CHALLENGE_TTL_SECONDS — agent challenge TTL (default: 600)
 #   AGENT_VERIFIED_TOKEN_TTL_SECONDS — X-Agent-Token TTL after verify (default: 86400)
@@ -97,7 +98,7 @@ echo -e "${DIM}  optimistic window: ${OPTIMISTIC_WINDOW_HOURS}h  |  multisig thr
 echo -e "${DIM}  mip003 mode: ${MIP003_MODE}${RESET}" >&2
 echo -e "${DIM}  ontology dir: ${ONTOLOGY_DIR}${RESET}" >&2
 
-"$PYTHON_BIN" - "$PORT" "$DB_PATH" "$JOB_TOKEN_SECRET" "$OPERATOR_SECRET_KEY" "$OPTIMISTIC_WINDOW_HOURS" "$MULTISIG_THRESHOLD_SPECKS" "$OPERATOR_FEE_BPS" "$IDEMPOTENCY_TTL_SECONDS" "$MIP003_MODE" "$ONTOLOGY_DIR" <<'PYCODE'
+JOB_TOKEN_SECRET="$JOB_TOKEN_SECRET" OPERATOR_SECRET_KEY="$OPERATOR_SECRET_KEY" "$PYTHON_BIN" - "$PORT" "$DB_PATH" _ _ "$OPTIMISTIC_WINDOW_HOURS" "$MULTISIG_THRESHOLD_SPECKS" "$OPERATOR_FEE_BPS" "$IDEMPOTENCY_TTL_SECONDS" "$MIP003_MODE" "$ONTOLOGY_DIR" <<'PYCODE'
 import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math, base64, traceback, subprocess, shlex
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
@@ -110,8 +111,8 @@ except Exception:
 
 PORT                     = int(sys.argv[1])
 DB_PATH                  = sys.argv[2]
-JOB_TOKEN_SECRET         = sys.argv[3]
-OPERATOR_SECRET_KEY      = sys.argv[4]
+JOB_TOKEN_SECRET         = os.environ.get('JOB_TOKEN_SECRET') or sys.argv[3]
+OPERATOR_SECRET_KEY      = os.environ.get('OPERATOR_SECRET_KEY') or sys.argv[4]
 OPTIMISTIC_WINDOW_HOURS  = int(sys.argv[5])
 MULTISIG_THRESHOLD_SPECKS = int(sys.argv[6])
 os.environ['OPERATOR_FEE_BPS'] = sys.argv[7]
@@ -1099,6 +1100,37 @@ def safe_json_loads(raw, fallback):
     except Exception:
         return fallback
 
+def normalize_service_offers(raw):
+    """Public, bounded provider terms. No credentials or buyer briefs belong here."""
+    if not isinstance(raw, list) or len(raw) > 8:
+        raise ValueError('service_offers must be a list of at most 8 offers')
+    offers, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError('each service offer must be an object')
+        offer = {}
+        for key, maximum in (('offer_id', 64), ('title', 100), ('description', 600), ('conditions', 1000)):
+            value = item.get(key, '')
+            if not isinstance(value, str) or len(value.strip()) > maximum or contains_disallowed_control_chars(value):
+                raise ValueError(f'{key} must be a string of at most {maximum} characters')
+            offer[key] = value.strip()
+        if not re.fullmatch(r'[A-Za-z0-9_-]{2,64}', offer['offer_id']) or offer['offer_id'] in seen:
+            raise ValueError('offer_id must be unique and match [A-Za-z0-9_-]{2,64}')
+        if not all(offer[key] for key in ('title', 'description', 'conditions')):
+            raise ValueError('title, description and conditions are required')
+        for key, minimum, maximum in (('price_specks', 1, min(MAX_SPECKS, 9007199254740991)), ('delivery_hours', 1, 8760), ('revisions', 0, 20)):
+            offer[key] = parse_non_negative_int(item.get(key), key, max_value=maximum)
+            if offer[key] < minimum:
+                raise ValueError(f'{key} must be at least {minimum}')
+        offer['availability'] = item.get('availability', 'available')
+        if offer['availability'] not in ('available', 'paused'):
+            raise ValueError('availability must be available or paused')
+        offer['version'] = hashlib.sha256(json.dumps(offer, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        seen.add(offer['offer_id'])
+        offers.append(offer)
+    return offers
+
+
 def contains_disallowed_control_chars(value):
     text = str(value or '')
     for ch in text:
@@ -1961,14 +1993,14 @@ try:
             VALUES (new.rowid, new.job_id, COALESCE(new.input_data, ''));
         END;
 
-        CREATE TRIGGER IF NOT EXISTS jobs_fts_ad AFTER DELETE ON jobs BEGIN
-            INSERT INTO jobs_fts(jobs_fts, rowid, job_id, input_data)
-            VALUES ('delete', old.rowid, old.job_id, COALESCE(old.input_data, ''));
+        DROP TRIGGER IF EXISTS jobs_fts_ad;
+        CREATE TRIGGER jobs_fts_ad AFTER DELETE ON jobs BEGIN
+            DELETE FROM jobs_fts WHERE rowid = old.rowid;
         END;
 
-        CREATE TRIGGER IF NOT EXISTS jobs_fts_au AFTER UPDATE OF job_id, input_data ON jobs BEGIN
-            INSERT INTO jobs_fts(jobs_fts, rowid, job_id, input_data)
-            VALUES ('delete', old.rowid, old.job_id, COALESCE(old.input_data, ''));
+        DROP TRIGGER IF EXISTS jobs_fts_au;
+        CREATE TRIGGER jobs_fts_au AFTER UPDATE OF job_id, input_data ON jobs BEGIN
+            DELETE FROM jobs_fts WHERE rowid = old.rowid;
             INSERT INTO jobs_fts(rowid, job_id, input_data)
             VALUES (new.rowid, new.job_id, COALESCE(new.input_data, ''));
         END;
@@ -2373,10 +2405,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         )
 
     def _verify_agent_identity_token(self, db, token, expected_agent_id=None):
-        parts = str(token or '').strip().split('.')
-        if len(parts) != 4 or parts[0] != 'npaid':
+        raw_token = str(token or '').strip()
+        parts = raw_token[6:].rsplit('.', 2) if raw_token.startswith('npaid.') else []
+        if len(parts) != 3:
             return None, 'invalid X-Agent-Token format'
-        _, token_agent_id, issued_raw, sig = parts
+        token_agent_id, issued_raw, sig = parts
         if not validate_actor_id(token_agent_id):
             return None, 'invalid X-Agent-Token agent_id'
         if expected_agent_id and token_agent_id != expected_agent_id:
@@ -2645,6 +2678,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             'description': agent.get('description') or '',
             'capabilities': capabilities,
             'showcase': showcase,
+            'service_offers': metadata.get('service_offers', []),
             'model_provider': agent.get('model_provider') or '',
             'model_name': agent.get('model_name') or '',
             'endpoint_url': agent.get('endpoint_url') or '',
@@ -2728,10 +2762,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     str(profile.get('name') or '').lower(),
                     str(profile.get('description') or '').lower(),
                     ' '.join(caps),
+                    ' '.join(str(o.get('title', '')) + ' ' + str(o.get('description', '')) for o in profile.get('service_offers', []) if isinstance(o, dict)),
                 ])
                 if query_filter not in haystack:
                     continue
-            if showcase_only and not profile.get('showcase'):
+            if showcase_only and not profile.get('showcase') and not profile.get('service_offers'):
                 continue
             profiles.append(profile)
 
@@ -3640,6 +3675,44 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             })
             return
 
+        if path_only == '/agent/profile':
+            db = get_db()
+            agent_id = str(body.get('agent_id', '')).strip()
+            token = str(self.headers.get('X-Agent-Token', '')).strip()
+            identity, err = self._verify_agent_identity_token(db, token, expected_agent_id=agent_id)
+            if not token or not identity or not validate_actor_id(agent_id):
+                self.respond(401 if not token else 403, {'error': err or 'verified agent_id required'})
+                return
+            try:
+                fields = {}
+                for key, maximum in (('name', 100), ('description', 600)):
+                    value = body.get(key)
+                    if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum or contains_disallowed_control_chars(value):
+                        raise ValueError(f'{key} must be a nonempty string of at most {maximum} characters')
+                    fields[key] = value.strip()
+                raw_caps = body.get('capabilities', [])
+                if not isinstance(raw_caps, list) or len(raw_caps) > 32 or any(not isinstance(v, str) or len(v) > 64 or contains_disallowed_control_chars(v) for v in raw_caps):
+                    raise ValueError('capabilities must contain at most 32 strings of at most 64 characters')
+                caps = normalize_string_list(raw_caps, max_items=32, max_len=64)
+                offers = normalize_service_offers(body.get('service_offers', []))
+            except ValueError as exc:
+                self.respond(400, {'error': str(exc)})
+                return
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM agents WHERE agent_id = ?', (agent_id,)).fetchone()
+            if not row:
+                db.rollback()
+                self.respond(404, {'error': 'verify identity before publishing a profile'})
+                return
+            metadata = safe_json_loads(row['metadata'], {})
+            metadata = metadata if isinstance(metadata, dict) else {}
+            metadata['service_offers'] = offers
+            db.execute('UPDATE agents SET name=?, description=?, capabilities=?, metadata=?, updated_at=? WHERE agent_id=?',
+                       (fields['name'], fields['description'], json.dumps(caps), json.dumps(metadata), datetime.now(timezone.utc).isoformat(), agent_id))
+            db.commit()
+            self.respond(200, self._nightpay_agent_profile(db.execute('SELECT * FROM agents WHERE agent_id=?', (agent_id,)).fetchone(), db=db))
+            return
+
         if path_only == '/agent/challenge':
             agent_id = str(body.get('agent_id', '')).strip()
             if not validate_actor_id(agent_id):
@@ -3768,7 +3841,29 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             masumi_agent_id = str(body.get('masumi_agent_id') or challenge_row['masumi_agent_id'] or '').strip()[:128]
             cardano_stake_addr = str(body.get('cardano_stake_address') or '').strip()[:256]
             metadata = body.get('metadata') if isinstance(body.get('metadata'), dict) else {}
+            if 'service_offers' in metadata:
+                try:
+                    metadata['service_offers'] = normalize_service_offers(metadata['service_offers'])
+                except ValueError as exc:
+                    self.respond(400, {'error': str(exc)})
+                    return
             public_key_hash = hashlib.sha256(pub_bytes).hexdigest()
+            db.execute('BEGIN IMMEDIATE')
+            # Bind names atomically so simultaneous initial verification cannot replace a key.
+            current_challenge = db.execute('SELECT used_at FROM agent_challenges WHERE challenge_id=?', (challenge_id,)).fetchone()
+            if not current_challenge or current_challenge['used_at'] is not None:
+                db.rollback()
+                self.respond(409, {'error': 'challenge already used'})
+                return
+            previous_identity = db.execute('SELECT public_key_hash, revoked_at FROM agent_identities WHERE agent_id = ?', (agent_id,)).fetchone()
+            if previous_identity and previous_identity['revoked_at'] is not None:
+                db.rollback()
+                self.respond(403, {'error': 'identity is revoked; operator review is required'})
+                return
+            if previous_identity and previous_identity['public_key_hash'] != public_key_hash:
+                db.rollback()
+                self.respond(409, {'error': 'agent_id is bound to another signing key; use a new agent_id'})
+                return
             fingerprint_hash = make_agent_fingerprint(
                 agent_id=agent_id,
                 chain=chain,
@@ -4156,6 +4251,36 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             if attachment_content is not None:
                 input_payload['attachment_content'] = attachment_content
 
+            def attach_service_terms():
+                offer_id = body.get('service_offer_id')
+                if offer_id is None:
+                    return True
+                if not direct_agent_id or body.get('accept_service_terms') is not True:
+                    self.respond(400, {'error': 'service orders require direct_agent_id and accept_service_terms=true'})
+                    return False
+                if visibility == 'public':
+                    self.respond(400, {'error': 'service orders must use private visibility'})
+                    return False
+                if not db.execute('SELECT 1 FROM agent_identities WHERE agent_id=? AND revoked_at IS NULL', (direct_agent_id,)).fetchone():
+                    self.respond(409, {'error': 'service provider identity is no longer verified'})
+                    return False
+                target = db.execute('SELECT metadata FROM agents WHERE agent_id=?', (direct_agent_id,)).fetchone()
+                metadata = safe_json_loads(target['metadata'], {}) if target else {}
+                offers = metadata.get('service_offers', []) if isinstance(metadata, dict) else []
+                offer = next((item for item in offers if isinstance(item, dict) and item.get('offer_id') == offer_id), None)
+                if not offer or offer.get('availability') != 'available':
+                    self.respond(409, {'error': 'service offer is unavailable; refresh the agent profile'})
+                    return False
+                if body.get('service_offer_version') != offer.get('version'):
+                    self.respond(409, {'error': 'service terms changed; review and accept the latest offer'})
+                    return False
+                if amount_specks != offer['price_specks']:
+                    self.respond(400, {'error': 'amount_specks must match the accepted service price'})
+                    return False
+                input_payload['service_order'] = {'agent_id': direct_agent_id, 'offer': dict(offer), 'accepted_at': now,
+                                                  'payment_status': 'unfunded', 'delivery_starts': 'after_confirmed_funding'}
+                return True
+
             if idempotency_key:
                 # BEGIN IMMEDIATE serializes writers and prevents duplicate inserts for same key.
                 db.execute('BEGIN IMMEDIATE')
@@ -4204,6 +4329,9 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                             })
                         return
 
+                    if not attach_service_terms():
+                        db.rollback()
+                        return
                     job_id = str(uuid.uuid4())
                     db.execute(
                         '''INSERT INTO jobs(job_id, status, assigned_agent_id, visibility, input_data, work_commit, amount_specks, contest_config, started_at, updated_at)
@@ -4232,6 +4360,10 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     db.rollback()
                     raise
             else:
+                db.execute('BEGIN IMMEDIATE')
+                if not attach_service_terms():
+                    db.rollback()
+                    return
                 job_id = str(uuid.uuid4())
                 db.execute(
                     '''INSERT INTO jobs(job_id, status, assigned_agent_id, visibility, input_data, work_commit, amount_specks, contest_config, started_at, updated_at)
@@ -5592,7 +5724,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-httpd = ThreadedHTTPServer(('0.0.0.0', PORT), MIP003Handler)
+httpd = ThreadedHTTPServer((os.environ.get('MIP_BIND_HOST', '127.0.0.1'), PORT), MIP003Handler)
 print(f'[nightpay] MIP-003 threaded service ready on port {PORT}')
 print(f'[nightpay] DB: {DB_PATH}')
 print(f"[nightpay] Optimistic window: {OPTIMISTIC_WINDOW_HOURS}h | Multisig threshold: {MULTISIG_THRESHOLD_SPECKS} specks | Fee: {os.environ.get('OPERATOR_FEE_BPS','200')} bps")
@@ -5606,4 +5738,3 @@ endpoints = '/availability /x402 /use_cases /agents /ontology /ontology/context 
 print(f'[nightpay] Endpoints: {endpoints}')
 httpd.serve_forever()
 PYCODE
-

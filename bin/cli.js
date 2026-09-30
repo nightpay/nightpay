@@ -4,15 +4,20 @@ import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, chmodSync, r
 import { resolve, dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
+import { generateKeyPairSync, createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { homedir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..");
 const SKILL_SRC = resolve(PKG_ROOT, "skills", "nightpay");
 const SDK_SRC = resolve(PKG_ROOT, "nightpay_sdk.py");
 const SETUP_SRC = resolve(PKG_ROOT, "scripts", "setup.sh");
-const COMMANDS = ["init", "add", "setup", "validate", "doctor", "heartbeat", "list", "help"];
+const COMMANDS = ["init", "add", "setup", "validate", "doctor", "heartbeat", "list", "help", "agent-register", "publish-profile", "services", "mcp"];
 
 const command = process.argv[2] || "help";
+if (command === 'mcp') {
+  await import('../mcp/nightpay-mcp.mjs');
+}
 
 if (!COMMANDS.includes(command)) {
   console.error(`Unknown command: ${command}\nRun: npx nightpay help`);
@@ -25,6 +30,59 @@ try {
   const pkg = JSON.parse(readFileSync(resolve(PKG_ROOT, "package.json"), "utf8"));
   VERSION = pkg.version || VERSION;
 } catch {}
+
+// Agent marketplace onboarding needs no operator keys, wallet seeds, or shell.
+if (['agent-register', 'publish-profile', 'services'].includes(command)) {
+  try {
+    const base = new URL(process.env.NIGHTPAY_API_URL || 'https://api.nightpay.dev');
+    if (base.username || base.password || (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)))) {
+      throw new Error('NIGHTPAY_API_URL must use HTTPS (HTTP is allowed only on loopback).');
+    }
+    const request = async (path, body, token) => {
+      const response = await fetch(new URL(path, base), { method: body ? 'POST' : 'GET', headers: {
+        'Content-Type': 'application/json', ...(token ? { 'X-Agent-Token': token } : {}),
+      }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30000) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(`NightPay request failed (${response.status}): ${data.error || 'request rejected'}`);
+      return data;
+    };
+    if (command === 'services') {
+      const catalog = await request('/agents?showcase_only=1&limit=200');
+      console.log(JSON.stringify(catalog, null, 2));
+    } else {
+      const profile = command === 'publish-profile' ? JSON.parse(readFileSync(resolve(process.argv[3] || ''), 'utf8')) : null;
+      const id = profile?.agent_id || process.argv[3];
+      if (!/^[A-Za-z0-9._:@-]{2,128}$/.test(id || '')) throw new Error('Provide a valid agent ID (2–128 letters, numbers, . _ : @ -).');
+      const stateDir = join(homedir(), '.nightpay', 'agents');
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      chmodSync(stateDir, 0o700);
+      const safeId = encodeURIComponent(id);
+      const keyPath = join(stateDir, `${safeId}.pem`);
+      const tokenPath = join(stateDir, `${safeId}.json`);
+      if (command === 'agent-register') {
+        if (!existsSync(keyPath)) {
+          const { privateKey } = generateKeyPairSync('ed25519');
+          writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { flag: 'wx', mode: 0o600 });
+        }
+        const key = createPrivateKey(readFileSync(keyPath));
+        const publicKey = createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+        const challenge = await request('/agent/challenge', { agent_id: id, algorithm: 'ed25519' });
+        const verified = await request('/agent/verify', { agent_id: id, algorithm: 'ed25519', challenge_id: challenge.challenge_id,
+          public_key_hex: publicKey, signature_hex: sign(null, Buffer.from(challenge.challenge), key).toString('hex') });
+        writeFileSync(tokenPath, JSON.stringify({ api: base.origin, agent_id: id, agent_token: verified.agent_token }), { mode: 0o600 });
+        chmodSync(tokenPath, 0o600);
+        console.log(`Verified ${id}. Signing key and token saved privately in ${stateDir}.\nNext: npx nightpay publish-profile ./profile.json`);
+      } else {
+        if (!existsSync(tokenPath)) throw new Error(`Run npx nightpay agent-register ${id} first.`);
+        const saved = JSON.parse(readFileSync(tokenPath, 'utf8'));
+        if (saved.api !== base.origin) throw new Error('Saved token belongs to another API. Register against this API first.');
+        const published = await request('/agent/profile', profile, saved.agent_token);
+        console.log(`Published ${published.name}: ${published.service_offers?.length || 0} service(s).\n${base.origin}/agents/${encodeURIComponent(id)}`);
+      }
+    }
+    process.exit(0);
+  } catch (error) { console.error(error.message); process.exit(1); }
+}
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
 const isTTY = process.stderr.isTTY;
@@ -53,6 +111,10 @@ ${C.bold}COMMANDS${C.reset}
   npx nightpay ${C.cyan}validate${C.reset}    Check env vars, prerequisites, and connectivity
   npx nightpay ${C.cyan}doctor${C.reset}      Diagnose and auto-fix common issues
   npx nightpay ${C.cyan}heartbeat${C.reset}   Run HEARTBEAT.md checks (OpenClaw / cron)
+  npx nightpay ${C.cyan}agent-register <id>${C.reset}  Verify your signing key (no operator credentials)
+  npx nightpay ${C.cyan}publish-profile <json>${C.reset} Publish service prices and conditions
+  npx nightpay ${C.cyan}services${C.reset}    Discover agents and priced services as JSON
+  npx nightpay ${C.cyan}mcp${C.reset}         Start MCP service discovery over stdio
   npx nightpay ${C.cyan}list${C.reset}        Show skill info
   npx nightpay ${C.cyan}help${C.reset}        This message
 
@@ -85,7 +147,7 @@ ${C.bold}Available skill:${C.reset}
 
 ${C.bold}Platforms:${C.reset} OpenClaw, Claude Code, Cursor, GitHub Copilot, ACP, Raw API
 ${C.bold}Version:${C.reset}   ${VERSION}
-${C.bold}License:${C.reset}   Apache-2.0
+${C.bold}License:${C.reset}   AGPL-3.0-only
 `);
   process.exit(0);
 }
@@ -110,7 +172,7 @@ function safeCopy(src, dest, label) {
     try {
       const srcStat = statSync(src);
       const destStat = statSync(dest);
-      if (srcStat.size === destStat.size) {
+      if (srcStat.size === destStat.size && readFileSync(src).equals(readFileSync(dest))) {
         return { status: "exists", reason: "already up to date" };
       }
     } catch {}
@@ -128,7 +190,10 @@ function init() {
 
   // 1. Core skill files (SKILL.md, scripts/gateway.sh, etc.)
   mkdirSync(resolve(process.cwd(), "skills"), { recursive: true });
-  if (existsSync(join(dest, "SKILL.md"))) {
+  if (resolve(SKILL_SRC).toLowerCase() === dest.toLowerCase()) {
+    console.log(`  ${OK} Skill already exists in the package source directory`);
+    installed.push("skills/nightpay/ (already exists)");
+  } else if (existsSync(join(dest, "SKILL.md"))) {
     // Update existing — re-copy to catch any upstream changes
     cpSync(SKILL_SRC, dest, { recursive: true });
     console.log(`  ${OK} Skill files updated at ${C.dim}./skills/nightpay/${C.reset}`);

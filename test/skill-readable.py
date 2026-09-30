@@ -35,6 +35,8 @@ def parse_frontmatter(path: Path) -> dict:
     if not meta_line:
         fail(f"{path}: frontmatter missing metadata")
     raw = meta_line.split(":", 1)[1].strip()
+    if raw.startswith("'") and raw.endswith("'"):
+        raw = raw[1:-1].replace("''", "'")
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:

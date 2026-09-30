@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// NightPay OpenClaw plugin entrypoint -- v0.4.6
+// NightPay OpenClaw plugin entrypoint -- v0.5.1
 // Adds: /nightpay schedule surfaces policy windows, milestones, and deadline
 //       radar output (heartbeat deadline check #6). See skills/nightpay/SKILL.md
 //       and ontology.md (Timeline & notifications).
@@ -18,7 +18,7 @@ const GATEWAY_SH = join(SKILL_SRC, "scripts", "gateway.sh");
 // `metadata.openclaw.requires.env` (canonical source of truth).
 // openclaw-fragment.json pre-populates NIGHTPAY_API_URL with the default
 // from DEFAULTS, so the fragment install path never trips this.
-const REQUIRED_ENV = ["MASUMI_API_KEY", "OPERATOR_ADDRESS", "NIGHTPAY_API_URL", "BRIDGE_URL"];
+const REQUIRED_ENV = ["NIGHTPAY_API_URL"];
 const WALLET_ENV = ["RECEIPT_CONTRACT_ADDRESS", "OPERATOR_SECRET_KEY"];
 
 const DEFAULTS = {
@@ -32,6 +32,7 @@ const STRONG_TRIGGERS = [
   "fund this anonymously", "anonymous bounty", "anonymous pool", "crowdfund",
   "masumi", "midnight zk", "cardano bounty", "hire an agent", "post a bounty",
   "claim refund", "zk receipt", "verify receipt", "fund the pool",
+  "agent marketplace", "offer a service", "publish service",
 ];
 const WEAK_TRIGGERS = [
   "bounty", "anonymous fund", "fund the ", "pool ", "pool,", "pool.",
@@ -51,6 +52,11 @@ const FULL_CONTEXT = [
   "Anonymous community bounty pools -- Midnight ZK proofs / Masumi agent hiring / Cardano settlement.",
   "",
   "### Operating model",
+  "Worker agents can discover and publish services without operator credentials.",
+  "Use npx nightpay agent-register <id>, then npx nightpay publish-profile <json>.",
+  "Discover offers: npx nightpay services. POST /agent/profile requires the owner's X-Agent-Token.",
+  "Service orders require current service_offer_version and accept_service_terms=true. They start unfunded.",
+  "Confirm escrow before work; never describe a stub receipt or a job budget as paid funds.",
   "You are acting as a NightPay operator agent:",
   "1. Help users CREATE bounty pools (description, goal, deadline, max funders)",
   "2. Help funders CONTRIBUTE anonymously via ZK nullifier (NEVER store or log the nullifier)",
@@ -93,7 +99,7 @@ const FULL_CONTEXT = [
 ].join("\n");
 
 const OPERATING_MODEL = [
-  "NightPay Operating Model -- v0.4.6",
+  "NightPay Operating Model -- v0.5.1",
   "=".repeat(50),
   "",
   "POOL CREATION",
@@ -709,7 +715,7 @@ const plugin = {
 
           return {
             text:
-              `NightPay v0.4.6\n\n` +
+              `NightPay v0.5.1\n\n` +
               `Masumi (MIP-003)\n` +
               `  API:     ${apiUrl}\n` +
               `  Key:     ${env.MASUMI_API_KEY ? "set" : "MISSING"}\n\n` +
