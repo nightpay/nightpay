@@ -17,6 +17,7 @@
 #   MULTISIG_THRESHOLD_SPECKS  — above this value, multisig required (default: 1000000)
 #   MIP003_MODE                — "compat" (default) or "strict"
 #   ONTOLOGY_DIR               — override JSON-LD ontology directory (default: ../ontology)
+#   MIP_BIND_HOST              — bind address (default: 127.0.0.1); expose via TLS proxy
 #   AGENT_IDENTITY_ENFORCE     — 1/true to require verified agent identity on claim/submit (default: 0)
 #   AGENT_CHALLENGE_TTL_SECONDS — agent challenge TTL (default: 600)
 #   AGENT_VERIFIED_TOKEN_TTL_SECONDS — X-Agent-Token TTL after verify (default: 86400)
@@ -97,7 +98,7 @@ echo -e "${DIM}  optimistic window: ${OPTIMISTIC_WINDOW_HOURS}h  |  multisig thr
 echo -e "${DIM}  mip003 mode: ${MIP003_MODE}${RESET}" >&2
 echo -e "${DIM}  ontology dir: ${ONTOLOGY_DIR}${RESET}" >&2
 
-"$PYTHON_BIN" - "$PORT" "$DB_PATH" "$JOB_TOKEN_SECRET" "$OPERATOR_SECRET_KEY" "$OPTIMISTIC_WINDOW_HOURS" "$MULTISIG_THRESHOLD_SPECKS" "$OPERATOR_FEE_BPS" "$IDEMPOTENCY_TTL_SECONDS" "$MIP003_MODE" "$ONTOLOGY_DIR" <<'PYCODE'
+JOB_TOKEN_SECRET="$JOB_TOKEN_SECRET" OPERATOR_SECRET_KEY="$OPERATOR_SECRET_KEY" "$PYTHON_BIN" - "$PORT" "$DB_PATH" _ _ "$OPTIMISTIC_WINDOW_HOURS" "$MULTISIG_THRESHOLD_SPECKS" "$OPERATOR_FEE_BPS" "$IDEMPOTENCY_TTL_SECONDS" "$MIP003_MODE" "$ONTOLOGY_DIR" <<'PYCODE'
 import http.server, json, uuid, sys, sqlite3, threading, hmac, hashlib, re, os, glob, copy, secrets, math, base64, traceback, subprocess, shlex
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
@@ -105,19 +106,24 @@ from urllib import request as urlrequest, error as urlerror
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 except Exception:
     Ed25519PublicKey = None
+    AESGCM = None
 
 PORT                     = int(sys.argv[1])
 DB_PATH                  = sys.argv[2]
-JOB_TOKEN_SECRET         = sys.argv[3]
-OPERATOR_SECRET_KEY      = sys.argv[4]
+JOB_TOKEN_SECRET         = os.environ.get('JOB_TOKEN_SECRET') or sys.argv[3]
+OPERATOR_SECRET_KEY      = os.environ.get('OPERATOR_SECRET_KEY') or sys.argv[4]
 OPTIMISTIC_WINDOW_HOURS  = int(sys.argv[5])
 MULTISIG_THRESHOLD_SPECKS = int(sys.argv[6])
 os.environ['OPERATOR_FEE_BPS'] = sys.argv[7]
 IDEMPOTENCY_TTL_SECONDS  = int(sys.argv[8])
 MIP003_MODE              = str(sys.argv[9] or 'compat').strip().lower()
 ONTOLOGY_DIR             = sys.argv[10]
+MASUMI_PAYMENT_URL       = str(os.environ.get('MASUMI_PAYMENT_URL', '')).strip().rstrip('/')
+MASUMI_API_KEY           = str(os.environ.get('MASUMI_API_KEY', '')).strip()
+MASUMI_NETWORK           = str(os.environ.get('MASUMI_NETWORK', 'Preprod')).strip()
 if MIP003_MODE not in ('compat', 'strict'):
     MIP003_MODE = 'compat'
 
@@ -216,7 +222,7 @@ if X402_VERIFY_MODE == 'facilitator' and not X402_FACILITATOR_URL:
 X402_SETTLE_ON_SUCCESS = _coerce_bool_env('X402_SETTLE_ON_SUCCESS', False) and X402_VERIFY_MODE == 'facilitator'
 X402_BYPASS_OPERATOR = _coerce_bool_env('X402_BYPASS_OPERATOR', True)
 
-KNOWN_STATUSES = ('running', 'awaiting_approval', 'multisig_pending', 'disputed', 'completed')
+KNOWN_STATUSES = ('awaiting_payment', 'running', 'awaiting_approval', 'multisig_pending', 'disputed', 'completed')
 MAX_ATTACHMENT_BYTES = 256 * 1024  # .md or .txt attachment at start_job (authenticated only)
 MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024
 MAX_DESCRIPTION_CHARS = 8192
@@ -1099,6 +1105,40 @@ def safe_json_loads(raw, fallback):
     except Exception:
         return fallback
 
+def normalize_service_offers(raw):
+    """Public, bounded provider terms. No credentials or buyer briefs belong here."""
+    if not isinstance(raw, list) or len(raw) > 8:
+        raise ValueError('service_offers must be a list of at most 8 offers')
+    offers, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError('each service offer must be an object')
+        offer = {}
+        for key, maximum in (('offer_id', 64), ('title', 100), ('description', 600), ('conditions', 1000)):
+            value = item.get(key, '')
+            if not isinstance(value, str) or len(value.strip()) > maximum or contains_disallowed_control_chars(value):
+                raise ValueError(f'{key} must be a string of at most {maximum} characters')
+            offer[key] = value.strip()
+        if not re.fullmatch(r'[A-Za-z0-9_-]{2,64}', offer['offer_id']) or offer['offer_id'] in seen:
+            raise ValueError('offer_id must be unique and match [A-Za-z0-9_-]{2,64}')
+        if not all(offer[key] for key in ('title', 'description', 'conditions')):
+            raise ValueError('title, description and conditions are required')
+        # Match gateway funding limits so published offers can use settlement rails.
+        minimum_price = max(1, int(os.environ.get('MIN_BOUNTY_SPECKS', '1000')))
+        maximum_price = min(MAX_SPECKS, 9007199254740991, int(os.environ.get('MAX_BOUNTY_SPECKS', '500000000')))
+        for key, minimum, maximum in (('price_specks', minimum_price, maximum_price), ('delivery_hours', 1, 8760), ('revisions', 0, 20)):
+            offer[key] = parse_non_negative_int(item.get(key), key, max_value=maximum)
+            if offer[key] < minimum:
+                raise ValueError(f'{key} must be at least {minimum}')
+        offer['availability'] = item.get('availability', 'available')
+        if offer['availability'] not in ('available', 'paused'):
+            raise ValueError('availability must be available or paused')
+        offer['version'] = hashlib.sha256(json.dumps(offer, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        seen.add(offer['offer_id'])
+        offers.append(offer)
+    return offers
+
+
 def contains_disallowed_control_chars(value):
     text = str(value or '')
     for ch in text:
@@ -1651,6 +1691,8 @@ def ensure_voting_session(db, job_id, contest_cfg, now_dt, fallback_voter_id=Non
     return started_at, voting_ends_at, voter_snapshot, None
 
 def external_status_from_internal(internal_status, amount_specks):
+    if internal_status == 'awaiting_payment':
+        return 'awaiting_payment'
     if internal_status == 'completed':
         return 'completed'
     if internal_status == 'disputed':
@@ -1668,6 +1710,28 @@ def canonical_json_sha256(payload):
 
 def canonical_input_hash(input_data):
     return canonical_json_sha256(input_data)
+
+def encode_service_input(job_id, input_data):
+    # Never persist the new private service brief or attachment as plaintext.
+    if AESGCM is None:
+        raise RuntimeError('private service input encryption unavailable')
+    key = hmac.new(OPERATOR_SECRET_KEY.encode(), b'nightpay-service-input-v1', hashlib.sha256).digest()
+    nonce = secrets.token_bytes(12)
+    plaintext = json.dumps(input_data, sort_keys=True, separators=(',', ':')).encode()
+    encrypted = AESGCM(key).encrypt(nonce, plaintext, job_id.encode())
+    return {'encrypted_service_input': {'version': 1,
+            'nonce': base64.b64encode(nonce).decode(), 'ciphertext': base64.b64encode(encrypted).decode()}}
+
+def decode_service_input(job_id, stored_input):
+    envelope = stored_input.get('encrypted_service_input') if isinstance(stored_input, dict) else None
+    if envelope is None:
+        return stored_input
+    if AESGCM is None or not isinstance(envelope, dict) or envelope.get('version') != 1:
+        raise RuntimeError('private service input unavailable')
+    key = hmac.new(OPERATOR_SECRET_KEY.encode(), b'nightpay-service-input-v1', hashlib.sha256).digest()
+    nonce = base64.b64decode(envelope['nonce'], validate=True)
+    ciphertext = base64.b64decode(envelope['ciphertext'], validate=True)
+    return json.loads(AESGCM(key).decrypt(nonce, ciphertext, job_id.encode()))
 
 def make_input_ack_signature(job_id, status_id, input_hash):
     msg = f'nightpay-provide-input-v1:{job_id}:{status_id}:{input_hash}'
@@ -1695,7 +1759,7 @@ def resolve_identifier_from_purchaser(body):
         return None
     return str(value)
 
-def strict_start_job_response(job_id, body, now_dt, amount_specks):
+def strict_start_job_response(job_id, body, now_dt, amount_specks, internal_status='running'):
     input_data = resolve_input_data(body)
     identifier_from_purchaser = resolve_identifier_from_purchaser(body)
     input_data_hash = canonical_input_hash(input_data)
@@ -1703,28 +1767,218 @@ def strict_start_job_response(job_id, body, now_dt, amount_specks):
     submit_by = now_dt + timedelta(hours=OPTIMISTIC_WINDOW_HOURS)
     unlock_at = submit_by + timedelta(hours=24)
     dispute_unlock_at = unlock_at + timedelta(hours=24)
+    unix_seconds = lambda value: str(int(value.timestamp()))
+    input_hash = input_data_hash
+    seller_vkey = body.get('sellerVkey') or body.get('sellerVKey') or body.get('seller_vkey')
+    agent_identifier = body.get('agentIdentifier') or body.get('agent_identifier')
     return {
         'id': job_id,
-        'blockchainIdentifier': body.get('blockchainIdentifier') or job_id,
-        'payByTime': pay_by.isoformat(),
-        'submitResultTime': submit_by.isoformat(),
-        'unlockTime': unlock_at.isoformat(),
-        'externalDisputeUnlockTime': dispute_unlock_at.isoformat(),
-        'agentIdentifier': body.get('agentIdentifier'),
-        'sellerVKey': body.get('sellerVKey'),
+        'blockchainIdentifier': job_id,
+        'payByTime': unix_seconds(pay_by),
+        'submitResultTime': unix_seconds(submit_by),
+        'unlockTime': unix_seconds(unlock_at),
+        'externalDisputeUnlockTime': unix_seconds(dispute_unlock_at),
+        'agentIdentifier': agent_identifier,
+        'sellerVkey': seller_vkey,
+        'sellerVKey': seller_vkey,
         'identifier_from_purchaser': identifier_from_purchaser,
         'identifierFromPurchaser': identifier_from_purchaser,
-        'input_data_hash': input_data_hash,
-        'input_hash': input_data_hash,
-        'status': external_status_from_internal('running', amount_specks),
-        'internal_status': 'running',
+        'inputHash': input_hash,
+        'input_data_hash': input_hash,
+        'input_hash': input_hash,
+        'status': external_status_from_internal(internal_status, amount_specks),
+        'internal_status': internal_status,
         'legacy': {
             'job_id': job_id,
             'job_token': make_job_token(job_id),
-            'status': external_status_from_internal('running', amount_specks),
-            'internal_status': 'running'
+            'status': external_status_from_internal(internal_status, amount_specks),
+            'internal_status': internal_status
         }
     }
+
+def masumi_requested_amounts_match(order, payment):
+    expected = order.get('masumi_amounts') if isinstance(order, dict) else None
+    actual = payment.get('RequestedFunds') if isinstance(payment, dict) else None
+    if not isinstance(actual, list) or not isinstance(expected, list) or len(actual) != len(expected):
+        return False
+    def normalized(items):
+        values = []
+        for item in items:
+            if not isinstance(item, dict) or not re.fullmatch(r'[0-9]+', str(item.get('amount', ''))):
+                return None
+            unit = str(item.get('unit') or '').strip().lower()
+            if unit == 'lovelace':
+                unit = ''
+            values.append((unit, str(item['amount'])))
+        return sorted(values)
+    expected_values = normalized(expected)
+    actual_values = normalized(actual)
+    return expected_values is not None and expected_values == actual_values
+
+def reconcile_masumi_service_result(db, job_id):
+    """Submit a delivered service result once, after resolving the seller's escrow state."""
+    if not MASUMI_API_KEY or not MASUMI_PAYMENT_URL or MASUMI_NETWORK != 'Preprod':
+        return 'not_configured'
+    payment_url = urlparse(MASUMI_PAYMENT_URL)
+    if payment_url.scheme not in ('https', 'http') or payment_url.username or payment_url.password:
+        return 'not_configured'
+    if payment_url.scheme == 'http' and payment_url.hostname not in ('localhost', '127.0.0.1', '::1'):
+        return 'not_configured'
+    row = db.execute('SELECT status, input_data, result FROM jobs WHERE job_id=?', (job_id,)).fetchone()
+    if not row or row['status'] not in ('awaiting_approval', 'multisig_pending', 'completed'):
+        return 'not_ready'
+    try:
+        private_input = decode_service_input(job_id, safe_json_loads(row['input_data'], {}))
+        order = private_input.get('service_order') if isinstance(private_input, dict) else None
+        result = safe_json_loads(row['result'], {})
+        if not isinstance(order, dict) or order.get('payment_status') != 'funded' or not isinstance(result, dict):
+            return 'not_service_order'
+        result_hash = str(result.get('masumi_output_hash') or '').strip().lower()
+        if not is_sha256_hex(result_hash):
+            return 'not_ready'
+        previous = result.get('masumi_result_submission') if isinstance(result.get('masumi_result_submission'), dict) else {}
+        if previous.get('status') == 'submitted':
+            return 'submitted'
+        if previous.get('status') == 'rejected':
+            return 'rejected'
+        retry_after = str(previous.get('retry_after') or '')
+        if retry_after and retry_after > datetime.now(timezone.utc).isoformat():
+            return str(previous.get('status') or 'pending')
+
+        class _NoRedirect(urlrequest.HTTPRedirectHandler):
+            def redirect_request(self, *_args, **_kwargs):
+                return None
+        opener = urlrequest.build_opener(_NoRedirect)
+        def post_masumi(path, payload):
+            req = urlrequest.Request(MASUMI_PAYMENT_URL + path, data=json.dumps(payload).encode(),
+                headers={'Content-Type': 'application/json', 'token': MASUMI_API_KEY}, method='POST')
+            with opener.open(req, timeout=4) as response:
+                return json.loads(response.read(1024 * 1024).decode('utf-8'))
+        resolved = post_masumi('/payment/resolve-blockchain-identifier',
+            {'blockchainIdentifier': job_id, 'network': 'Preprod', 'includeHistory': 'false'})
+        payment = resolved.get('data') if isinstance(resolved, dict) else None
+        action = payment.get('NextAction', {}).get('requestedAction') if isinstance(payment, dict) else None
+        if not masumi_requested_amounts_match(order, payment):
+            state = 'pending'
+            response_action = 'payment_amount_mismatch'
+            result['masumi_result_submission'] = {'status': state, 'requested_action': response_action,
+                'retry_after': (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()}
+            db.execute('UPDATE jobs SET result=?, updated_at=? WHERE job_id=?',
+                       (json.dumps(result), datetime.now(timezone.utc).isoformat(), job_id))
+            db.commit()
+            return state
+        if action in ('ResultSubmitted', 'Completed'):
+            state = 'submitted'
+            response_action = action
+        elif action == 'FundsLocked':
+            response = post_masumi('/payment/submit-result',
+                {'blockchainIdentifier': job_id, 'network': 'Preprod', 'submitResultHash': result_hash})
+            response_data = response.get('data') if isinstance(response, dict) else None
+            response_action = response_data.get('NextAction', {}).get('requestedAction') if isinstance(response_data, dict) else None
+            state = 'submitted' if isinstance(response_data, dict) else 'pending'
+        else:
+            state = 'pending'
+            response_action = action or 'unknown'
+        update = {'status': state, 'requested_action': response_action,
+                  'updated_at': datetime.now(timezone.utc).isoformat()}
+        if state != 'submitted':
+            update['retry_after'] = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+        result['masumi_result_submission'] = update
+        db.execute('UPDATE jobs SET result=?, updated_at=? WHERE job_id=?',
+                   (json.dumps(result), datetime.now(timezone.utc).isoformat(), job_id))
+        db.commit()
+        return state
+    except Exception as exc:
+        # Resolve before any later retry; never blindly replay an ambiguous submit-result POST.
+        try:
+            db.rollback()
+            current = db.execute('SELECT result FROM jobs WHERE job_id=?', (job_id,)).fetchone()
+            result = safe_json_loads(current['result'], {}) if current else {}
+            if not isinstance(result, dict):
+                result = {}
+            status_code = getattr(exc, 'code', None)
+            state = 'rejected' if isinstance(status_code, int) and 400 <= status_code < 500 else 'pending'
+            submission = {'status': state, 'requested_action': 'unknown'}
+            if status_code is not None:
+                submission['http_status'] = int(status_code)
+            if state == 'pending':
+                submission['retry_after'] = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+            result['masumi_result_submission'] = submission
+            db.execute('UPDATE jobs SET result=?, updated_at=? WHERE job_id=?',
+                       (json.dumps(result), datetime.now(timezone.utc).isoformat(), job_id))
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return state if 'state' in locals() else 'pending'
+
+def reconcile_masumi_service_order(db, job_id):
+    """Unlock a private service order only after the seller's Masumi node reports FundsLocked."""
+    if not MASUMI_API_KEY or not MASUMI_PAYMENT_URL or MASUMI_NETWORK != 'Preprod':
+        return False
+    payment_url = urlparse(MASUMI_PAYMENT_URL)
+    if payment_url.scheme not in ('https', 'http') or payment_url.username or payment_url.password:
+        return False
+    if payment_url.scheme == 'http' and payment_url.hostname not in ('localhost', '127.0.0.1', '::1'):
+        return False
+    row = db.execute('SELECT status, input_data FROM jobs WHERE job_id=?', (job_id,)).fetchone()
+    if not row or row['status'] != 'awaiting_payment':
+        return row and row['status'] == 'running'
+    try:
+        stored = safe_json_loads(row['input_data'], {})
+        if not isinstance(stored, dict) or not stored.get('encrypted_service_input'):
+            return False
+        private_input = decode_service_input(job_id, stored)
+        order = private_input.get('service_order') if isinstance(private_input, dict) else None
+        if not isinstance(order, dict) or order.get('masumi_network') != 'Preprod':
+            return False
+        request_body = json.dumps({'blockchainIdentifier': job_id, 'network': 'Preprod', 'includeHistory': 'false'}).encode()
+        req = urlrequest.Request(
+            MASUMI_PAYMENT_URL + '/payment/resolve-blockchain-identifier',
+            data=request_body,
+            headers={'Content-Type': 'application/json', 'token': MASUMI_API_KEY},
+            method='POST',
+        )
+        class _NoRedirect(urlrequest.HTTPRedirectHandler):
+            def redirect_request(self, *_args, **_kwargs):
+                return None
+        with urlrequest.build_opener(_NoRedirect).open(req, timeout=4) as response:
+            payload = json.loads(response.read(1024 * 1024).decode('utf-8'))
+        payment = payload.get('data') if isinstance(payload, dict) else None
+        action = payment.get('NextAction', {}).get('requestedAction') if isinstance(payment, dict) else None
+        if action != 'FundsLocked' or not masumi_requested_amounts_match(order, payment):
+            return False
+        # Serialize the state transition and re-check status so concurrent polls cannot duplicate events.
+        db.execute('BEGIN IMMEDIATE')
+        latest = db.execute('SELECT status, input_data FROM jobs WHERE job_id=?', (job_id,)).fetchone()
+        if not latest or latest['status'] != 'awaiting_payment':
+            db.rollback()
+            return bool(latest and latest['status'] == 'running')
+        current = safe_json_loads(latest['input_data'], {})
+        private_input = decode_service_input(job_id, current)
+        service_order = private_input.get('service_order') if isinstance(private_input, dict) else None
+        if not isinstance(service_order, dict):
+            db.rollback()
+            return False
+        service_order['payment_status'] = 'funded'
+        service_order['funded_at'] = datetime.now(timezone.utc).isoformat()
+        service_order['masumi_payment_action'] = 'FundsLocked'
+        service_order['masumi_payment_id'] = payment.get('id') if isinstance(payment, dict) else None
+        service_order['masumi_requested_funds'] = payment.get('RequestedFunds') if isinstance(payment, dict) else None
+        db.execute('UPDATE jobs SET status=?, input_data=?, updated_at=? WHERE job_id=?',
+                   ('running', json.dumps(encode_service_input(job_id, private_input)), datetime.now(timezone.utc).isoformat(), job_id))
+        record_status_event(db, job_id, 'awaiting_input', input_schema={'required': ['input_data'], 'job_id': job_id},
+                            result={'payment_status': 'funded', 'payment_network': 'Preprod'})
+        db.commit()
+        return True
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
 
 def record_status_event(db, job_id, status, input_schema=None, result=None, created_at=None):
     event_status = str(status or '').strip()
@@ -1961,14 +2215,14 @@ try:
             VALUES (new.rowid, new.job_id, COALESCE(new.input_data, ''));
         END;
 
-        CREATE TRIGGER IF NOT EXISTS jobs_fts_ad AFTER DELETE ON jobs BEGIN
-            INSERT INTO jobs_fts(jobs_fts, rowid, job_id, input_data)
-            VALUES ('delete', old.rowid, old.job_id, COALESCE(old.input_data, ''));
+        DROP TRIGGER IF EXISTS jobs_fts_ad;
+        CREATE TRIGGER jobs_fts_ad AFTER DELETE ON jobs BEGIN
+            DELETE FROM jobs_fts WHERE rowid = old.rowid;
         END;
 
-        CREATE TRIGGER IF NOT EXISTS jobs_fts_au AFTER UPDATE OF job_id, input_data ON jobs BEGIN
-            INSERT INTO jobs_fts(jobs_fts, rowid, job_id, input_data)
-            VALUES ('delete', old.rowid, old.job_id, COALESCE(old.input_data, ''));
+        DROP TRIGGER IF EXISTS jobs_fts_au;
+        CREATE TRIGGER jobs_fts_au AFTER UPDATE OF job_id, input_data ON jobs BEGIN
+            DELETE FROM jobs_fts WHERE rowid = old.rowid;
             INSERT INTO jobs_fts(rowid, job_id, input_data)
             VALUES (new.rowid, new.job_id, COALESCE(new.input_data, ''));
         END;
@@ -2373,10 +2627,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
         )
 
     def _verify_agent_identity_token(self, db, token, expected_agent_id=None):
-        parts = str(token or '').strip().split('.')
-        if len(parts) != 4 or parts[0] != 'npaid':
+        raw_token = str(token or '').strip()
+        parts = raw_token[6:].rsplit('.', 2) if raw_token.startswith('npaid.') else []
+        if len(parts) != 3:
             return None, 'invalid X-Agent-Token format'
-        _, token_agent_id, issued_raw, sig = parts
+        token_agent_id, issued_raw, sig = parts
         if not validate_actor_id(token_agent_id):
             return None, 'invalid X-Agent-Token agent_id'
         if expected_agent_id and token_agent_id != expected_agent_id:
@@ -2645,6 +2900,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             'description': agent.get('description') or '',
             'capabilities': capabilities,
             'showcase': showcase,
+            'service_offers': metadata.get('service_offers', []),
             'model_provider': agent.get('model_provider') or '',
             'model_name': agent.get('model_name') or '',
             'endpoint_url': agent.get('endpoint_url') or '',
@@ -2728,10 +2984,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     str(profile.get('name') or '').lower(),
                     str(profile.get('description') or '').lower(),
                     ' '.join(caps),
+                    ' '.join(str(o.get('title', '')) + ' ' + str(o.get('description', '')) for o in profile.get('service_offers', []) if isinstance(o, dict)),
                 ])
                 if query_filter not in haystack:
                     continue
-            if showcase_only and not profile.get('showcase'):
+            if showcase_only and not profile.get('showcase') and not profile.get('service_offers'):
                 continue
             profiles.append(profile)
 
@@ -2799,6 +3056,12 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             active = db.execute('SELECT COUNT(*) FROM jobs WHERE status = ?', ('running',)).fetchone()[0]
             self.respond(200, {
                 'status': 'available',
+                'service_orders': {
+                    'paid_checkout_available': bool(MASUMI_API_KEY and MASUMI_PAYMENT_URL and MASUMI_NETWORK == 'Preprod'),
+                    'initial_status': 'awaiting_payment',
+                    'network': 'Preprod',
+                    'funding_evidence': 'Masumi Payment Service FundsLocked',
+                },
                 'total_jobs': total,
                 'active_jobs': active,
                 'potential_use_cases_count': len(POTENTIAL_USE_CASES),
@@ -2993,9 +3256,28 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     if auth_header.startswith('Bearer '):
                         provided_token = auth_header[len('Bearer '):].strip()
                         token_valid = verify_job_token(job_id, provided_token) if provided_token else False
-                    if not token_valid and not self._operator_bearer_ok():
+                    worker_token = str(self.headers.get('X-Agent-Token', '')).strip()
+                    worker_authorized = False
+                    if worker_token and job.get('assigned_agent_id'):
+                        identity, _ = self._verify_agent_identity_token(db, worker_token, expected_agent_id=job.get('assigned_agent_id'))
+                        worker_authorized = bool(identity)
+                    if not token_valid and not worker_authorized and not self._operator_bearer_ok():
                         self.respond(403, {'error': 'private job status requires job_token or operator bearer auth'})
                         return
+                # A status poll is the seller-side reconciliation point. Never accept a
+                # buyer-provided "funded" flag; query the configured Masumi node instead.
+                if job.get('status') == 'awaiting_payment' and reconcile_masumi_service_order(db, job_id):
+                    row = db.execute('SELECT * FROM jobs WHERE job_id=?', (job_id,)).fetchone()
+                    job = dict(row)
+                if job.get('status') in ('awaiting_approval', 'multisig_pending', 'completed'):
+                    reconcile_masumi_service_result(db, job_id)
+                    row = db.execute('SELECT * FROM jobs WHERE job_id=?', (job_id,)).fetchone()
+                    job = dict(row)
+                if worker_authorized and job.get('status') == 'awaiting_payment':
+                    self.respond(200, {'job_id': job_id, 'status': 'awaiting_payment',
+                                       'internal_status': 'awaiting_payment',
+                                       'funding_evidence': 'Masumi FundsLocked required'})
+                    return
                 contest_cfg = parse_contest_config(job.get('contest_config'))
                 claims_count = db.execute(
                     'SELECT COUNT(*) FROM job_claims WHERE job_id = ?',
@@ -3015,10 +3297,27 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 ).fetchone()
                 if job.get('input_data'):
                     job['input_data'] = json.loads(job['input_data'])
+                    # Hidden-job authorization above must precede decryption.
+                    try:
+                        job['input_data'] = decode_service_input(job_id, job['input_data'])
+                    except Exception:
+                        self.respond(503, {'error': 'private service input unavailable; operator must restore the encryption key or data'})
+                        return
                 if job.get('extra_input'):
                     job['extra_input'] = json.loads(job['extra_input'])
                 if job.get('result'):
                     job['result'] = json.loads(job['result'])
+                    service_order = job.get('input_data', {}).get('service_order') if isinstance(job.get('input_data'), dict) else None
+                    encrypted_output = job['result'].get('encrypted_work_output') if isinstance(job['result'], dict) else None
+                    if isinstance(service_order, dict) and encrypted_output:
+                        try:
+                            decrypted_output = decode_service_input(job_id, encrypted_output)
+                            if isinstance(decrypted_output, dict):
+                                job['result']['work_output'] = decrypted_output.get('work_output', '')
+                            job['result'].pop('encrypted_work_output', None)
+                        except Exception:
+                            self.respond(503, {'error': 'private service result unavailable; operator must restore the encryption key or data'})
+                            return
                 voter_snapshot = parse_voter_snapshot(job.get('voter_snapshot'))
                 job.pop('contest_config', None)
                 job['visibility'] = visibility_for_api(internal_visibility)
@@ -3640,6 +3939,44 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             })
             return
 
+        if path_only == '/agent/profile':
+            db = get_db()
+            agent_id = str(body.get('agent_id', '')).strip()
+            token = str(self.headers.get('X-Agent-Token', '')).strip()
+            identity, err = self._verify_agent_identity_token(db, token, expected_agent_id=agent_id)
+            if not token or not identity or not validate_actor_id(agent_id):
+                self.respond(401 if not token else 403, {'error': err or 'verified agent_id required'})
+                return
+            try:
+                fields = {}
+                for key, maximum in (('name', 100), ('description', 600)):
+                    value = body.get(key)
+                    if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum or contains_disallowed_control_chars(value):
+                        raise ValueError(f'{key} must be a nonempty string of at most {maximum} characters')
+                    fields[key] = value.strip()
+                raw_caps = body.get('capabilities', [])
+                if not isinstance(raw_caps, list) or len(raw_caps) > 32 or any(not isinstance(v, str) or len(v) > 64 or contains_disallowed_control_chars(v) for v in raw_caps):
+                    raise ValueError('capabilities must contain at most 32 strings of at most 64 characters')
+                caps = normalize_string_list(raw_caps, max_items=32, max_len=64)
+                offers = normalize_service_offers(body.get('service_offers', []))
+            except ValueError as exc:
+                self.respond(400, {'error': str(exc)})
+                return
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM agents WHERE agent_id = ?', (agent_id,)).fetchone()
+            if not row:
+                db.rollback()
+                self.respond(404, {'error': 'verify identity before publishing a profile'})
+                return
+            metadata = safe_json_loads(row['metadata'], {})
+            metadata = metadata if isinstance(metadata, dict) else {}
+            metadata['service_offers'] = offers
+            db.execute('UPDATE agents SET name=?, description=?, capabilities=?, metadata=?, updated_at=? WHERE agent_id=?',
+                       (fields['name'], fields['description'], json.dumps(caps), json.dumps(metadata), datetime.now(timezone.utc).isoformat(), agent_id))
+            db.commit()
+            self.respond(200, self._nightpay_agent_profile(db.execute('SELECT * FROM agents WHERE agent_id=?', (agent_id,)).fetchone(), db=db))
+            return
+
         if path_only == '/agent/challenge':
             agent_id = str(body.get('agent_id', '')).strip()
             if not validate_actor_id(agent_id):
@@ -3768,7 +4105,29 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             masumi_agent_id = str(body.get('masumi_agent_id') or challenge_row['masumi_agent_id'] or '').strip()[:128]
             cardano_stake_addr = str(body.get('cardano_stake_address') or '').strip()[:256]
             metadata = body.get('metadata') if isinstance(body.get('metadata'), dict) else {}
+            if 'service_offers' in metadata:
+                try:
+                    metadata['service_offers'] = normalize_service_offers(metadata['service_offers'])
+                except ValueError as exc:
+                    self.respond(400, {'error': str(exc)})
+                    return
             public_key_hash = hashlib.sha256(pub_bytes).hexdigest()
+            db.execute('BEGIN IMMEDIATE')
+            # Bind names atomically so simultaneous initial verification cannot replace a key.
+            current_challenge = db.execute('SELECT used_at FROM agent_challenges WHERE challenge_id=?', (challenge_id,)).fetchone()
+            if not current_challenge or current_challenge['used_at'] is not None:
+                db.rollback()
+                self.respond(409, {'error': 'challenge already used'})
+                return
+            previous_identity = db.execute('SELECT public_key_hash, revoked_at FROM agent_identities WHERE agent_id = ?', (agent_id,)).fetchone()
+            if previous_identity and previous_identity['revoked_at'] is not None:
+                db.rollback()
+                self.respond(403, {'error': 'identity is revoked; operator review is required'})
+                return
+            if previous_identity and previous_identity['public_key_hash'] != public_key_hash:
+                db.rollback()
+                self.respond(409, {'error': 'agent_id is bound to another signing key; use a new agent_id'})
+                return
             fingerprint_hash = make_agent_fingerprint(
                 agent_id=agent_id,
                 chain=chain,
@@ -4148,6 +4507,11 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     return
 
             input_payload = dict(input_data)
+            # Only the server may create the accepted-terms/payment snapshot.
+            input_payload.pop('service_order', None)
+            input_payload.pop('encrypted_service_input', None)
+            initial_status = 'awaiting_payment' if body.get('service_offer_id') is not None else 'running'
+            initial_event_status = 'awaiting_payment' if initial_status == 'awaiting_payment' else 'awaiting_input'
             input_payload['visibility'] = visibility
             if direct_agent_id:
                 input_payload['direct_agent_id'] = direct_agent_id
@@ -4155,6 +4519,64 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 input_payload['attachment_filename'] = attachment_filename
             if attachment_content is not None:
                 input_payload['attachment_content'] = attachment_content
+
+            def attach_service_terms():
+                offer_id = body.get('service_offer_id')
+                if offer_id is None:
+                    return True
+                if AESGCM is None:
+                    self.respond(503, {'error': 'private service input encryption unavailable'})
+                    return False
+                if not direct_agent_id or body.get('accept_service_terms') is not True:
+                    self.respond(400, {'error': 'service orders require direct_agent_id and accept_service_terms=true'})
+                    return False
+                if visibility == 'public':
+                    self.respond(400, {'error': 'service orders must use private visibility'})
+                    return False
+                if not db.execute('SELECT 1 FROM agent_identities WHERE agent_id=? AND revoked_at IS NULL', (direct_agent_id,)).fetchone():
+                    self.respond(409, {'error': 'service provider identity is no longer verified'})
+                    return False
+                target = db.execute('SELECT metadata FROM agents WHERE agent_id=?', (direct_agent_id,)).fetchone()
+                metadata = safe_json_loads(target['metadata'], {}) if target else {}
+                offers = metadata.get('service_offers', []) if isinstance(metadata, dict) else []
+                offer = next((item for item in offers if isinstance(item, dict) and item.get('offer_id') == offer_id), None)
+                if not offer or offer.get('availability') != 'available':
+                    self.respond(409, {'error': 'service offer is unavailable; refresh the agent profile'})
+                    return False
+                if body.get('service_offer_version') != offer.get('version'):
+                    self.respond(409, {'error': 'service terms changed; review and accept the latest offer'})
+                    return False
+                if amount_specks != offer['price_specks']:
+                    self.respond(400, {'error': 'amount_specks must match the accepted service price'})
+                    return False
+                identity = db.execute('SELECT masumi_agent_id FROM agent_identities WHERE agent_id=? AND revoked_at IS NULL', (direct_agent_id,)).fetchone()
+                masumi_agent_id = str(identity['masumi_agent_id'] or '').strip() if identity else ''
+                requested_agent_id = str(body.get('agentIdentifier') or body.get('agent_identifier') or '').strip()
+                seller_vkey = str(body.get('sellerVkey') or body.get('sellerVKey') or body.get('seller_vkey') or '').strip()
+                network = str(body.get('network') or 'Preprod').strip()
+                if not masumi_agent_id or requested_agent_id != masumi_agent_id:
+                    self.respond(400, {'error': 'service orders require the provider Masumi agentIdentifier bound during agent-register'})
+                    return False
+                if not seller_vkey:
+                    self.respond(400, {'error': 'service orders require sellerVkey from Masumi Registry payment-information'})
+                    return False
+                if network != 'Preprod':
+                    self.respond(400, {'error': 'service orders are restricted to Cardano Preprod'})
+                    return False
+                masumi_amounts = body.get('Amounts') or body.get('amounts')
+                if not isinstance(masumi_amounts, list) or not masumi_amounts or len(masumi_amounts) > 7 or any(
+                    not isinstance(item, dict) or not isinstance(item.get('unit', ''), str)
+                    or not re.fullmatch(r'[0-9]+', str(item.get('amount', '')))
+                    for item in masumi_amounts
+                ):
+                    self.respond(400, {'error': 'service orders require the exact Masumi Registry Amounts array'})
+                    return False
+                input_payload['service_order'] = {'agent_id': direct_agent_id, 'offer': dict(offer), 'accepted_at': now,
+                                                  'payment_status': 'unfunded', 'delivery_starts': 'after_confirmed_funding',
+                                                  'masumi_agent_id': masumi_agent_id, 'seller_vkey': seller_vkey,
+                                                  'masumi_network': 'Preprod', 'masumi_amounts': masumi_amounts,
+                                                  'identifier_from_purchaser': resolve_identifier_from_purchaser(body)}
+                return True
 
             if idempotency_key:
                 # BEGIN IMMEDIATE serializes writers and prevents duplicate inserts for same key.
@@ -4187,13 +4609,13 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                             return
 
                         if MIP003_MODE == 'strict':
-                            strict_payload = strict_start_job_response(job_id, body, now_dt, row['amount_specks'])
+                            strict_payload = strict_start_job_response(job_id, body, now_dt, row['amount_specks'], row['status'])
                             strict_payload['idempotent_replay'] = True
                             strict_payload['visibility'] = visibility_for_api(normalize_visibility(row['visibility'], default='public') or 'public')
                             strict_payload['assigned_agent_id'] = row['assigned_agent_id']
                             self.respond(200, strict_payload)
                         else:
-                            self.respond(200, {
+                            replay_payload = {
                                 'job_id': job_id,
                                 'job_token': make_job_token(job_id),
                                 'status': external_status_from_internal(row['status'], row['amount_specks']),
@@ -4201,14 +4623,24 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                                 'assigned_agent_id': row['assigned_agent_id'],
                                 'visibility': visibility_for_api(normalize_visibility(row['visibility'], default='public') or 'public'),
                                 'idempotent_replay': True
-                            })
+                            }
+                            if body.get('service_offer_id') is not None:
+                                replay_payload.update(strict_start_job_response(job_id, body, now_dt, row['amount_specks'], row['status']))
+                                replay_payload['job_id'] = job_id
+                                replay_payload['job_token'] = make_job_token(job_id)
+                                replay_payload['idempotent_replay'] = True
+                            self.respond(200, replay_payload)
                         return
 
+                    if not attach_service_terms():
+                        db.rollback()
+                        return
                     job_id = str(uuid.uuid4())
+                    stored_input = encode_service_input(job_id, input_payload) if initial_status == 'awaiting_payment' else input_payload
                     db.execute(
                         '''INSERT INTO jobs(job_id, status, assigned_agent_id, visibility, input_data, work_commit, amount_specks, contest_config, started_at, updated_at)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (job_id, 'running', direct_agent_id or None, visibility, json.dumps(input_payload),
+                        (job_id, initial_status, direct_agent_id or None, visibility, json.dumps(stored_input),
                          work_commit, amount_specks, contest_json, now, now)
                     )
                     if direct_agent_id:
@@ -4219,7 +4651,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     record_status_event(
                         db,
                         job_id,
-                        'awaiting_input',
+                        initial_event_status,
                         input_schema={'required': ['input_data'], 'job_id': job_id}
                     )
                     db.execute(
@@ -4232,11 +4664,16 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     db.rollback()
                     raise
             else:
+                db.execute('BEGIN IMMEDIATE')
+                if not attach_service_terms():
+                    db.rollback()
+                    return
                 job_id = str(uuid.uuid4())
+                stored_input = encode_service_input(job_id, input_payload) if initial_status == 'awaiting_payment' else input_payload
                 db.execute(
                     '''INSERT INTO jobs(job_id, status, assigned_agent_id, visibility, input_data, work_commit, amount_specks, contest_config, started_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                    (job_id, 'running', direct_agent_id or None, visibility, json.dumps(input_payload),
+                    (job_id, initial_status, direct_agent_id or None, visibility, json.dumps(stored_input),
                      work_commit, amount_specks, contest_json, now, now)
                 )
                 if direct_agent_id:
@@ -4247,27 +4684,33 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 record_status_event(
                     db,
                     job_id,
-                    'awaiting_input',
+                    initial_event_status,
                     input_schema={'required': ['input_data'], 'job_id': job_id}
                 )
                 db.commit()
 
             # SECURITY: job_token is ephemeral - derived on demand, never stored
             if MIP003_MODE == 'strict':
-                response = strict_start_job_response(job_id, body, now_dt, amount_specks)
+                response = strict_start_job_response(job_id, body, now_dt, amount_specks, initial_status)
                 response['visibility'] = visibility_for_api(visibility)
                 response['assigned_agent_id'] = direct_agent_id or None
             else:
                 response = {
                     'job_id':    job_id,
                     'job_token': make_job_token(job_id),
-                    'status':    external_status_from_internal('running', amount_specks),
-                    'internal_status': 'running',
+                    'status':    external_status_from_internal(initial_status, amount_specks),
+                    'internal_status': initial_status,
                     'assigned_agent_id': direct_agent_id or None,
                     'visibility': visibility_for_api(visibility),
                 }
                 if contest_cfg:
                     response['contest'] = contest_cfg
+            if body.get('service_offer_id') is not None and MIP003_MODE != 'strict':
+                # Keep the marketplace response while also exposing the canonical MIP-003
+                # purchase fields required by Masumi's current Payment Service contract.
+                response.update(strict_start_job_response(job_id, body, now_dt, amount_specks, initial_status))
+                response['job_id'] = job_id
+                response['job_token'] = make_job_token(job_id)
             if idempotency_key:
                 response['idempotency_key'] = idempotency_key
             self.respond(200, response)
@@ -5019,12 +5462,22 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             else:
                 # Legacy/compat flow requires bearer token.
                 auth_header = self.headers.get('Authorization', '')
-                if not auth_header.startswith('Bearer '):
+                token_valid = False
+                if auth_header.startswith('Bearer '):
+                    provided_token = auth_header[len('Bearer '):]
+                    token_valid = verify_job_token(job_id, provided_token)
+                    if not token_valid:
+                        self.respond(403, {'error': 'invalid job_token'})
+                        return
+                elif AGENT_IDENTITY_ENFORCE and row['assigned_agent_id'] == submit_agent_id:
+                    worker_token = str(self.headers.get('X-Agent-Token', '')).strip()
+                    identity, _ = self._verify_agent_identity_token(db, worker_token, expected_agent_id=submit_agent_id) if worker_token else (None, 'missing')
+                    if not identity:
+                        self.respond(401, {'error': 'assigned worker X-Agent-Token or job_token required'})
+                        return
+                    verified_identity = identity
+                else:
                     self.respond(401, {'error': 'Authorization: Bearer <job_token> required'})
-                    return
-                provided_token = auth_header[len('Bearer '):]
-                if not verify_job_token(job_id, provided_token):
-                    self.respond(403, {'error': 'invalid job_token'})
                     return
 
             if not isinstance(input_payload, dict):
@@ -5207,7 +5660,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 
             db  = get_db()
             row = db.execute(
-                'SELECT work_commit, amount_specks, status, assigned_agent_id, contest_config FROM jobs WHERE job_id = ?',
+                'SELECT work_commit, amount_specks, status, assigned_agent_id, contest_config, input_data FROM jobs WHERE job_id = ?',
                 (job_id,)
             ).fetchone()
             if not row:
@@ -5226,7 +5679,8 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                     return
 
             contest_cfg = parse_contest_config(row['contest_config'])
-            if not contest_cfg['enabled'] and not token_valid:
+            assigned_worker = bool(AGENT_IDENTITY_ENFORCE and verified_identity and row['assigned_agent_id'] == submit_agent_id)
+            if not contest_cfg['enabled'] and not token_valid and not assigned_worker:
                 self.respond(401, {'error': 'Authorization: Bearer <job_token> required'})
                 return
 
@@ -5237,12 +5691,19 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             fee           = amount_specks * fee_bps // 10000
             net_to_agent  = amount_specks - fee
 
+            result_hash = hashlib.sha256(work_output.encode('utf-8')).hexdigest()
+            service_input = decode_service_input(job_id, safe_json_loads(row['input_data'], {}))
+            service_order = service_input.get('service_order') if isinstance(service_input, dict) else None
             payload = {
-                'work_output':      work_output[:500],  # store truncated — full output is agent-side
+                'masumi_output_hash': result_hash,
                 'artifact_paths':   artifact_paths,
                 'artifact_sha256':  artifact_hashes,
                 'artifact_count':   len(artifact_paths),
             }
+            if isinstance(service_order, dict):
+                payload['encrypted_work_output'] = encode_service_input(job_id, {'work_output': work_output})
+            else:
+                payload['work_output'] = work_output[:500]  # legacy bounty preview; full output remains agent-side
 
             if contest_cfg['enabled']:
                 # Contest submissions are authenticated by claimed agent_id (or valid job token).
@@ -5360,6 +5821,8 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             )
             db.commit()
 
+            masumi_result_submission = reconcile_masumi_service_result(db, job_id)
+
             self.respond(200, {
                 'status':        event_status,
                 'internal_status': next_status,
@@ -5368,6 +5831,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 'agent_id': submit_agent_id if AGENT_IDENTITY_ENFORCE else None,
                 'agent_verified': bool(verified_identity) if AGENT_IDENTITY_ENFORCE else False,
                 'artifact_count': len(artifact_paths),
+                'masumi_result_submission': masumi_result_submission,
                 # Economics footer — ClawWork-compatible shape
                 'economics': {
                     'amount_specks': amount_specks,
@@ -5592,7 +6056,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
 class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-httpd = ThreadedHTTPServer(('0.0.0.0', PORT), MIP003Handler)
+httpd = ThreadedHTTPServer((os.environ.get('MIP_BIND_HOST', '127.0.0.1'), PORT), MIP003Handler)
 print(f'[nightpay] MIP-003 threaded service ready on port {PORT}')
 print(f'[nightpay] DB: {DB_PATH}')
 print(f"[nightpay] Optimistic window: {OPTIMISTIC_WINDOW_HOURS}h | Multisig threshold: {MULTISIG_THRESHOLD_SPECKS} specks | Fee: {os.environ.get('OPERATOR_FEE_BPS','200')} bps")
@@ -5606,4 +6070,3 @@ endpoints = '/availability /x402 /use_cases /agents /ontology /ontology/context 
 print(f'[nightpay] Endpoints: {endpoints}')
 httpd.serve_forever()
 PYCODE
-

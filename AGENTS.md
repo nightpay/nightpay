@@ -34,13 +34,13 @@ Our bridge (`bridge/`) talks to it via the TypeScript SDK.
 | DeepWiki: masumi-docs | https://deepwiki.com/masumi-network/masumi-docs | Internal structure when docs are sparse |
 
 **Key rules for this codebase:**
-- Compact developer tools are **v0.5.1** — run `compact fixup --check` first, then `compact fixup`
-- Compact compiler inside tools is v0.31.0 (Compact language v0.22) — `fixup --check` mode was added in 0.4.0 (use it)
+- Compact developer tools are **v0.5.3** (official native release, 2026-09-29). Select compiler **0.31.0** explicitly with `compact update 0.31.0` for this ledger-8 bridge. Run `compact fixup --check` first, then `compact fixup`.
+- The developer-tools CLI and compiler have separate versions; compiler 0.31.0 reports Compact language 0.23.0 and accepts this contract's `>= 0.22` pragma. `fixup --check` mode was added in tools 0.4.0 (use it).
 - Proof system is BLS12-381 — do NOT write Pluto-Eris code
 - `MerkleTree<25>` is our depth — max is 32, we are safe
-- Bridge SDK versions (enforced via `bridge/package.json` `overrides`): `midnight-js-*@4.1.1`, `ledger-v8@8.0.3`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `onchain-runtime-v3@3.0.0`, `platform-js@2.2.4`. Cardano `cardano-node` 11.0.1 (PV11 "van Rossem" hard fork, voted Jun 16 2026).
-- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.1.0` + `wallet-sdk-hd@3.0.1` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@3.0.0` + `wallet-sdk-facade@3.0.0` + `wallet-sdk-shielded@2.1.0` + `wallet-sdk-unshielded-wallet@2.1.0` (wallet ops, v2/v3 line). Do not unify — these are upstream's own major version split.
-- Why the `overrides`: the ledger-8 compatibility matrix is internally consistent, but we still pin `ledger-v8@8.0.3` + `compact-js@2.5.1` + `compact-runtime@0.16.0` because sub-1.0 packages may break on minor bumps per matrix guidance. Keep `overrides` in sync with `dependencies` when bumping.
+- Bridge SDK versions (enforced via `bridge/package.json` `overrides`): `midnight-js-*@4.1.1`, `ledger-v8@8.1.2`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `onchain-runtime-v3@3.0.0`, `platform-js@2.2.4`. Keep the compatible ledger-8 family pinned: compact-js 2.5.3 currently requires an unpublished ledger-v9 alpha package. Build and simulator tests are required before advancing this family.
+- Wallet SDK packages are split across two major lines: `wallet-sdk-address-format@3.1.2` + `wallet-sdk-hd@3.0.2` (keys/addresses, v3 line) and `wallet-sdk-dust-wallet@3.0.0` + `wallet-sdk-facade@3.0.0` + `wallet-sdk-shielded@2.1.0` + `wallet-sdk-unshielded-wallet@2.1.0` (wallet ops, v2/v3 line). Do not unify — these are upstream's own major version split.
+- Why the `overrides`: pin the tested `ledger-v8@8.1.2` + `compact-js@2.5.1` + `compact-runtime@0.16.0` family because sub-1.0 packages may break on minor bumps. Keep `overrides` in sync with `dependencies` when bumping.
 - Ledger 8 is live on **Preview, Preprod, AND Mainnet** — the ledger-v8 stack (`ledger-v8@8.0.3`, `compact-js@2.5.1`, `compact-runtime@0.16.0`, `midnight-js@4.1.1`) is the current baseline. Indexer GraphQL endpoint is now `/api/v4/graphql` (was `/api/v3/graphql`).
 - Proof server runs on `localhost:6300` via Docker (`midnightntwrk/proof-server:8.0.3`) — always local, never remote
 - **Mainnet (Kūkolu) is live with Ledger 8** — keep `preprod` as the default network until preprod end-to-end passes; mainnet is available but not the default
@@ -65,8 +65,9 @@ docker compose up -d
 
 **OpenZeppelin Compact security scanner (run before every deployment):**
 ```bash
-npm install -g @openzeppelin/compact-security-detectors-sdk
-compact-security-detectors scan skills/nightpay/contracts/receipt.compact
+# Download the matching platform binary from OpenZeppelin's official GitHub releases:
+# https://github.com/OpenZeppelin/compact-security-detectors-sdk/releases
+compact-scanner scan skills/nightpay/contracts/receipt.compact
 ```
 
 ---
@@ -98,7 +99,7 @@ The SKILL.md frontmatter is how they find us.
 - `metadata.openclaw.os` must exclude `win32` for bash-only skills
 - `skills.entries` in openclaw.json valid fields: `enabled`, `env`, `apiKey`, `config` (config added v2026.1.30)
 - Fields `path`, `activation`, `tools.allow/deny` are NOT valid entries fields
-- Validate before ClawHub submission: `npx skills-ref validate ./skills/nightpay`
+- Validate before ClawHub submission: `uvx --from 'git+https://github.com/agentskills/agentskills.git#subdirectory=skills-ref' skills-ref validate ./skills/nightpay`
 - ClawHub now runs safety scanning — 230+ malicious skills flagged since Jan 2026; clean skills pass automatically
 
 ---
@@ -196,10 +197,10 @@ plaintext conversation history, agent logs, or LLM provider telemetry.
 
 **Before any release:**
 1. Run `bash test/smoke.sh` — tests run without Midnight/Masumi connectivity
-2. Run `compact-security-detectors scan skills/nightpay/contracts/receipt.compact`
+2. Run `compact-scanner scan skills/nightpay/contracts/receipt.compact`; record parser/scanner failures as unverified security gates and hold contract deployment
 3. Check `docs/ECOSYSTEM.md` refresh checklist
 4. Bump version in `package.json` and `SKILL.md` metadata together
-5. Run `npx skills-ref validate ./skills/nightpay`
+5. Run the official Python `skills-ref` validator using the uvx command above; no npm skills-ref package is published
 6. Run `npm publish` from repo root
 
 **Stub mode (for agents running without bridge):** If `BRIDGE_URL` is not set, `gateway.sh` computes hashes locally and skips on-chain calls. All commands still work — they just don't submit to Midnight. `onChain: false` and `stub: true` appear in responses. This is expected in dev.

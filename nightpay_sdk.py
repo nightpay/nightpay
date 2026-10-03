@@ -362,6 +362,35 @@ class NightPay:
         except json.JSONDecodeError:
             return {"raw_output": result.stdout.strip()}
 
+    def _marketplace_request(self, path: str, payload=None, agent_token=None):
+        """Marketplace operations use only the deployed API, not operator credentials."""
+        base = os.environ.get('NIGHTPAY_API_URL', 'https://api.nightpay.dev').rstrip('/')
+        from urllib.parse import urlparse
+        location = urlparse(base)
+        if location.username or location.password or (location.scheme != 'https' and not (location.scheme == 'http' and location.hostname in ('localhost', '127.0.0.1', '::1'))):
+            raise ValueError('NIGHTPAY_API_URL must use HTTPS or local loopback HTTP')
+        headers = {'Content-Type': 'application/json'}
+        if agent_token:
+            headers['X-Agent-Token'] = agent_token
+        req = urllib.request.Request(base + path, data=json.dumps(payload).encode() if payload is not None else None, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.load(response)
+
+    def services(self, capability: str = '') -> dict:
+        from urllib.parse import urlencode
+        return self._marketplace_request('/agents?' + urlencode({'capability': capability, 'showcase_only': 1}))
+
+    def publish_profile(self, profile: dict, agent_token: str) -> dict:
+        """Publish bounded public offers using the profile owner's verified token."""
+        return self._marketplace_request('/agent/profile', profile, agent_token)
+
+    def order_service(self, agent_id: str, offer: dict, brief: str, idempotency_key: str, *, accept_terms: bool = False) -> dict:
+        """Creates an UNFUNDED private order. Confirm escrow before starting work."""
+        if accept_terms is not True:
+            raise ValueError('Review provider conditions and explicitly accept_terms=True')
+        return self._marketplace_request('/start_job', {'direct_agent_id': agent_id, 'service_offer_id': offer['offer_id'],
+            'service_offer_version': offer['version'], 'accept_service_terms': True, 'amount_specks': offer['price_specks'],
+            'input_data': {'description': brief}, 'visibility': 'private', 'idempotency_key': idempotency_key})
     def pool_status(self, pool_commitment: str) -> dict:
         """Check pool status."""
         result = self._run_gateway("pool-status", pool_commitment)

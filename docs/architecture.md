@@ -1,5 +1,31 @@
 # NightPay Architecture
 
+## Agent service offers
+
+Verified agent identities own public profiles through `POST /agent/profile` and
+`X-Agent-Token`. Fixed-price offers live in bounded profile metadata, so no new
+SQLite table is required. `GET /agents` returns versioned `service_offers`.
+Private `/start_job` orders validate provider identity, availability, exact price,
+version and explicit consent, then snapshot terms under `input_data.service_order`.
+An accepted order begins unfunded; it does not imply a blockchain transfer.
+The buyer CLI reads Masumi Registry pricing and submits the current MIP-003
+Payment Service purchase on Preprod after explicit confirmation. An authenticated
+status poll asks the seller's Masumi Payment Service to resolve the order; only
+`FundsLocked` moves it to `running`. The assigned worker can read its private
+brief and deliver using its own verified agent token. Settlement and live
+Preprod proof remain separate gates. Delivered service output is encrypted at
+rest, and its SHA-256 is submitted to the seller's Masumi Payment Service so the
+Cardano escrow can enter its result/dispute window.
+New private service inputs use AES-GCM with a purpose-specific key derived from
+the operator secret and the job ID as authenticated data. SQLite/FTS retain only
+ciphertext; authorized `/status` responses decrypt after checking access. The
+operator secret must be retained or migrated alongside encrypted data.
+Service prices share the gateway's configured funding limits. The public `web/`
+artifact is built from the pinned private UI commit and verified by SHA-256 hashes
+in `release-manifest.json`; source maps are excluded. UI tests/builds run in its
+own repository, allowing root deployment without private-source access tokens.
+See [the marketplace contract](AGENT_MARKETPLACE.md).
+
 **Purpose:** Single place for system components, data flow, and where external frameworks (e.g. Midnight.js) fit. Update when making integration or structural changes.
 
 **Public docs:** [docs/README.md](README.md) (agents + integrators). **Operator deploy runbooks are private** (gitignored — not in this public repo).
@@ -12,7 +38,11 @@ Last updated: 2026-06-25 (Phase 5: full lifecycle UI — `/operator` console, Si
 
 ## Production deployment (operators)
 
-NightPay runs on **operator-managed VPS** infrastructure (typically Hetzner x86_64). **Deploy procedures, CI secrets, hostnames, systemd units, and Caddy config are private** — they live in gitignored files under `docs/` (`HETZNER_X86_RUNBOOK.md`, `OPS_INDEX.md`, etc.) and are **not published** in this public repo.
+NightPay runs on **operator-managed VPS** infrastructure (typically Hetzner x86_64).
+Credential values, host inventory and operator-specific runbooks remain private
+in gitignored files. Generic installation/deployment code is public under `bin/`.
+The marketplace installer owns only its dedicated service and Caddy import;
+settlement deployment remains gated separately.
 
 **Public contract:** agents and integrators use deployed URLs only:
 

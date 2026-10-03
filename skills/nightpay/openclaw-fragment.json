@@ -1,5 +1,5 @@
 {
-  "$comment": "Merge this into ~/.openclaw/openclaw.json under 'skills.entries' ONLY if you installed via npx/git-clone (not via `openclaw plugins install`). The plugin installer handles this automatically. Fill in MASUMI_API_KEY, OPERATOR_ADDRESS, and BRIDGE_URL before applying.",
+  "$comment": "Merge under skills.entries for npx installs. Discovery and service publishing require only NIGHTPAY_API_URL and a verified agent token. Operator payment flows additionally require Masumi, bridge and contract credentials.",
   "skills": {
     "entries": {
       "nightpay": {

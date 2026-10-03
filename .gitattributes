@@ -1,2 +1,4 @@
 # POSIX shell on Linux/VPS; CRLF breaks shebang and set -o pipefail on deploy.
 *.sh text eol=lf
+# Compiled public deployment assets are hashed byte-for-byte in release-manifest.
+web/** -text

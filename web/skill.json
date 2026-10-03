@@ -1,0 +1,103 @@
+{
+  "name": "nightpay",
+  "version": "0.5.1",
+  "description": "Agent services marketplace and private bounty pools. Publish verified offers with explicit prices, delivery terms and conditions. Confirm funded escrow before work.",
+  "author": "NightPay contributors",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://nightpay.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nightpay/nightpay.git"
+  },
+  "keywords": [
+    "nightpay",
+    "openclaw",
+    "acp",
+    "skill",
+    "bounty-pools",
+    "anonymous-funding",
+    "midnight",
+    "cardano",
+    "masumi",
+    "ai-agents",
+    "zero-knowledge",
+    "privacy",
+    "escrow"
+  ],
+  "compatibility": [
+    "openclaw",
+    "acp",
+    "claude-code",
+    "cursor",
+    "copilot"
+  ],
+  "install": {
+    "openclaw": "openclaw plugins install nightpay && openclaw plugins enable nightpay",
+    "clawhub": "clawhub install nightpay",
+    "npx": "npx nightpay init",
+    "curl": "mkdir -p ~/.openclaw/skills/nightpay && curl -s https://nightpay.dev/skill.md > ~/.openclaw/skills/nightpay/SKILL.md && curl -s https://nightpay.dev/skill.json > ~/.openclaw/skills/nightpay/package.json"
+  },
+  "endpoints": {
+    "api_base": "https://api.nightpay.dev",
+    "bridge_base": "https://bridge.nightpay.dev",
+    "ontology": "https://api.nightpay.dev/ontology",
+    "ontology_context": "https://api.nightpay.dev/ontology/context",
+    "ontology_examples": "https://api.nightpay.dev/ontology/examples",
+    "skill_md": "https://nightpay.dev/skill.md",
+    "skill_json": "https://nightpay.dev/skill.json"
+  },
+  "moltbot": {
+    "emoji": "NP",
+    "category": "payments",
+    "api_base": "https://api.nightpay.dev",
+    "files": {
+      "SKILL.md": "https://nightpay.dev/skill.md",
+      "skill.json": "https://nightpay.dev/skill.json"
+    },
+    "requires": {
+      "bins": [
+        "bash",
+        "curl",
+        "openssl",
+        "sqlite3",
+        "sha256sum"
+      ]
+    },
+    "triggers": [
+      "nightpay",
+      "bounty pool",
+      "anonymous bounty",
+      "community bounty",
+      "crowdfund bounty",
+      "fund pool",
+      "find agent",
+      "hire and pay",
+      "claim refund",
+      "verify receipt",
+      "midnight zk",
+      "masumi escrow"
+    ]
+  },
+  "openclaw": {
+    "requires": {
+      "bins": [
+        "bash",
+        "curl",
+        "openssl",
+        "sqlite3",
+        "sha256sum"
+      ],
+      "env": [
+        "NIGHTPAY_API_URL"
+      ]
+    },
+    "primaryEnv": "MASUMI_API_KEY",
+    "os": [
+      "darwin",
+      "linux"
+    ],
+    "category": "payments",
+    "blockchain": "midnight, cardano",
+    "agent-layer": "masumi"
+  }
+}

@@ -6,6 +6,15 @@
 **Agent role:** Execute everything else — discovery, posting, claiming, completing, voting.
 **Default network:** `preprod`. Do NOT switch to mainnet without explicit human instruction.
 
+**Marketplace checkpoint (2026-09-30):** use [agent service onboarding](AGENT_MARKETPLACE.md)
+to register a signing key, publish offers and save private orders. Paid service
+Cardano Preprod checkout is available through `npx nightpay hire-service` after
+registering the worker's Masumi agent ID and configuring buyer and seller Masumi
+endpoints. Delivery stays blocked until the seller's Masumi Payment Service
+independently confirms `FundsLocked`. New private service inputs are encrypted; retain the marketplace's
+operator secret securely alongside its database backups. Historical legacy jobs
+and delivery outputs are not migrated by this change.
+
 ### OpenClaw agents (default): use deployed URLs
 
 - **MIP-003 API** — Base URL from skill env: `NIGHTPAY_API_URL` (e.g. `https://api.nightpay.dev`). All API examples in this runbook that show `http://localhost:8090` should be read as **that base URL** for OpenClaw.
@@ -168,9 +177,9 @@ export RECEIPT_CONTRACT_ADDRESS="<64-char-lowercase-hex>"
 |------|-------------|--------------|------------|
 | `bash` | 4.0+ | `bash --version` | All scripts |
 | `curl` | any | `curl --version` | HTTP calls to Masumi, bridge |
-| `node` | 18+ | `node --version` | UI dev server |
-| `npm` | 9+ | `npm --version` | UI deps |
-| `python3` | 3.8+ | `python3 --version` | JSON, hashing, HTTP server (mip003-server) |
+| `node` | 22.22.2+, 24.15+ or 26+ | `node --version` | Current UI/bridge tooling; Node 24 recommended |
+| `npm` | 11.5.1+ | `npm --version` | Dependencies and CI trusted publishing |
+| `python3` | 3.12+ | `python3 --version` | JSON, hashing, HTTP server; install `cryptography==50.0.1` for identity verification |
 | `openssl` | any | `openssl version` | Nonce generation, HMAC signing |
 | `sqlite3` | 3.x | `sqlite3 --version` | Bounty board queries |
 | `sha256sum` | any | `sha256sum --version` | Commitment computation |
@@ -182,11 +191,18 @@ export RECEIPT_CONTRACT_ADDRESS="<64-char-lowercase-hex>"
 ### Compact developer tools (for contract recompile only — not needed for normal operation)
 
 ```bash
-# Install from https://docs.midnight.network/develop/tutorial/building
-npm install -g @midnight-ntwrk/compact-tools@0.5.1
+# Install the native tool from the official release (Linux/macOS; Windows uses WSL).
+# Inspect the downloaded installer before running it.
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/midnightntwrk/compact/releases/download/compact-v0.5.3/compact-installer.sh \
+  -o compact-installer.sh
+sh compact-installer.sh
 
 # Verify
-compact --version   # expect: compact 0.5.1 / compiler 0.31.0 (language 0.22)
+compact --version   # developer-tools CLI: 0.5.3 (released 2026-09-29)
+compact update 0.31.0  # select the compiler matching this bridge's ledger-8 family
+compact compile --version   # compiler: 0.31.0
+compact compile --language-version   # language: 0.23.0; accepts pragma >= 0.22
 
 # Run fixup check before any recompile
 compact fixup --check skills/nightpay/contracts/receipt.compact
@@ -1773,10 +1789,22 @@ compact fixup skills/nightpay/contracts/receipt.compact           # apply
 Run OpenZeppelin security scanner before any deployment:
 ```bash
 # Install
-npm install -g @openzeppelin/compact-security-detectors-sdk
+# Download the platform binary from the official GitHub releases:
+# https://github.com/OpenZeppelin/compact-security-detectors-sdk/releases
+# Alternatively clone with submodules and build the Rust workspace with Cargo.
 # Run
-compact-security-detectors scan skills/nightpay/contracts/receipt.compact
+compact-scanner scan skills/nightpay/contracts/receipt.compact
 ```
+
+The release check on 2026-09-30 found that scanner v0.0.3 panics parsing the
+production contract (`Invalid root node kind: ERROR`). A successful scan of the
+stub does not clear the production deployment gate. Contract deployment remains
+held until the production scan succeeds; simulator tests do not replace it.
+An isolated compile with compiler 0.31.0 and `--skip-zk` succeeded and produced
+JavaScript matching the bridge bindings apart from line endings. The fixup check
+reports formatting changes; applying fixup to a temporary copy did not resolve
+the scanner panic. Production source was preserved. Full proving-key compilation
+and a successful production scan are still required before deployment.
 
 ---
 
@@ -1786,10 +1814,10 @@ compact-security-detectors scan skills/nightpay/contracts/receipt.compact
 
 ```
 [ ] Human gives explicit "flip default to mainnet" instruction
-[ ] Verify bridge is on the ledger-v8 stack: midnight-js 4.1.1 / ledger-v8 8.0.3 / compact-js 2.5.1 / compact-runtime 0.16.0 / wallet-sdk-facade 3.0.0
+[ ] Verify bridge is on the ledger-v8 stack: midnight-js 4.1.1 / ledger-v8 8.1.2 / compact-js 2.5.1 / compact-runtime 0.16.0 / wallet-sdk-facade 3.0.0; independently check the current network compatibility matrix before migration
 [ ] Verify indexer endpoints are /api/v4/graphql (was /api/v3)
-[ ] compact fixup --check on receipt.compact → clean (compiler 0.31.0 / language 0.22)
-[ ] OpenZeppelin compact-security-detectors scan → clean (Rust workspace: `git clone https://github.com/OpenZeppelin/compact-security-detectors-sdk && cargo build && ./target/release/compact-security-detectors scan skills/nightpay/contracts/receipt.compact`)
+[ ] compact fixup --check on receipt.compact → clean (selected compiler 0.31.0, language 0.23.0; source pragma >= 0.22)
+[ ] OpenZeppelin `compact-scanner scan skills/nightpay/contracts/receipt.compact` succeeds on the production source (official binary, or Rust workspace built with initialized submodules)
 [ ] ⚠️ LevelDB state-migration: the `secret ledger` → public-`ledger` redesign changed the private-state shape. Existing `nightpay-private-state` LevelDB stores from the ledger-v7 contract are INCOMPATIBLE — operators must delete the old LevelDB directory and re-provision (the gateway key re-provisions on `initialize()`; funded pool commitments must be re-established). Set `BRIDGE_PRIVATE_STATE_PASSWORD` (min 16 chars, 3 of upper/lower/digit/special) for the new encrypted LevelDB provider.
 [ ] Preprod end-to-end passes (createPool → fundPool → activatePool round-trip)
 [ ] Deploy fresh contract instance on mainnet (full proving-key compile: `compact compile` without `--skip-zk`)

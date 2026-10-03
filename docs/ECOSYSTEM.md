@@ -2,7 +2,15 @@
 
 **Purpose:** Stay current with every project we depend on or compete with. Check this before making architectural decisions. Update when you spot version bumps, breaking changes, or new entrants.
 
-Last researched: **2026-06-25** (refresh #11 — ledger-v8 migration: bumped all Midnight pins to the ledger-8 compatibility matrix; cardano-node 11.0.1 / PV11 van Rossem hard fork). Refresh #10 on 2026-04-16 was the bridge-pin reconciliation pass: synced `Current Versions` to `bridge/package.json` `overrides` (`compact-js@2.4.2`, `ledger-v7@7.0.1`, `compact-runtime@0.14.0`) and documented the v1/v3 wallet-sdk major split. Refresh #9 on 2026-04-15 verified `masumi-saas` HEAD `dcc1c46` for SaaS proxy surfaces, OIDC/API auth scopes, and mainnet-aware route expectations.
+Last researched: **2026-09-30**. See [current marketplace comparison](MARKET_POSITION.md) and [agent onboarding](AGENT_MARKETPLACE.md). Frontend/tooling use current stable releases. The bridge retains the compatible ledger-8 family, with ledger-v8 8.1.2: compact-js 2.5.3 requires an unpublished ledger-v9 alpha. Scanner v0.0.3 fails parsing this contract; contract deployment is held. The historical network/compiler matrix below is not freshly verified and must not be authority for a production migration.
+
+The [official Compact developer-tools release](https://github.com/midnightntwrk/compact/releases/tag/compact-v0.5.3)
+is 0.5.3 (2026-09-29). Its separately selected compiler remains 0.31.0 for this
+bridge. An isolated WSL compile with `--skip-zk` succeeds on the production source;
+the generated JavaScript matches the bridge bindings apart from line endings.
+Compiler 0.31.0 reports language 0.23.0 and runtime 0.16.0. This does not generate
+proving keys or clear the failed security-scan gate. `fixup --check` also reports
+formatting changes; a fixed-up temporary copy still triggers the scanner panic.
 
 ---
 
@@ -122,6 +130,21 @@ Our gateway.sh and mip003-server.sh talk to these APIs.
 | [masumi-network/sokosumi](https://github.com/masumi-network/sokosumi) | Sokosumi marketplace monorepo | Agent marketplace changes affecting discovery |
 
 ### MIP-003 Required Endpoints (Current)
+
+**Payment integration checkpoint (verified 2026-10-03):** Masumi's documented
+MIP-003 buyer flow gets worker payment information from the Registry, starts a
+job on the worker's Agentic Service, then calls Payment Service `POST /purchase`
+with `identifierFromPurchaser`, `network`, `sellerVkey`, `paymentType`,
+`blockchainIdentifier`, timing values, `agentIdentifier`, and `inputHash` (plus
+the agreed asset `Amounts` when required). The purchase begins at
+`FundsLockingRequested`; poll Payment Service `GET /purchase` by network until
+`FundsLocked` before allowing the worker to execute. NightPay's legacy purchase
+payload and per-ID status/result URLs need migration before paid checkout.
+Transport now separates payment/registry bases, uses the documented `token`
+header, and never retries payment POSTs automatically. New marketplace orders
+wait in `awaiting_payment`; credentials alone do not complete funding or delivery
+activation. See Masumi's [Payments & Escrow guide](https://www.masumi.network/dev/masumi/core-concepts/payments)
+and [`POST /purchase` reference](https://www.masumi.network/dev/masumi/api-reference/payment-service/post-purchase).
 
 Our `mip003-server.sh` must implement all of these:
 
