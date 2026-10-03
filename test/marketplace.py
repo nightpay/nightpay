@@ -1,5 +1,6 @@
 """HTTP integration tests against the real embedded MIP server; no network funds."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -8,6 +9,7 @@ import tempfile
 import threading
 import subprocess
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
@@ -51,7 +53,7 @@ class MarketplaceTests(unittest.TestCase):
             db.execute('DELETE FROM jobs')
             db.execute('DELETE FROM idempotency_keys')
             db.execute('INSERT INTO agents(agent_id,name,metadata,created_at,updated_at) VALUES(?,?,?,?,?)', (self.agent_id, 'Worker', '{}', now, now))
-            db.execute('INSERT INTO agent_identities(agent_id,algorithm,public_key_hex,public_key_hash,fingerprint_hash,challenge_id,verified_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)', (self.agent_id, 'ed25519', 'aa'*32, 'test-key-hash', 'test-fingerprint', 'fixture', now, now, now))
+            db.execute('INSERT INTO agent_identities(agent_id,algorithm,public_key_hex,public_key_hash,fingerprint_hash,challenge_id,verified_at,masumi_agent_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)', (self.agent_id, 'ed25519', 'aa'*32, 'test-key-hash', 'test-fingerprint', 'fixture', now, 'masumi-worker-identifier-123456789', now, now))
         self.token = self.module['make_verified_agent_token'](self.agent_id, 'test-fingerprint')
         self.offer = {'offer_id': 'audit', 'title': 'API audit', 'description': 'A written review with actionable findings.', 'price_specks': 25000000, 'delivery_hours': 24, 'revisions': 1, 'conditions': 'Read-only review. Begins after funded escrow. No credentials in briefs.', 'availability': 'available'}
 
@@ -72,7 +74,7 @@ class MarketplaceTests(unittest.TestCase):
     def order(self, **changes):
         status, profile = self.publish()
         self.assertEqual(status, 200)
-        body = {'direct_agent_id': self.agent_id, 'service_offer_id': 'audit', 'service_offer_version': profile['service_offers'][0]['version'], 'accept_service_terms': True, 'amount_specks': 25000000, 'input_data': {'description': 'Review this public API implementation.'}, 'idempotency_key': 'marketplace-order-01'}
+        body = {'direct_agent_id': self.agent_id, 'service_offer_id': 'audit', 'service_offer_version': profile['service_offers'][0]['version'], 'accept_service_terms': True, 'amount_specks': 25000000, 'agentIdentifier': 'masumi-worker-identifier-123456789', 'sellerVkey': 'ab' * 32, 'network': 'Preprod', 'Amounts': [{'unit': 'lovelace', 'amount': '10000000'}], 'input_data': {'description': 'Review this public API implementation.'}, 'idempotency_key': 'marketplace-order-01'}
         body.update(changes)
         return body
 
@@ -132,6 +134,14 @@ class MarketplaceTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(status['status'], 'awaiting_payment')
         self.assertEqual(status['input_data']['service_order']['payment_status'], 'unfunded')
+        worker_status, worker_view = self.request(f'/status/{job_id}', token=self.token)
+        self.assertEqual(worker_status, 200)
+        self.assertEqual(worker_view['status'], 'awaiting_payment')
+        self.assertNotIn('input_data', worker_view)
+        worker_status, worker_view = self.request(f'/status/{job_id}', token=self.token)
+        self.assertEqual(worker_status, 200)
+        self.assertEqual(worker_view['status'], 'awaiting_payment')
+        self.assertNotIn('input_data', worker_view)
         for path, payload, bearer in (
             ('provide_input', {'agent_id': self.agent_id, 'input_data': {'work': 'Review delivered'}}, job_token),
             ('provide_result', {'agent_id': self.agent_id, 'work_output': 'Complete review with findings.'}, job_token),
@@ -170,7 +180,7 @@ class MarketplaceTests(unittest.TestCase):
         self.assertNotIn(brief, json.dumps(status))
 
     def test_strict_order_and_replay_keep_payment_status(self):
-        body = self.order(agentIdentifier=self.agent_id, identifier_from_purchaser='buyer.example')
+        body = self.order(agentIdentifier='masumi-worker-identifier-123456789', identifier_from_purchaser='aabbccddeeff001122334455')
         self.module['MIP003_MODE'] = 'strict'
         try:
             code, order = self.request('/start_job', body)
@@ -179,8 +189,143 @@ class MarketplaceTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'awaiting_payment')
                 self.assertEqual(result['internal_status'], 'awaiting_payment')
                 self.assertEqual(result['legacy']['status'], 'awaiting_payment')
+            self.assertEqual(order['agentIdentifier'], 'masumi-worker-identifier-123456789')
+            self.assertEqual(order['sellerVkey'], 'ab' * 32)
+            self.assertEqual(order['inputHash'], order['input_data_hash'])
+            self.assertTrue(order['payByTime'].isdigit())
+            self.assertNotIn('T', order['payByTime'])
         finally:
             self.module['MIP003_MODE'] = 'compat'
+
+    def test_masumi_funds_locked_is_verified_before_order_unlock(self):
+        body = self.order()
+        code, order = self.request('/start_job', body)
+        self.assertEqual(code, 200)
+        class MasumiHandler(BaseHTTPRequestHandler):
+            requested_funds = [{'unit': 'lovelace', 'amount': '9000000'}]
+            def do_POST(inner_self):
+                self.assertEqual(inner_self.path, '/api/v1/payment/resolve-blockchain-identifier')
+                self.assertEqual(inner_self.headers.get('token'), 'mock-masumi-key')
+                request_data = json.loads(inner_self.rfile.read(int(inner_self.headers['Content-Length'])))
+                self.assertEqual(request_data, {'blockchainIdentifier': order['job_id'], 'network': 'Preprod', 'includeHistory': 'false'})
+                payload = json.dumps({'status': 'success', 'data': {'id': 'mock-inbound-payment-01', 'NextAction': {'requestedAction': 'FundsLocked'}, 'RequestedFunds': MasumiHandler.requested_funds}}).encode()
+                inner_self.send_response(200)
+                inner_self.send_header('Content-Type', 'application/json')
+                inner_self.send_header('Content-Length', str(len(payload)))
+                inner_self.end_headers()
+                inner_self.wfile.write(payload)
+            def log_message(inner_self, *_args): pass
+        masumi = HTTPServer(('127.0.0.1', 0), MasumiHandler)
+        thread = threading.Thread(target=masumi.serve_forever, daemon=True)
+        thread.start()
+        old_config = (self.module['MASUMI_API_KEY'], self.module['MASUMI_PAYMENT_URL'], self.module['MASUMI_NETWORK'])
+        try:
+            self.module['MASUMI_API_KEY'] = 'mock-masumi-key'
+            self.module['MASUMI_PAYMENT_URL'] = f'http://127.0.0.1:{masumi.server_port}/api/v1'
+            self.module['MASUMI_NETWORK'] = 'Preprod'
+            code, status = self.request(f"/status/{order['job_id']}", bearer=order['job_token'])
+            self.assertEqual(code, 200)
+            self.assertEqual(status['status'], 'awaiting_payment')
+            MasumiHandler.requested_funds = [{'unit': 'lovelace', 'amount': '10000000'}]
+            code, status = self.request(f"/status/{order['job_id']}", bearer=order['job_token'])
+            self.assertEqual(code, 200)
+            self.assertEqual(status['status'], 'running')
+            self.assertEqual(status['input_data']['service_order']['payment_status'], 'funded')
+            self.assertEqual(status['input_data']['service_order']['masumi_payment_id'], 'mock-inbound-payment-01')
+            with sqlite3.connect(self.db_path) as db:
+                self.assertEqual(db.execute('SELECT status FROM jobs WHERE job_id=?', (order['job_id'],)).fetchone()[0], 'running')
+        finally:
+            self.module['MASUMI_API_KEY'], self.module['MASUMI_PAYMENT_URL'], self.module['MASUMI_NETWORK'] = old_config
+            masumi.shutdown()
+            masumi.server_close()
+
+    def test_cli_checkout_connects_registry_order_and_purchase_contract(self):
+        self.publish()
+        class MasumiHandler(BaseHTTPRequestHandler):
+            purchase_body = None
+            result_body = None
+            service_api = self.url
+            def do_GET(inner_self):
+                self.assertTrue(inner_self.path.startswith('/api/v1/payment-information?agentIdentifier='))
+                payload = json.dumps({'status': 'success', 'data': {
+                    'status': 'Online', 'agentIdentifier': 'masumi-worker-identifier-123456789',
+                    'sellerWallet': {'address': 'addr_test1worker', 'vkey': 'ab' * 32},
+                    'apiBaseUrl': MasumiHandler.service_api,
+                    'paymentType': 'Web3CardanoV1',
+                    'AgentPricing': {'pricingType': 'Fixed', 'FixedPricing': {'Amounts': [{'unit': 'lovelace', 'amount': '10000000'}]}},
+                }}).encode()
+                inner_self.send_response(200); inner_self.send_header('Content-Type', 'application/json')
+                inner_self.send_header('Content-Length', str(len(payload))); inner_self.end_headers(); inner_self.wfile.write(payload)
+            def do_POST(inner_self):
+                data = json.loads(inner_self.rfile.read(int(inner_self.headers['Content-Length'])))
+                if inner_self.path == '/api/v1/purchase':
+                    MasumiHandler.purchase_body = data
+                    payload = json.dumps({'status': 'success', 'data': {'id': 'mock-purchase-01', 'NextAction': {'requestedAction': 'FundsLockingRequested'}}}).encode()
+                elif inner_self.path == '/api/v1/payment/resolve-blockchain-identifier':
+                    self.assertEqual(data['network'], 'Preprod')
+                    payload = json.dumps({'status': 'success', 'data': {'NextAction': {'requestedAction': 'FundsLocked'}, 'RequestedFunds': [{'unit': 'lovelace', 'amount': '10000000'}]}}).encode()
+                elif inner_self.path == '/api/v1/payment/submit-result':
+                    MasumiHandler.result_body = data
+                    payload = json.dumps({'status': 'success', 'data': {'id': 'mock-payment-01', 'NextAction': {'requestedAction': 'ResultSubmitted'}}}).encode()
+                else:
+                    inner_self.send_error(404); return
+                inner_self.send_response(200); inner_self.send_header('Content-Type', 'application/json')
+                inner_self.send_header('Content-Length', str(len(payload))); inner_self.end_headers(); inner_self.wfile.write(payload)
+            def log_message(inner_self, *_args): pass
+        masumi = HTTPServer(('127.0.0.1', 0), MasumiHandler)
+        thread = threading.Thread(target=masumi.serve_forever, daemon=True); thread.start()
+        base = f'http://127.0.0.1:{masumi.server_port}/api/v1'
+        old_config = (self.module['MASUMI_API_KEY'], self.module['MASUMI_PAYMENT_URL'], self.module['MASUMI_NETWORK'])
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                brief = Path(tmp) / 'brief.txt'; brief.write_text('Review this public API implementation.', encoding='utf-8')
+                env = dict(os.environ, NIGHTPAY_API_URL=self.url, MASUMI_API_KEY='mock-masumi-key',
+                           MASUMI_PAYMENT_URL=base, MASUMI_REGISTRY_URL=base, MASUMI_NETWORK='Preprod',
+                           HOME=tmp, USERPROFILE=tmp)
+                unavailable = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'hire-service', self.agent_id, 'audit', str(brief)],
+                    input='PAY PREPROD\n', env=env, capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(unavailable.returncode, 0)
+                self.assertIn('No order or payment was submitted', unavailable.stderr)
+                self.assertIsNone(MasumiHandler.purchase_body)
+                self.module['MASUMI_API_KEY'] = 'mock-masumi-key'
+                self.module['MASUMI_PAYMENT_URL'] = base
+                self.module['MASUMI_NETWORK'] = 'Preprod'
+                result = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'hire-service', self.agent_id, 'audit', str(brief)],
+                                         input='PAY PREPROD\n', env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                output = json.loads(result.stdout[result.stdout.rfind('\n{') + 1:])
+                self.assertEqual(output['purchase_id'], 'mock-purchase-01')
+                self.assertEqual(output['network'], 'Preprod')
+                self.assertEqual(output['nightpay_status'], 'running')
+                self.assertNotIn('job_token', output)
+                worker_status, worker_job = self.request(f"/status/{output['job_id']}", token=self.token)
+                self.assertEqual(worker_status, 200)
+                self.assertEqual(worker_job['input_data']['description'], 'Review this public API implementation.')
+                delivered, result = self.request(f"/provide_result/{output['job_id']}",
+                    {'agent_id': self.agent_id, 'work_output': 'Completed API audit with prioritized actionable findings.'}, token=self.token)
+                self.assertEqual(delivered, 200, result)
+                self.assertEqual(result['masumi_result_submission'], 'submitted')
+                with sqlite3.connect(self.db_path) as db:
+                    saved_result = db.execute('SELECT result FROM jobs WHERE job_id=?', (output['job_id'],)).fetchone()[0]
+                    self.assertNotIn('Completed API audit with prioritized actionable findings.', saved_result)
+                status_result = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'service-status', output['job_id']],
+                    env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(status_result.returncode, 0, status_result.stderr)
+                buyer_view = json.loads(status_result.stdout)
+                self.assertEqual(buyer_view['result']['work_output'], 'Completed API audit with prioritized actionable findings.')
+                self.assertEqual(buyer_view['result']['masumi_result_submission']['status'], 'submitted')
+                sent = MasumiHandler.purchase_body
+                self.assertEqual(sent['network'], 'Preprod')
+                self.assertEqual(sent['sellerVkey'], 'ab' * 32)
+                self.assertEqual(sent['Amounts'], [{'unit': 'lovelace', 'amount': '10000000'}])
+                self.assertEqual(sent['inputHash'], hashlib.sha256(b'{"description":"Review this public API implementation."}').hexdigest())
+                self.assertEqual(MasumiHandler.result_body, {
+                    'blockchainIdentifier': output['job_id'], 'network': 'Preprod',
+                    'submitResultHash': hashlib.sha256(b'Completed API audit with prioritized actionable findings.').hexdigest(),
+                })
+        finally:
+            self.module['MASUMI_API_KEY'], self.module['MASUMI_PAYMENT_URL'], self.module['MASUMI_NETWORK'] = old_config
+            masumi.shutdown(); masumi.server_close()
 
     def test_non_idempotent_order_and_reserved_snapshot(self):
         body = self.order()
@@ -211,8 +356,9 @@ class MarketplaceTests(unittest.TestCase):
         # This uses real Ed25519 challenge signing, rather than fixture tokens.
         with tempfile.TemporaryDirectory() as state_dir:
             env = dict(os.environ, NIGHTPAY_API_URL=self.url, HOME=state_dir, USERPROFILE=state_dir)
-            register = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'agent-register', 'cli-worker'], env=env, capture_output=True, text=True)
+            register = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'agent-register', 'cli-worker', '--masumi-agent-id', 'cli-masumi-agent-identifier-123456789'], env=env, capture_output=True, text=True)
             self.assertEqual(register.returncode, 0, register.stderr)
+            self.assertEqual(self.request('/agents/cli-worker')[1]['identity']['masumi_agent_id'], 'cli-masumi-agent-identifier-123456789')
             profile = {'agent_id': 'cli-worker', 'name': 'CLI worker', 'description': 'Verified through the real npm CLI', 'capabilities': ['audit'], 'service_offers': [self.offer]}
             profile_path = Path(state_dir) / 'profile.json'
             profile_path.write_text(json.dumps(profile))

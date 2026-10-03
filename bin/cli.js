@@ -4,15 +4,16 @@ import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, chmodSync, r
 import { resolve, dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
-import { generateKeyPairSync, createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { generateKeyPairSync, createPrivateKey, createPublicKey, sign, randomBytes, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline/promises';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, "..");
 const SKILL_SRC = resolve(PKG_ROOT, "skills", "nightpay");
 const SDK_SRC = resolve(PKG_ROOT, "nightpay_sdk.py");
 const SETUP_SRC = resolve(PKG_ROOT, "scripts", "setup.sh");
-const COMMANDS = ["init", "add", "setup", "validate", "doctor", "heartbeat", "list", "help", "agent-register", "publish-profile", "services", "mcp"];
+const COMMANDS = ["init", "add", "setup", "validate", "doctor", "heartbeat", "list", "help", "agent-register", "publish-profile", "services", "hire-service", "service-status", "mcp"];
 
 const command = process.argv[2] || "help";
 if (command === 'mcp') {
@@ -32,16 +33,17 @@ try {
 } catch {}
 
 // Agent marketplace onboarding needs no operator keys, wallet seeds, or shell.
-if (['agent-register', 'publish-profile', 'services'].includes(command)) {
+if (['agent-register', 'publish-profile', 'services', 'hire-service', 'service-status'].includes(command)) {
   try {
     const base = new URL(process.env.NIGHTPAY_API_URL || 'https://api.nightpay.dev');
     if (base.username || base.password || (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)))) {
       throw new Error('NIGHTPAY_API_URL must use HTTPS (HTTP is allowed only on loopback).');
     }
-    const request = async (path, body, token) => {
-      const response = await fetch(new URL(path, base), { method: body ? 'POST' : 'GET', headers: {
+    const request = async (path, body, token, apiBase = null) => {
+      const target = apiBase ? `${apiBase.toString().replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}` : new URL(path, base);
+      const response = await fetch(target, { method: body ? 'POST' : 'GET', headers: {
         'Content-Type': 'application/json', ...(token ? { 'X-Agent-Token': token } : {}),
-      }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30000) });
+      }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(30000) });
       const data = await response.json();
       if (!response.ok) throw new Error(`NightPay request failed (${response.status}): ${data.error || 'request rejected'}`);
       return data;
@@ -49,9 +51,163 @@ if (['agent-register', 'publish-profile', 'services'].includes(command)) {
     if (command === 'services') {
       const catalog = await request('/agents?showcase_only=1&limit=200');
       console.log(JSON.stringify(catalog, null, 2));
+    } else if (command === 'service-status') {
+      const jobId = String(process.argv[3] || '');
+      if (!/^[0-9a-f-]{36}$/i.test(jobId)) throw new Error('Usage: npx nightpay service-status <job-id>');
+      const checkoutPath = join(homedir(), '.nightpay', 'checkouts', `${jobId}.json`);
+      if (!existsSync(checkoutPath)) throw new Error(`No private buyer checkout record for ${jobId} in ~/.nightpay/checkouts.`);
+      const checkout = JSON.parse(readFileSync(checkoutPath, 'utf8'));
+      if (checkout.api !== base.origin || checkout.job_id !== jobId || !checkout.job_token) throw new Error('Saved checkout does not match this NightPay API.');
+      const serviceApi = new URL(checkout.service_api);
+      if (serviceApi.origin !== base.origin || serviceApi.username || serviceApi.password) throw new Error('Saved worker service endpoint does not match this NightPay API.');
+      const response = await fetch(`${serviceApi.toString().replace(/\/$/, '')}/status/${encodeURIComponent(jobId)}`, {
+        headers: { Authorization: `Bearer ${checkout.job_token}` }, redirect: 'error', signal: AbortSignal.timeout(30000),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(`NightPay status failed (${response.status}): ${data.error || 'request rejected'}`);
+      console.log(JSON.stringify({ ...data, purchase_id: checkout.purchase_id || null,
+        blockchainIdentifier: checkout.blockchainIdentifier, network: 'Preprod' }, null, 2));
+    } else if (command === 'hire-service') {
+      const agentId = process.argv[3];
+      const offerId = process.argv[4];
+      const briefPath = process.argv[5];
+      if (!agentId || !offerId || !briefPath) throw new Error('Usage: npx nightpay hire-service <agent-id> <offer-id> <brief.txt>');
+      const apiKey = String(process.env.MASUMI_API_KEY || '').trim();
+      if (!apiKey) throw new Error('Set MASUMI_API_KEY to the buyer Masumi API key.');
+      if ((process.env.MASUMI_NETWORK || 'Preprod') !== 'Preprod') throw new Error('hire-service currently supports Cardano Preprod only.');
+      const availability = await request('/availability');
+      if (availability?.service_orders?.paid_checkout_available !== true || availability?.service_orders?.network !== 'Preprod') {
+        throw new Error('Provider has not enabled Masumi Preprod escrow reconciliation. No order or payment was submitted.');
+      }
+      const paymentBase = new URL(process.env.MASUMI_PAYMENT_URL || 'http://localhost:3001/api/v1');
+      const registryBase = new URL(process.env.MASUMI_REGISTRY_URL || 'http://localhost:3000/api/v1');
+      for (const url of [paymentBase, registryBase]) {
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Masumi URLs must use HTTP(S) without embedded credentials.');
+        if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Non-local Masumi endpoints must use HTTPS.');
+      }
+      const masumi = async (base, path, body) => {
+        const response = await fetch(`${base.toString().replace(/\/$/, '')}${path}`, {
+          method: body ? 'POST' : 'GET',
+          headers: { 'Content-Type': 'application/json', token: apiKey },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+          redirect: 'error',
+          signal: AbortSignal.timeout(30000),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error(`Masumi request failed (${response.status}): ${data?.error?.message || data?.error || 'request rejected'}`);
+          error.status = response.status;
+          error.data = data;
+          throw error;
+        }
+        return data;
+      };
+      const profile = await request(`/agents/${encodeURIComponent(agentId)}`);
+      const offer = (profile.service_offers || []).find((item) => item.offer_id === offerId && item.availability === 'available');
+      const masumiAgentId = profile.identity?.masumi_agent_id;
+      if (!offer) throw new Error('Offer is unavailable. Refresh discovery and review the current terms.');
+      if (!masumiAgentId) throw new Error('Provider has no verified Masumi agent identifier.');
+      const paymentInfoResponse = await masumi(registryBase, `/payment-information?agentIdentifier=${encodeURIComponent(masumiAgentId)}`, null);
+      const paymentInfo = paymentInfoResponse.data;
+      const amounts = paymentInfo?.AgentPricing?.FixedPricing?.Amounts;
+      const sellerVkey = paymentInfo?.sellerWallet?.vkey;
+      const serviceApi = new URL(paymentInfo?.apiBaseUrl || '');
+      if (!['http:', 'https:'].includes(serviceApi.protocol) || serviceApi.username || serviceApi.password
+          || (serviceApi.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(serviceApi.hostname))
+          || serviceApi.origin !== base.origin) {
+        throw new Error('Provider Masumi apiBaseUrl must be a secure NightPay service endpoint on the configured NIGHTPAY_API_URL.');
+      }
+      if (paymentInfo?.status !== 'Online' || paymentInfo?.agentIdentifier !== masumiAgentId
+          || paymentInfo?.AgentPricing?.pricingType !== 'Fixed'
+          || paymentInfo?.paymentType !== 'Web3CardanoV1'
+          || !sellerVkey || !Array.isArray(amounts) || amounts.length === 0
+          || amounts.some((item) => !item || typeof item.unit !== 'string' || !/^[0-9]+$/.test(String(item.amount)))) {
+        throw new Error('Masumi Registry returned no online fixed-price Cardano payment information for this provider.');
+      }
+      const brief = readFileSync(resolve(briefPath), 'utf8').trim();
+      if (!brief || brief.length > 24000) throw new Error('Brief must contain 1–24,000 characters.');
+      const inputData = { description: brief };
+      const purchaserId = randomBytes(12).toString('hex');
+      const idempotencyKey = `masumi-${purchaserId}`;
+      console.log(`Provider: ${profile.name} (${agentId})`);
+      console.log(`Service: ${offer.title} — ${offer.price_specks} NIGHT specks; ${offer.delivery_hours}h; ${offer.revisions} revision(s)`);
+      console.log(`Offer version: ${offer.version}`);
+      console.log(`Scope: ${offer.description}`);
+      console.log(`Conditions: ${offer.conditions}`);
+      console.log(`Masumi Cardano Preprod amount(s): ${amounts.map((item) => `${item.amount} ${item.unit || 'ADA (lovelace)'}`).join(', ')}`);
+      console.log(`Masumi seller: ${paymentInfo.sellerWallet.address}`);
+      const rl = createInterface({ input: process.stdin, output: process.stderr });
+      let confirmation;
+      try { confirmation = await rl.question('Type PAY PREPROD to create the private order and submit this purchase: '); }
+      finally { rl.close(); }
+      if (confirmation !== 'PAY PREPROD') throw new Error('Payment cancelled; no order or purchase was submitted.');
+      const orderBody = {
+        direct_agent_id: agentId, service_offer_id: offerId, service_offer_version: offer.version,
+        accept_service_terms: true, amount_specks: offer.price_specks, visibility: 'private',
+        agentIdentifier: masumiAgentId, sellerVkey, network: 'Preprod', Amounts: amounts,
+        identifier_from_purchaser: purchaserId, input_data: inputData, idempotency_key: idempotencyKey,
+      };
+      const order = await request('/start_job', orderBody, null, serviceApi);
+      order.job_token ||= order.legacy?.job_token;
+      const inputHash = createHash('sha256').update(JSON.stringify(inputData, Object.keys(inputData).sort())).digest('hex');
+      if (!order.blockchainIdentifier || !order.payByTime || !order.submitResultTime || !order.unlockTime || !order.externalDisputeUnlockTime) {
+        throw new Error(`NightPay created order ${order.job_id || order.id} but server did not return the complete Masumi purchase contract; no payment was submitted.`);
+      }
+      const jobId = order.job_id || order.id;
+      if (!order.job_token) throw new Error(`NightPay created order ${jobId} without a buyer job token; no payment was submitted.`);
+      const checkoutDir = join(homedir(), '.nightpay', 'checkouts');
+      mkdirSync(checkoutDir, { recursive: true, mode: 0o700 });
+      chmodSync(join(homedir(), '.nightpay'), 0o700);
+      chmodSync(checkoutDir, 0o700);
+      const checkoutPath = join(checkoutDir, `${jobId}.json`);
+      const checkoutRecord = { api: base.origin, job_id: jobId, job_token: order.job_token,
+        service_api: serviceApi.toString(),
+        blockchainIdentifier: order.blockchainIdentifier, identifierFromPurchaser: purchaserId,
+        masumi_agent_id: masumiAgentId, network: 'Preprod', created_at: new Date().toISOString() };
+      writeFileSync(checkoutPath, JSON.stringify(checkoutRecord), { mode: 0o600 });
+      chmodSync(checkoutPath, 0o600);
+      const purchaseBody = {
+        identifierFromPurchaser: purchaserId, network: 'Preprod', sellerVkey,
+        paymentType: paymentInfo.paymentType || 'Web3CardanoV1', blockchainIdentifier: order.blockchainIdentifier,
+        payByTime: String(order.payByTime), submitResultTime: String(order.submitResultTime),
+        unlockTime: String(order.unlockTime), externalDisputeUnlockTime: String(order.externalDisputeUnlockTime),
+        agentIdentifier: masumiAgentId, inputHash, Amounts: amounts,
+      };
+      let purchase;
+      try {
+        const created = await masumi(paymentBase, '/purchase', purchaseBody);
+        purchase = created.data;
+      } catch (error) {
+        if (error.status >= 400 && error.status < 500 && error.status !== 409) throw error;
+        // Never replay an ambiguous purchase POST. Resolve the already-generated ID once.
+        try {
+          const resolved = await masumi(paymentBase, '/purchase/resolve-blockchain-identifier', { blockchainIdentifier: order.blockchainIdentifier, network: 'Preprod' });
+          purchase = resolved.data;
+        } catch { throw new Error(`Purchase outcome is uncertain for order ${order.job_id || order.id}. Do not retry the payment; resolve it in Masumi by blockchainIdentifier ${order.blockchainIdentifier}. (${error.message})`); }
+      }
+      const purchaseId = purchase?.id || purchase?.object?.id || null;
+      checkoutRecord.purchase_id = purchaseId;
+      writeFileSync(checkoutPath, JSON.stringify(checkoutRecord), { mode: 0o600 });
+      chmodSync(checkoutPath, 0o600);
+      let nightpayStatus = 'awaiting_payment';
+      if (order.job_token && (order.job_id || order.id)) {
+        try {
+          const fundedCheck = await fetch(`${serviceApi.toString().replace(/\/$/, '')}/status/${encodeURIComponent(order.job_id || order.id)}`, {
+            headers: { Authorization: `Bearer ${order.job_token}` }, signal: AbortSignal.timeout(10000),
+          });
+          if (fundedCheck.ok) nightpayStatus = (await fundedCheck.json()).status || nightpayStatus;
+        } catch {}
+      }
+      console.log(JSON.stringify({ job_id: order.job_id || order.id, purchase_id: purchaseId,
+        blockchainIdentifier: order.blockchainIdentifier, payment_status: purchase?.NextAction?.requestedAction || 'unknown',
+        nightpay_status: nightpayStatus, network: 'Preprod',
+        note: 'NightPay unlocks delivery only after its seller-side Masumi node independently reports FundsLocked.' }, null, 2));
     } else {
       const profile = command === 'publish-profile' ? JSON.parse(readFileSync(resolve(process.argv[3] || ''), 'utf8')) : null;
       const id = profile?.agent_id || process.argv[3];
+      const masumiFlag = process.argv.indexOf('--masumi-agent-id');
+      const masumiAgentId = masumiFlag >= 0 ? String(process.argv[masumiFlag + 1] || '').trim() : '';
+      if (masumiFlag >= 0 && (!masumiAgentId || masumiAgentId.length > 128)) throw new Error('--masumi-agent-id requires a valid Masumi agent identifier (max 128 characters).');
       if (!/^[A-Za-z0-9._:@-]{2,128}$/.test(id || '')) throw new Error('Provide a valid agent ID (2–128 letters, numbers, . _ : @ -).');
       const stateDir = join(homedir(), '.nightpay', 'agents');
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -66,12 +222,13 @@ if (['agent-register', 'publish-profile', 'services'].includes(command)) {
         }
         const key = createPrivateKey(readFileSync(keyPath));
         const publicKey = createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
-        const challenge = await request('/agent/challenge', { agent_id: id, algorithm: 'ed25519' });
+        const challenge = await request('/agent/challenge', { agent_id: id, algorithm: 'ed25519', ...(masumiAgentId ? { masumi_agent_id: masumiAgentId } : {}) });
         const verified = await request('/agent/verify', { agent_id: id, algorithm: 'ed25519', challenge_id: challenge.challenge_id,
+          ...(masumiAgentId ? { masumi_agent_id: masumiAgentId } : {}),
           public_key_hex: publicKey, signature_hex: sign(null, Buffer.from(challenge.challenge), key).toString('hex') });
-        writeFileSync(tokenPath, JSON.stringify({ api: base.origin, agent_id: id, agent_token: verified.agent_token }), { mode: 0o600 });
+        writeFileSync(tokenPath, JSON.stringify({ api: base.origin, agent_id: id, masumi_agent_id: verified.masumi_agent_id || '', agent_token: verified.agent_token }), { mode: 0o600 });
         chmodSync(tokenPath, 0o600);
-        console.log(`Verified ${id}. Signing key and token saved privately in ${stateDir}.\nNext: npx nightpay publish-profile ./profile.json`);
+        console.log(`Verified ${id}${masumiAgentId ? ` with Masumi agent ${masumiAgentId}` : ''}. Signing key and token saved privately in ${stateDir}.\nNext: npx nightpay publish-profile ./profile.json`);
       } else {
         if (!existsSync(tokenPath)) throw new Error(`Run npx nightpay agent-register ${id} first.`);
         const saved = JSON.parse(readFileSync(tokenPath, 'utf8'));
@@ -111,9 +268,11 @@ ${C.bold}COMMANDS${C.reset}
   npx nightpay ${C.cyan}validate${C.reset}    Check env vars, prerequisites, and connectivity
   npx nightpay ${C.cyan}doctor${C.reset}      Diagnose and auto-fix common issues
   npx nightpay ${C.cyan}heartbeat${C.reset}   Run HEARTBEAT.md checks (OpenClaw / cron)
-  npx nightpay ${C.cyan}agent-register <id>${C.reset}  Verify your signing key (no operator credentials)
+  npx nightpay ${C.cyan}agent-register <id> [--masumi-agent-id <id>]${C.reset}  Verify your signing key and optional Masumi identity
   npx nightpay ${C.cyan}publish-profile <json>${C.reset} Publish service prices and conditions
   npx nightpay ${C.cyan}services${C.reset}    Discover agents and priced services as JSON
+  npx nightpay ${C.cyan}hire-service <agent-id> <offer-id> <brief.txt>${C.reset}  Review terms, confirm and buy on Cardano Preprod
+  npx nightpay ${C.cyan}service-status <job-id>${C.reset}  Read your private order and delivered result
   npx nightpay ${C.cyan}mcp${C.reset}         Start MCP service discovery over stdio
   npx nightpay ${C.cyan}list${C.reset}        Show skill info
   npx nightpay ${C.cyan}help${C.reset}        This message

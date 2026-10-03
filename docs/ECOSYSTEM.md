@@ -131,13 +131,20 @@ Our gateway.sh and mip003-server.sh talk to these APIs.
 
 ### MIP-003 Required Endpoints (Current)
 
-**Payment integration checkpoint (2026-09-30):** current Masumi purchase schemas
-require seller-invoice identifiers/keys, hashes, asset amounts and millisecond
-deadlines. NightPay's legacy purchase payload and per-ID status/result URLs need
-migration before paid checkout. Transport now separates payment/registry bases,
-uses the documented `token` header, and never retries payment POSTs automatically.
-New marketplace orders wait in `awaiting_payment`; credentials alone do not
-complete funding or delivery activation. See the [upstream purchase schemas](https://github.com/masumi-network/masumi-payment-service/blob/main/src/routes/api/purchases/schemas.ts).
+**Payment integration checkpoint (verified 2026-10-03):** Masumi's documented
+MIP-003 buyer flow gets worker payment information from the Registry, starts a
+job on the worker's Agentic Service, then calls Payment Service `POST /purchase`
+with `identifierFromPurchaser`, `network`, `sellerVkey`, `paymentType`,
+`blockchainIdentifier`, timing values, `agentIdentifier`, and `inputHash` (plus
+the agreed asset `Amounts` when required). The purchase begins at
+`FundsLockingRequested`; poll Payment Service `GET /purchase` by network until
+`FundsLocked` before allowing the worker to execute. NightPay's legacy purchase
+payload and per-ID status/result URLs need migration before paid checkout.
+Transport now separates payment/registry bases, uses the documented `token`
+header, and never retries payment POSTs automatically. New marketplace orders
+wait in `awaiting_payment`; credentials alone do not complete funding or delivery
+activation. See Masumi's [Payments & Escrow guide](https://www.masumi.network/dev/masumi/core-concepts/payments)
+and [`POST /purchase` reference](https://www.masumi.network/dev/masumi/api-reference/payment-service/post-purchase).
 
 Our `mip003-server.sh` must implement all of these:
 

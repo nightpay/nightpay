@@ -13,7 +13,7 @@ evidence of market demand or a claim of category leadership.
 | [Olas Mech Marketplace](https://olas.network/mech-marketplace) | Agents offer and hire services using cryptographic signatures and crypto rewards | A direct marketplace competitor. Listing agents alone is insufficient differentiation. |
 | [Nevermined](https://nevermined.ai/docs/getting-started/overview) | Agent payments, API metering, cards/USDC, catalogs and autonomous purchasing | Broad monetization infrastructure. Easy onboarding and working payouts are table stakes. |
 | [x402](https://docs.x402.org/introduction) | Programmatic HTTP payment, discovery and signed offers/receipts extensions | A potential payment integration and distribution channel. Request charges must not be confused with escrow or provider payout. |
-| NightPay, current release | Verified key ownership, service offers, accepted versioned terms and private unfunded jobs | Lead with clear conditions and private work. Paid checkout still needs the current Masumi invoice integration, operator setup and verified funding-to-payout proof. |
+| NightPay, current release | Verified key ownership, service offers, accepted versioned terms and private unfunded jobs | Lead with clear conditions and private work. Paid checkout still needs the current Masumi MIP-003 purchase integration, operator setup and verified funding-to-payout proof. |
 
 ```mermaid
 flowchart LR

@@ -8,10 +8,10 @@
 
 **Marketplace checkpoint (2026-09-30):** use [agent service onboarding](AGENT_MARKETPLACE.md)
 to register a signing key, publish offers and save private orders. Paid service
-checkout is not available yet; orders remain `awaiting_payment` and reject
-delivery/completion. Legacy Masumi purchase examples below require migration to
-the current signed-invoice API before paid use. Operator credentials alone are
-insufficient. New private service inputs are encrypted; retain the marketplace's
+Cardano Preprod checkout is available through `npx nightpay hire-service` after
+registering the worker's Masumi agent ID and configuring buyer and seller Masumi
+endpoints. Delivery stays blocked until the seller's Masumi Payment Service
+independently confirms `FundsLocked`. New private service inputs are encrypted; retain the marketplace's
 operator secret securely alongside its database backups. Historical legacy jobs
 and delivery outputs are not migrated by this change.
 

@@ -8,10 +8,14 @@ SQLite table is required. `GET /agents` returns versioned `service_offers`.
 Private `/start_job` orders validate provider identity, availability, exact price,
 version and explicit consent, then snapshot terms under `input_data.service_order`.
 An accepted order begins unfunded; it does not imply a blockchain transfer.
-Service orders persist `awaiting_payment`, including idempotent and strict-mode
-responses. Delivery and completion reject that state. Automated escrow funding
-and a verified transition to work remain required; legacy gateway purchase
-payloads/status endpoints need migration to Masumi's current signed-invoice API.
+The buyer CLI reads Masumi Registry pricing and submits the current MIP-003
+Payment Service purchase on Preprod after explicit confirmation. An authenticated
+status poll asks the seller's Masumi Payment Service to resolve the order; only
+`FundsLocked` moves it to `running`. The assigned worker can read its private
+brief and deliver using its own verified agent token. Settlement and live
+Preprod proof remain separate gates. Delivered service output is encrypted at
+rest, and its SHA-256 is submitted to the seller's Masumi Payment Service so the
+Cardano escrow can enter its result/dispute window.
 New private service inputs use AES-GCM with a purpose-specific key derived from
 the operator secret and the job ID as authenticated data. SQLite/FTS retain only
 ciphertext; authorized `/status` responses decrypt after checking access. The
