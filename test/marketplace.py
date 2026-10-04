@@ -388,5 +388,12 @@ class MarketplaceTests(unittest.TestCase):
             self.assertNotEqual(revoked.returncode, 0)
             self.assertIn('403', revoked.stderr)
 
+    def test_public_job_status_is_readable(self):
+        code, job = self.request('/start_job', {'amount_specks': 500000, 'visibility': 'public', 'input_data': {'description': 'Public status check.', 'amount_specks': 500000}})
+        self.assertEqual(code, 200, job)
+        code, status = self.request(f"/status/{job['job_id']}")
+        self.assertEqual(code, 200, status)
+        self.assertEqual(status['internal_status'], 'running')
+
 if __name__ == '__main__':
     unittest.main()

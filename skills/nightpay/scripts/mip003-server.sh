@@ -3250,6 +3250,7 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
             else:
                 job = dict(row)
                 internal_visibility = normalize_visibility(job.get('visibility'), default='public') or 'public'
+                worker_authorized = False
                 if internal_visibility == 'hidden':
                     auth_header = str(self.headers.get('Authorization', '')).strip()
                     token_valid = False
