@@ -9,6 +9,7 @@ headers = {
     "Authorization": f"Bearer {token}",
     "Accept": "application/vnd.github+json",
     "Content-Type": "application/json",
+    "X-GitHub-Api-Version": "2022-11-28",
 }
 
 
@@ -28,26 +29,44 @@ def request(url, method="GET", body=None):
         return exc.code, payload
 
 
-status, packages = request("https://api.github.com/orgs/nightpay/packages?package_type=npm&visibility=private")
-print("private_list_http", status)
-if not isinstance(packages, list):
-    print("private_list_error", packages.get("message"))
-    packages = []
+packages = []
+for visibility in ("private", "public"):
+    status, listed = request(f"https://api.github.com/orgs/nightpay/packages?package_type=npm&visibility={visibility}")
+    print(f"{visibility}_list_http", status)
+    if isinstance(listed, list):
+        packages.extend(listed)
+        print(f"{visibility}_list_count", len(listed))
+    else:
+        print(f"{visibility}_list_error", listed.get("message"))
 repo_status, repo_packages = request("https://api.github.com/repos/nightpay/nightpay/packages?package_type=npm")
 print("repo_list_http", repo_status)
 if isinstance(repo_packages, list):
     packages.extend(repo_packages)
 else:
     print("repo_list_error", repo_packages.get("message"))
+
+names = []
+for item in packages:
+    if item.get("name"):
+        names.append(item["name"])
+names.extend(["nightpay", "@nightpay/nightpay"])
 seen = set()
 print("package_count", len(packages))
-for item in packages:
-    name = item.get("name")
+for name in names:
     if name in seen:
         continue
     seen.add(name)
-    print("found", name, item.get("visibility"))
-    encoded = urllib.parse.quote(name or "", safe="")
+    encoded = urllib.parse.quote(name, safe="")
+    get_code, current = request(f"https://api.github.com/orgs/nightpay/packages/npm/{encoded}")
+    print(
+        "get_http", get_code,
+        "query", name,
+        "name", current.get("name"),
+        "visibility", current.get("visibility"),
+        "message", current.get("message"),
+    )
+    if get_code != 200 or current.get("visibility") == "public":
+        continue
     code, updated = request(
         f"https://api.github.com/orgs/nightpay/packages/npm/{encoded}",
         method="PATCH",
