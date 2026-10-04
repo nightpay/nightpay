@@ -85,6 +85,41 @@ jobs:
             echo "::error::publish npmrc must not contain an auth token"
             exit 1
           fi
+          node --input-type=module <<'NODE'
+          const audience = 'npm:registry.npmjs.org'
+          const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL
+          const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          if (!requestUrl || !requestToken) {
+            console.log(JSON.stringify({ id_token: 'missing' }))
+          } else {
+            const url = new URL(requestUrl)
+            url.searchParams.append('audience', audience)
+            const idResponse = await fetch(url, {
+              headers: { Accept: 'application/json', Authorization: `Bearer ${requestToken}` },
+            })
+            const idBody = await idResponse.json().catch(() => ({}))
+            if (!idResponse.ok || !idBody.value) {
+              console.log(JSON.stringify({ id_token_http: idResponse.status, id_token_error: String(idBody.message || idBody.error || 'missing value').slice(0, 200) }))
+            } else {
+              const exchange = await fetch('https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/nightpay', {
+                method: 'POST',
+                headers: { Accept: 'application/json', Authorization: `Bearer ${idBody.value}` },
+              })
+              const raw = await exchange.text()
+              let message = 'non-json'
+              try {
+                const body = JSON.parse(raw)
+                const field = body.message || body.error || ''
+                message = typeof field === 'string' ? field : 'present'
+              } catch {}
+              console.log(JSON.stringify({
+                exchange_http: exchange.status,
+                message: message.slice(0, 300),
+                token_returned: /"token"\s*:/.test(raw),
+              }))
+            }
+          }
+          NODE
           if ! npm publish --provenance --access public --tag "$NPM_DIST_TAG"; then
             echo "::error::npm publish failed. On https://www.npmjs.com/package/nightpay/access add a GitHub Actions trusted publisher: organization nightpay, repository nightpay, workflow filename npm-publish.yml, and allow direct npm publish. The package owner is dyannimulcho; this requires an interactive npm login."
             exit 1
