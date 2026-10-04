@@ -1,0 +1,60 @@
+name: Finalize live lifecycle job
+
+on:
+  workflow_dispatch:
+
+jobs:
+  finalize:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Prepare deployment access
+        env:
+          SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.HETZNER_HOST }}
+          DEPLOY_PORT: ${{ secrets.HETZNER_SSH_PORT }}
+        run: |
+          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS" && test -n "$DEPLOY_HOST"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/nightpay"
+          chmod 600 "$HOME/.ssh/nightpay"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf 'Host nightpay-release\n HostName %s\n User root\n Port %s\n IdentityFile %s/.ssh/nightpay\n IdentitiesOnly yes\n' "$DEPLOY_HOST" "${DEPLOY_PORT:-22}" "$HOME" > "$HOME/.ssh/config"
+      - name: Complete the delivered lifecycle job
+        run: |
+          ssh -o BatchMode=yes nightpay-release 'python3 -' <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+          env = {}
+          for line in Path("/etc/nightpay/marketplace.env").read_text().splitlines():
+              if not line or line.startswith("#") or "=" not in line:
+                  continue
+              key, value = line.split("=", 1)
+              env[key.strip()] = value.strip().strip('"').strip("'")
+          secret = env["OPERATOR_SECRET_KEY"]
+          job_id = "4dfe49ad-6f62-4961-b0c7-f73c200a1463"
+          request = urllib.request.Request(
+              f"http://127.0.0.1:8090/complete_job/{job_id}",
+              data=b"{}",
+              headers={"Content-Type": "application/json", "Authorization": "Bearer " + secret},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  code = response.status
+                  body = json.loads(response.read().decode())
+          except urllib.error.HTTPError as exc:
+              code = exc.code
+              body = json.loads(exc.read().decode())
+          print(json.dumps({
+              "http": code,
+              "status": body.get("status"),
+              "internal_status": body.get("internal_status"),
+              "error": body.get("error"),
+          }))
+          PY
