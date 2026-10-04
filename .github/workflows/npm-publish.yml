@@ -71,12 +71,17 @@ jobs:
 
       - name: Publish
         if: inputs.verify_only != true
-        run: npm publish --provenance --access public --tag "$NPM_DIST_TAG"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ inputs.tag || 'latest' }}
+        run: |
+          # OIDC trusted publishing. The stored NPM_TOKEN returns 401 and must not override this.
+          unset NODE_AUTH_TOKEN
+          if ! npm publish --provenance --access public --tag "$NPM_DIST_TAG"; then
+            echo "::error::npm publish failed. On https://www.npmjs.com/package/nightpay/access add a GitHub Actions trusted publisher: organization nightpay, repository nightpay, workflow filename npm-publish.yml, and allow direct npm publish. The package owner is dyannimulcho; this requires an interactive npm login."
+            exit 1
+          fi
       - name: Verify npm access
         if: inputs.verify_only == true
-        run: npm whoami
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "Trusted publishing cannot be checked with npm whoami."
+          echo "Publish uses GitHub OIDC. Configure the trusted publisher described in the publish step, then run this workflow without verify_only."
