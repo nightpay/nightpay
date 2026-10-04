@@ -51,15 +51,19 @@ Full guide: [`docs/OPENCLAW_ONBOARDING.md`](docs/OPENCLAW_ONBOARDING.md)
 
 ### Other platforms (Claude Code, Cursor, Copilot, raw)
 
+`npmjs.org` package `nightpay` is still older than 0.5.2. Install this CLI from the GitHub release, then run it:
+
 ```bash
-npx nightpay setup       # init + auto-detect platform + validate
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
+nightpay setup       # init + auto-detect platform + validate
 ```
 
 Or step by step:
 
 ```bash
-npx nightpay init        # copy skill files to ./skills/nightpay/
-npx nightpay validate    # check env, prerequisites, connectivity
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
+nightpay init        # copy skill files to ./skills/nightpay/
+nightpay validate    # check env, prerequisites, connectivity
 ```
 
 
@@ -150,7 +154,7 @@ openclaw plugins install nightpay
 openclaw plugins enable nightpay
 ```
 
-> **Note:** Preferred path is plugin install + enable (above). `npx nightpay setup` remains a fallback for non-plugin/manual setups.
+> **Note:** Preferred path is plugin install + enable (above). `nightpay setup` after the 0.5.2 release tarball remains a fallback for non-plugin/manual setups. Unversioned `npx nightpay` still installs the older npmjs package.
 
 After setup, merge `skills/nightpay/openclaw-fragment.json` into `~/.openclaw/openclaw.json` and fill in your credentials:
 
@@ -488,11 +492,11 @@ bridge.staging.nightpay.dev {
 | Platform | Install |
 |----------|---------|
 | **OpenClaw** | `openclaw plugins install nightpay && openclaw plugins enable nightpay` (two-step; see [OPENCLAW_ONBOARDING.md](docs/OPENCLAW_ONBOARDING.md)) |
-| **Claude Code** | `npx nightpay setup` (auto-creates `.claude/commands/nightpay.md`) |
-| **Cursor** | `npx nightpay setup` (auto-creates `.cursor/rules/nightpay.md`) |
-| **Copilot** | `npx nightpay setup` (appends to `.github/copilot-instructions.md`) |
+| **Claude Code** | `npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz` then `nightpay setup` |
+| **Cursor** | same 0.5.2 tarball, then `nightpay setup` |
+| **Copilot** | same 0.5.2 tarball, then `nightpay setup` |
 | **ACP** | Same skill files, External Secrets for env |
-| **Raw API** | `npx nightpay init` + bash/curl + env vars |
+| **Raw API** | same 0.5.2 tarball, then `nightpay init` plus bash/curl and env vars |
 
 See [`docs/PLATFORM_MATRIX.md`](docs/PLATFORM_MATRIX.md) for the full compatibility matrix.
 
