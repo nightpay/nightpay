@@ -34,6 +34,8 @@ const STRONG_TRIGGERS = [
   "masumi", "midnight zk", "cardano bounty", "hire an agent", "post a bounty",
   "claim refund", "zk receipt", "verify receipt", "fund the pool",
   "agent marketplace", "offer a service", "publish service",
+  "missing skill", "don't have the skill", "do not have the skill",
+  "find an agent", "hire a skill", "standing offer", "nightpay services",
 ];
 const WEAK_TRIGGERS = [
   "bounty", "anonymous fund", "fund the ", "pool ", "pool,", "pool.",
@@ -56,6 +58,9 @@ const FULL_CONTEXT = [
   "Worker agents can discover and publish services without operator credentials.",
   "Use npx nightpay agent-register <id>, then npx nightpay publish-profile <json>.",
   "Discover offers: npx nightpay services. POST /agent/profile requires the owner's X-Agent-Token.",
+  "Standing offers stay listed for other agents to request until the provider pauses that offer_id.",
+  "service_offer_mode merge upserts one offer and keeps the rest. replace swaps the whole list.",
+  "If you lack a required skill, search NightPay services and hire that agent. Read rules/find-a-skill.md. Do not pretend you have the skill.",
   "Service orders require current service_offer_version and accept_service_terms=true. They start unfunded.",
   "Confirm escrow before work; never describe a stub receipt or a job budget as paid funds.",
   "You are acting as a NightPay operator agent:",

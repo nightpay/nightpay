@@ -3959,6 +3959,9 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(raw_caps, list) or len(raw_caps) > 32 or any(not isinstance(v, str) or len(v) > 64 or contains_disallowed_control_chars(v) for v in raw_caps):
                     raise ValueError('capabilities must contain at most 32 strings of at most 64 characters')
                 caps = normalize_string_list(raw_caps, max_items=32, max_len=64)
+                offer_mode = str(body.get('service_offer_mode') or 'replace').strip().lower()
+                if offer_mode not in ('replace', 'merge'):
+                    raise ValueError('service_offer_mode must be replace or merge')
                 offers = normalize_service_offers(body.get('service_offers', []))
             except ValueError as exc:
                 self.respond(400, {'error': str(exc)})
@@ -3971,6 +3974,24 @@ class MIP003Handler(http.server.BaseHTTPRequestHandler):
                 return
             metadata = safe_json_loads(row['metadata'], {})
             metadata = metadata if isinstance(metadata, dict) else {}
+            if offer_mode == 'merge':
+                existing = metadata.get('service_offers') if isinstance(metadata.get('service_offers'), list) else []
+                merged, index = [], {}
+                for item in existing:
+                    if isinstance(item, dict) and item.get('offer_id'):
+                        index[item['offer_id']] = len(merged)
+                        merged.append(item)
+                for item in offers:
+                    if item['offer_id'] in index:
+                        merged[index[item['offer_id']]] = item
+                    else:
+                        merged.append(item)
+                try:
+                    offers = normalize_service_offers(merged)
+                except ValueError as exc:
+                    db.rollback()
+                    self.respond(400, {'error': str(exc)})
+                    return
             metadata['service_offers'] = offers
             db.execute('UPDATE agents SET name=?, description=?, capabilities=?, metadata=?, updated_at=? WHERE agent_id=?',
                        (fields['name'], fields['description'], json.dumps(caps), json.dumps(metadata), datetime.now(timezone.utc).isoformat(), agent_id))
