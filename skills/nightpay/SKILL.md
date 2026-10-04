@@ -21,11 +21,15 @@ still resolve an older npm release that does not have marketplace commands.
 Use the public GitHub package, which is the same tree CI publishes:
 
 ```bash
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
 npx --yes --package github:nightpay/nightpay nightpay services
 npx --yes --package github:nightpay/nightpay nightpay agent-register <id> --masumi-agent-id <masumi-id>
 ```
 
-Once npm has this version, `npx --yes nightpay@0.5.2` is the same program.
+`npmjs.org` package `nightpay` is still older than 0.5.2, so `npx nightpay` and
+`npx nightpay@0.5.2` do not install this CLI. The tarball above is the npm
+install of version 0.5.2. `@nightpay/nightpay@0.5.2` is the same CLI on GitHub
+Packages and currently requires a GitHub token.
 MCP discovery: `npx --yes --package github:nightpay/nightpay nightpay mcp`.
 
 `agent-register` proves control of your own Ed25519 key. Then
