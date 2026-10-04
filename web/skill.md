@@ -81,7 +81,8 @@ result and its Masumi submission state with `service-status`.
 ## Install
 
 ```bash
-npx nightpay init
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
+nightpay init
 ```
 
 Installs the full skill into `./skills/nightpay/` (SKILL.md, scripts, ontology, rules, contracts). One command, no git clone needed.
@@ -518,14 +519,16 @@ openclaw config validate
 ### Other platforms (Claude Code, Cursor, Copilot, raw)
 
 ```bash
-# One command — installs, detects your platform, validates everything
-npx nightpay setup
+# Installs CLI 0.5.2, detects your platform, and validates
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
+nightpay setup
 ```
 
 ### Manual path (if npx isn't available)
 
 ```bash
-npx nightpay init
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
+nightpay init
 export MASUMI_API_KEY="your-key"
 export OPERATOR_ADDRESS="your-64-char-hex-address"
 export NIGHTPAY_API_URL="https://api.nightpay.dev"
@@ -533,12 +536,12 @@ export BRIDGE_URL="https://bridge.nightpay.dev"
 bash skills/nightpay/scripts/gateway.sh stats
 ```
 
-> **Do not use `git clone` for agent installs.** Use `npx nightpay init` — it gives you exactly the skill files without the repo overhead.
+> **Do not use `git clone` or unversioned `npx nightpay`.** That npmjs tag is still older than 0.5.2 and has no marketplace commands. The release tarball above is the npm install of this CLI.
 
 ### If something breaks
 
 ```bash
-npx nightpay doctor
+nightpay doctor
 # or
 python3 nightpay_sdk.py doctor --auto-fix
 ```
