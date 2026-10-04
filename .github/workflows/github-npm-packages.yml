@@ -52,8 +52,8 @@ jobs:
           set -euo pipefail
           install_dir=/tmp/nightpay-install
           mkdir -p "$install_dir"
-          printf '%s\n' '@nightpay:registry=https://npm.pkg.github.com' "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > "$install_dir/.npmrc"
-          npm install --prefix "$install_dir" @nightpay/nightpay@0.5.2 --registry https://npm.pkg.github.com
+          printf '%s\n' 'registry=https://registry.npmjs.org' '@nightpay:registry=https://npm.pkg.github.com' "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > "$install_dir/.npmrc"
+          NPM_CONFIG_USERCONFIG="$install_dir/.npmrc" npm install --prefix "$install_dir" @nightpay/nightpay@0.5.2
           node -e "const v=require('/tmp/nightpay-install/node_modules/@nightpay/nightpay/package.json').version; if (v !== '0.5.2') throw new Error(v); console.log('installed', v)"
           NIGHTPAY_API_URL=https://api.nightpay.dev node /tmp/nightpay-install/node_modules/@nightpay/nightpay/bin/cli.js services > /tmp/services.json
           python -c 'import json; d=json.load(open("/tmp/services.json")); assert isinstance(d["agents"], list); print("live services", d["count"])'
