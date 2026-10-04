@@ -1979,7 +1979,7 @@ out = {
         'mainnet_eta_days':              round((parse_iso('${MIDNIGHT_MAINNET_DATE}') - now).total_seconds() / 86400, 1) if parse_iso('${MIDNIGHT_MAINNET_DATE}') else None,
     },
     'notifications': {
-        'heartbeat_command':             'npx nightpay heartbeat',
+        'heartbeat_command':             'npx --yes --package github:nightpay/nightpay nightpay heartbeat',
         'heartbeat_cadence_default':     '2h',
         'notify_before_deadline_hours':  [6, 1],
     }

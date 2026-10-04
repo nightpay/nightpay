@@ -112,7 +112,7 @@ NightPay includes `HEARTBEAT.md` for scheduled OpenClaw heartbeat runs.
 
 - Heartbeat contract: return `HEARTBEAT_OK` when nothing needs attention.
 - Default focus: API `/availability`, bridge `/health` (when `BRIDGE_URL` is set), work-queue deltas, and daily skill version freshness.
-- **Runner:** `bash skills/nightpay/scripts/heartbeat.sh` or `npx nightpay heartbeat` — implements the checklist with persisted state (consecutive failures, job deltas, daily GitHub `SKILL.md` version compare).
+- **Runner:** `bash skills/nightpay/scripts/heartbeat.sh` or `npx --yes --package github:nightpay/nightpay nightpay heartbeat` — implements the checklist with persisted state (consecutive failures, job deltas, daily GitHub `SKILL.md` version compare).
 - Keep heartbeat delivery silent by default or route to last active channel via `openclaw.json`.
 
 Example:
@@ -136,7 +136,7 @@ Example:
 Agents do not need to memorise deadline constants — the skill exposes them at runtime.
 
 - **Ask the schedule command** — `bash skills/nightpay/scripts/gateway.sh schedule` returns `policy_windows`, `milestones`, and `notifications` as JSON. Pass a pool commitment, a job id, or `--all` to include per-entity deadlines with `seconds_remaining` / `hours_remaining` / `expired`.
-- **Let the heartbeat tell you** — `bash skills/nightpay/scripts/heartbeat.sh` (or `npx nightpay heartbeat`) runs a **deadline radar** over active jobs and raises bucketed alerts at `lt_6h`, `lt_1h`, and `expired`. Duplicate alerts are suppressed by the heartbeat state file.
+- **Let the heartbeat tell you** — `bash skills/nightpay/scripts/heartbeat.sh` (or `npx --yes --package github:nightpay/nightpay nightpay heartbeat`) runs a **deadline radar** over active jobs and raises bucketed alerts at `lt_6h`, `lt_1h`, and `expired`. Duplicate alerts are suppressed by the heartbeat state file.
 - **Milestones** — heartbeat raises a one-shot notification within 30 days of `MIDNIGHT_MAINNET_DATE` (default `2026-03-30T00:00:00Z`). Use it as the trigger to walk the mainnet migration checklist in `docs/AGENT_PLAYGROUND.md` §17.
 
 **Default policy windows** (`gateway.sh schedule`):
