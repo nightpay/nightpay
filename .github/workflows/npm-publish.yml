@@ -19,7 +19,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write  # for npm provenance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,7 +53,21 @@ jobs:
           python test/marketplace.py
           python test/masumi-transport.py
           node test/mcp-discovery.mjs
-          npm pack --dry-run
+          node test/pack-cli.mjs
+
+      - name: Pack release tarball
+        if: startsWith(github.ref, 'refs/tags/') && inputs.verify_only != true
+        run: npm pack
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/') && inputs.verify_only != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" nightpay-*.tgz \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "NightPay $GITHUB_REF_NAME" \
+            --notes "Agent CLI and skill ${GITHUB_REF_NAME}. Install with: npx --yes --package github:nightpay/nightpay nightpay services"
 
       - name: Publish
         if: inputs.verify_only != true

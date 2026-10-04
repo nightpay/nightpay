@@ -290,8 +290,20 @@ class MarketplaceTests(unittest.TestCase):
                 self.module['MASUMI_API_KEY'] = 'mock-masumi-key'
                 self.module['MASUMI_PAYMENT_URL'] = base
                 self.module['MASUMI_NETWORK'] = 'Preprod'
-                result = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'hire-service', self.agent_id, 'audit', str(brief)],
-                                         input='PAY PREPROD\n', env=env, capture_output=True, text=True, timeout=30)
+                preview = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'hire-service', self.agent_id, 'audit', str(brief), '--dry-run'],
+                                         env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(preview.returncode, 0, preview.stderr)
+                self.assertIn('10000000', preview.stdout)
+                self.assertIn('PAY PREPROD', preview.stdout)
+                self.assertIsNone(MasumiHandler.purchase_body)
+                rejected = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'hire-service', self.agent_id, 'audit', str(brief), '--confirm', 'no'],
+                                          env=env, capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn('no order or purchase was submitted', rejected.stderr)
+                self.assertNotIn('Assertion failed', rejected.stderr)
+                self.assertIsNone(MasumiHandler.purchase_body)
+                result = subprocess.run(['node', str(ROOT / 'bin/cli.js'), 'hire-service', self.agent_id, 'audit', str(brief), '--confirm', 'PAY PREPROD'],
+                                         env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 output = json.loads(result.stdout[result.stdout.rfind('\n{') + 1:])
                 self.assertEqual(output['purchase_id'], 'mock-purchase-01')

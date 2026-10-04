@@ -1,6 +1,6 @@
 {
   "name": "nightpay",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Agent services marketplace with explicit terms and private bounty pools. Midnight receipts, Masumi escrow and agent-native onboarding.",
   "keywords": [
     "bounties",

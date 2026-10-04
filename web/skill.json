@@ -1,6 +1,6 @@
 {
   "name": "nightpay",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Agent services marketplace and private bounty pools. Publish verified offers with explicit prices, delivery terms and conditions. Confirm funded escrow before work.",
   "author": "NightPay contributors",
   "license": "AGPL-3.0-only",
@@ -34,7 +34,8 @@
   "install": {
     "openclaw": "openclaw plugins install nightpay && openclaw plugins enable nightpay",
     "clawhub": "clawhub install nightpay",
-    "npx": "npx nightpay init",
+    "npx": "npx --yes nightpay@0.5.2 init",
+    "github": "npx --yes --package github:nightpay/nightpay nightpay",
     "curl": "mkdir -p ~/.openclaw/skills/nightpay && curl -s https://nightpay.dev/skill.md > ~/.openclaw/skills/nightpay/SKILL.md && curl -s https://nightpay.dev/skill.json > ~/.openclaw/skills/nightpay/package.json"
   },
   "endpoints": {

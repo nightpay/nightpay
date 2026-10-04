@@ -71,7 +71,15 @@ if (['agent-register', 'publish-profile', 'services', 'hire-service', 'service-s
       const agentId = process.argv[3];
       const offerId = process.argv[4];
       const briefPath = process.argv[5];
-      if (!agentId || !offerId || !briefPath) throw new Error('Usage: npx nightpay hire-service <agent-id> <offer-id> <brief.txt>');
+      if (!agentId || !offerId || !briefPath) throw new Error('Usage: npx nightpay hire-service <agent-id> <offer-id> <brief.txt> [--dry-run] [--confirm "PAY PREPROD"]');
+      let dryRun = false;
+      let confirmArg = null;
+      const extra = process.argv.slice(6);
+      for (let i = 0; i < extra.length; i++) {
+        if (extra[i] === '--dry-run') dryRun = true;
+        else if (extra[i] === '--confirm') confirmArg = String(extra[++i] ?? '');
+        else throw new Error('Unknown hire-service option. Use --dry-run or --confirm "PAY PREPROD".');
+      }
       const apiKey = String(process.env.MASUMI_API_KEY || '').trim();
       if (!apiKey) throw new Error('Set MASUMI_API_KEY to the buyer Masumi API key.');
       if ((process.env.MASUMI_NETWORK || 'Preprod') !== 'Preprod') throw new Error('hire-service currently supports Cardano Preprod only.');
@@ -136,10 +144,26 @@ if (['agent-register', 'publish-profile', 'services', 'hire-service', 'service-s
       console.log(`Conditions: ${offer.conditions}`);
       console.log(`Masumi Cardano Preprod amount(s): ${amounts.map((item) => `${item.amount} ${item.unit || 'ADA (lovelace)'}`).join(', ')}`);
       console.log(`Masumi seller: ${paymentInfo.sellerWallet.address}`);
-      const rl = createInterface({ input: process.stdin, output: process.stderr });
-      let confirmation;
-      try { confirmation = await rl.question('Type PAY PREPROD to create the private order and submit this purchase: '); }
-      finally { rl.close(); }
+      if (dryRun) {
+        console.log(JSON.stringify({
+          dry_run: true,
+          confirmation_required: 'PAY PREPROD',
+          agent_id: agentId,
+          offer_id: offerId,
+          offer_version: offer.version,
+          price_specks: offer.price_specks,
+          amounts,
+          network: 'Preprod',
+          note: 'No order or payment was submitted. Re-run with --confirm "PAY PREPROD" after reviewing these terms.',
+        }, null, 2));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } else {
+      let confirmation = confirmArg;
+      if (confirmation == null) {
+        const rl = createInterface({ input: process.stdin, output: process.stderr });
+        try { confirmation = await rl.question('Type PAY PREPROD to create the private order and submit this purchase: '); }
+        finally { rl.close(); }
+      }
       if (confirmation !== 'PAY PREPROD') throw new Error('Payment cancelled; no order or purchase was submitted.');
       const orderBody = {
         direct_agent_id: agentId, service_offer_id: offerId, service_offer_version: offer.version,
@@ -202,6 +226,7 @@ if (['agent-register', 'publish-profile', 'services', 'hire-service', 'service-s
         blockchainIdentifier: order.blockchainIdentifier, payment_status: purchase?.NextAction?.requestedAction || 'unknown',
         nightpay_status: nightpayStatus, network: 'Preprod',
         note: 'NightPay unlocks delivery only after its seller-side Masumi node independently reports FundsLocked.' }, null, 2));
+      }
     } else {
       const profile = command === 'publish-profile' ? JSON.parse(readFileSync(resolve(process.argv[3] || ''), 'utf8')) : null;
       const id = profile?.agent_id || process.argv[3];
@@ -237,8 +262,13 @@ if (['agent-register', 'publish-profile', 'services', 'hire-service', 'service-s
         console.log(`Published ${published.name}: ${published.service_offers?.length || 0} service(s).\n${base.origin}/agents/${encodeURIComponent(id)}`);
       }
     }
+    await new Promise((resolve) => setTimeout(resolve, 50));
     process.exit(0);
-  } catch (error) { console.error(error.message); process.exit(1); }
+  } catch (error) {
+    console.error(error.message);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    process.exit(1);
+  }
 }
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
@@ -271,7 +301,8 @@ ${C.bold}COMMANDS${C.reset}
   npx nightpay ${C.cyan}agent-register <id> [--masumi-agent-id <id>]${C.reset}  Verify your signing key and optional Masumi identity
   npx nightpay ${C.cyan}publish-profile <json>${C.reset} Publish service prices and conditions
   npx nightpay ${C.cyan}services${C.reset}    Discover agents and priced services as JSON
-  npx nightpay ${C.cyan}hire-service <agent-id> <offer-id> <brief.txt>${C.reset}  Review terms, confirm and buy on Cardano Preprod
+  npx nightpay ${C.cyan}hire-service <agent-id> <offer-id> <brief.txt>${C.reset}  Review terms, then pay on Cardano Preprod
+                         Add --dry-run to preview. Agents pass --confirm "PAY PREPROD"
   npx nightpay ${C.cyan}service-status <job-id>${C.reset}  Read your private order and delivered result
   npx nightpay ${C.cyan}mcp${C.reset}         Start MCP service discovery over stdio
   npx nightpay ${C.cyan}list${C.reset}        Show skill info
