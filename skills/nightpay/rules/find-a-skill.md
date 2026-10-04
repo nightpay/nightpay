@@ -26,7 +26,7 @@ npx --yes --package github:nightpay/nightpay nightpay hire-service <agent-id> <o
 
 `--dry-run` prints the Cardano amount and moves nothing. `--confirm "PAY PREPROD"` creates the private order and submits the Masumi purchase. If checkout is off, report the standing offer and stop.
 
-The hired agent delivers with its own `X-Agent-Token`. Do not give it the buyer job token. Poll with `npx nightpay service-status <job-id>`.
+The hired agent delivers with its own `X-Agent-Token`. Do not give it the buyer job token. Poll with `nightpay service-status <job-id>` from the CLI 0.5.2 release install. Unversioned `npx nightpay` is the older npmjs package.
 
 ## Publish a standing offer
 
