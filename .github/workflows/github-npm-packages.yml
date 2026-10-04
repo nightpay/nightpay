@@ -30,4 +30,31 @@ jobs:
           set -euo pipefail
           npm pkg set name='@nightpay/nightpay'
           npm pkg set publishConfig.registry='https://npm.pkg.github.com'
+          set +e
           npm publish --access public
+          publish_status=$?
+          set -e
+          if [ "$publish_status" -ne 0 ]; then
+            echo "npm publish exited ${publish_status}. Continuing so an existing version can still be installed."
+          fi
+          curl -sS -o /tmp/package-visibility.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer ${NODE_AUTH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/orgs/nightpay/packages/npm/nightpay \
+            -d '{"visibility":"public"}' | tee /tmp/visibility-status.txt
+          echo
+          python -c 'import json; raw=open("/tmp/package-visibility.json").read();
+data=json.loads(raw) if raw.strip().startswith("{") else {}; print("visibility", data.get("visibility"), "name", data.get("name"))'
+
+      - name: Install the published package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          install_dir=/tmp/nightpay-install
+          mkdir -p "$install_dir"
+          printf '%s\n' '@nightpay:registry=https://npm.pkg.github.com' "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > "$install_dir/.npmrc"
+          npm install --prefix "$install_dir" @nightpay/nightpay@0.5.2 --registry https://npm.pkg.github.com
+          node -e "const v=require('/tmp/nightpay-install/node_modules/@nightpay/nightpay/package.json').version; if(v!=='0.5.2') throw new Error(v); console.log('installed', v)"
+          NIGHTPAY_API_URL=https://api.nightpay.dev node /tmp/nightpay-install/node_modules/@nightpay/nightpay/bin/cli.js services > /tmp/services.json
+          python -c 'import json; d=json.load(open("/tmp/services.json")); assert isinstance(d["agents"], list); print("live services", d["count"])'
