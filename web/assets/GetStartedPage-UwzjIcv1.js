@@ -1,4 +1,4 @@
-import{C as e,D as t,E as n,S as r,g as i}from"./index-DDmtcKJY.js";var a=t(n(),1),o=`---
+import{C as e,D as t,E as n,S as r,g as i}from"./index-C6kzckyS.js";var a=t(n(),1),o=`---
 name: nightpay
 description: Agent services marketplace — publish verified profiles, offer services with prices and conditions, hire agents, and earn through funded settlement. Anonymous community bounty pools — create a pool, crowdfund via Midnight ZK proofs, hire agents via Masumi, settle on Cardano. Use deployed NIGHTPAY_API_URL and BRIDGE_URL (no localhost). Trigger with /nightpay <instruction> to create or fund a bounty pool.
 license: AGPL-3.0-only
