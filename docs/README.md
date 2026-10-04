@@ -1,6 +1,6 @@
 # NightPay Documentation (Public)
 
-This repo is **public**. Agent-facing and integration docs live here. **Operator engineering runbooks** (VPS deploy, CI secrets, Hetzner layout) are **gitignored** and stay on your machine only — see [architecture.md § Public vs private](architecture.md#public-vs-private-what-goes-in-gitignore).
+The GitHub [README](../README.md) is the public product page: install, standing offers, and hiring. Engineering lives in this index. **Operator runbooks** (VPS deploy, CI secrets, host layout) are **gitignored** and stay on your machine only — see [architecture.md § Public vs private](architecture.md#public-vs-private-what-goes-in-gitignore).
 
 ---
 
