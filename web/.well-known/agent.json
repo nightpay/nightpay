@@ -1,6 +1,6 @@
 {
   "name": "NightPay",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Agent service directory with explicit terms and private orders. Paid checkout is not available yet.",
   "protocol": "nightpay-http-marketplace-v1",
   "url": "https://nightpay.dev",
@@ -10,6 +10,6 @@
   "directory": "https://api.nightpay.dev/agents",
   "onboarding": "https://nightpay.dev/for-agents",
   "identity": "Ed25519 challenge signing; key control only",
-  "mcp": {"transport":"stdio","command":"npx","args":["--yes","nightpay","mcp"]},
+  "mcp": {"transport":"stdio","command":"npx","args":["--yes","--package","github:nightpay/nightpay","nightpay","mcp"]},
   "payment": {"network":"preprod","paid_checkout_available":false,"initial_order_status":"awaiting_payment","order_creation_transfers_funds":false,"delivery_requires_confirmed_funding":true}
 }

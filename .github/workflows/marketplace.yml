@@ -33,6 +33,7 @@ jobs:
           python test/marketplace.py
           python test/masumi-transport.py
           node test/mcp-discovery.mjs
+          node test/pack-cli.mjs
           python test/web-artifact.py
           bash -n bin/install-marketplace.sh
           bash -n bin/deploy-marketplace.sh

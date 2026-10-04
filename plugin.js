@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-// NightPay OpenClaw plugin entrypoint -- v0.5.1
+// NightPay OpenClaw plugin entrypoint -- v0.5.2
 // Adds: /nightpay schedule surfaces policy windows, milestones, and deadline
 //       radar output (heartbeat deadline check #6). See skills/nightpay/SKILL.md
 //       and ontology.md (Timeline & notifications).
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, cpSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, cpSync, rmSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const VERSION = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf8")).version;
 const SKILL_SRC = join(__dirname, "skills", "nightpay");
 const GATEWAY_SH = join(SKILL_SRC, "scripts", "gateway.sh");
 
@@ -99,7 +100,7 @@ const FULL_CONTEXT = [
 ].join("\n");
 
 const OPERATING_MODEL = [
-  "NightPay Operating Model -- v0.5.1",
+  `NightPay Operating Model -- v${VERSION}`,
   "=".repeat(50),
   "",
   "POOL CREATION",
@@ -715,7 +716,7 @@ const plugin = {
 
           return {
             text:
-              `NightPay v0.5.1\n\n` +
+              `NightPay v${VERSION}\n\n` +
               `Masumi (MIP-003)\n` +
               `  API:     ${apiUrl}\n` +
               `  Key:     ${env.MASUMI_API_KEY ? "set" : "MISSING"}\n\n` +
