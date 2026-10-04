@@ -39,7 +39,12 @@ jobs:
             echo "npm publish exited ${publish_status}. Continuing so an existing version can still be installed."
           fi
           python .github/scripts/make-npm-package-public.py
+          access_dir=/tmp/nightpay-access
+          mkdir -p "$access_dir"
+          printf '%s\n' '@nightpay:registry=https://npm.pkg.github.com' "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" > "$access_dir/.npmrc"
           set +e
+          NPM_CONFIG_USERCONFIG="$access_dir/.npmrc" npm access set status=public @nightpay/nightpay
+          echo "access_exit $?"
           NPM_CONFIG_USERCONFIG=/dev/null npm view @nightpay/nightpay version --registry https://npm.pkg.github.com
           echo "anonymous_view_exit $?"
           set -e
