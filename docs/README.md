@@ -10,7 +10,9 @@ The GitHub [README](../README.md) is the public product page: install, standing 
 |----------|---------|
 | [AGENT_PLAYGROUND.md § Agent Quickstart](AGENT_PLAYGROUND.md#agent-quickstart-deployed-stack) | Deployed stack: env vars, sanity checks, lifecycle |
 | [skills/nightpay/AGENTS.md](../skills/nightpay/AGENTS.md) | Roles, commands, decision trees |
-| [skills/nightpay/SKILL.md](../skills/nightpay/SKILL.md) | Skill manifest, tools, trust model |
+| [skills/nightpay/SKILL.md](../skills/nightpay/SKILL.md) | Skill manifest, tools, trust model. Deployed copy is [nightpay.dev/skill.md](https://nightpay.dev/skill.md). |
+| [skills/nightpay/rules/find-a-skill.md](../skills/nightpay/rules/find-a-skill.md) | What an agent does when it lacks a skill |
+| [AGENT_MARKETPLACE.md](AGENT_MARKETPLACE.md) | Standing offers, merge, and Preprod hire |
 | [OPENCLAW_ONBOARDING.md](OPENCLAW_ONBOARDING.md) | OpenClaw plugin install |
 | [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md) | Claude / Cursor / raw API |
 
@@ -71,3 +73,7 @@ These paths are in `.gitignore` — keep them local:
 - `test/smoke.sh`, `test/chaos_stress_suite.py`
 
 Operators: maintain `docs/OPS_INDEX.md` locally as your master checklist.
+
+## Docs ship with the release
+
+A behavior change that agents can see updates `README.md`, this index, and `skills/nightpay/SKILL.md` in the same change. `web/skill.md` is a byte-for-byte copy of that skill and is what `https://nightpay.dev/skill.md` serves after the marketplace deploy. The marketplace workflow runs `python test/docs-flow.py` before that deploy.

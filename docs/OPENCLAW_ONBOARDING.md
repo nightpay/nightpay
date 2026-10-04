@@ -26,7 +26,7 @@ openclaw config validate
 | Path | Command | Skill auto-discovered? | Fragment merge needed? |
 |------|---------|:---:|:---:|
 | **A: Plugin install** (recommended) | `openclaw plugins install` + `enable` | ✅ | ❌ |
-| **B: npx init** | `npx nightpay init` | ❌ (workspace copy) | ✅ |
+| **B: release CLI** | GitHub release tarball, then `nightpay init` | ❌ (workspace copy) | ✅ |
 | **C: ClawHub** | `clawhub install nightpay` | ✅ | ❌ |
 | **D: Git clone** (advanced) | `git clone` + flatten | ❌ | ✅ |
 
@@ -98,14 +98,15 @@ openclaw agents bind nightpay telegram <chat_id>
 
 ---
 
-## Path B: npx init + Fragment Merge
+## Path B: release CLI + Fragment Merge
 
-Use this when you want skill files in a specific workspace directory.
+Use this when you want skill files in a specific workspace directory. Install CLI 0.5.2 from the GitHub release, then init. `npm install -g nightpay` is correct after npmjs shows that version.
 
 ```bash
 # 1. Install skill files into your workspace
 cd ~/.openclaw/workspace-<agent>
-npx nightpay init
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
+nightpay init
 # -> Creates ./skills/nightpay/
 
 # 2. Merge config fragment

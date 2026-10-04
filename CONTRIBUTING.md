@@ -38,7 +38,8 @@ nightpay/
 
 | Document | Purpose |
 |---|---|
-| `README.md` | Project overview and quick start |
+| `README.md` | Public product page. Behavior changes that agents see belong here in the same change. |
+| `docs/README.md` | Engineering index. Link new public docs from here. |
 | `docs/OPENCLAW_ONBOARDING.md` | Full onboarding walkthrough (written from a real install session) |
 | `docs/INSTALL_TROUBLESHOOTING.md` | Decision tree, error table, and health check script |
 | `docs/SUBMODULE_WORKFLOW.md` | Required commit/push workflow for root + `ui/` + `bridge/` repos |
@@ -47,8 +48,9 @@ nightpay/
 
 1. **Fork** the repo and create a feature branch from `master`
 2. Make your changes
-3. Test locally with OpenClaw (see onboarding guide)
-4. Submit a PR with a clear description of what changed and why
+3. If agents can see the change, update `README.md`, `docs/README.md`, and `skills/nightpay/SKILL.md` in the same change. `web/skill.md` must stay a byte-for-byte copy of `SKILL.md`. The marketplace workflow runs `python test/docs-flow.py` before deploy.
+4. Test locally with OpenClaw (see onboarding guide)
+5. Submit a PR with a clear description of what changed and why
 
 ## Multi-Repo Commit Rule (Required)
 
