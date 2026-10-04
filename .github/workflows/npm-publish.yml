@@ -29,7 +29,6 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Verify version matches tag
         if: startsWith(github.ref, 'refs/tags/')
@@ -74,8 +73,18 @@ jobs:
         env:
           NPM_DIST_TAG: ${{ inputs.tag || 'latest' }}
         run: |
-          # OIDC trusted publishing. The stored NPM_TOKEN returns 401 and must not override this.
+          # OIDC trusted publishing. setup-node's registry auth line and the stored
+          # NPM_TOKEN both override GitHub OIDC, and that token returns 401.
           unset NODE_AUTH_TOKEN
+          clean="${RUNNER_TEMP}/npm-oidc"
+          mkdir -p "$clean"
+          printf '%s\n' 'registry=https://registry.npmjs.org' > "$clean/.npmrc"
+          export NPM_CONFIG_USERCONFIG="$clean/.npmrc"
+          npm --version
+          if grep -q '_authToken' "$clean/.npmrc"; then
+            echo "::error::publish npmrc must not contain an auth token"
+            exit 1
+          fi
           if ! npm publish --provenance --access public --tag "$NPM_DIST_TAG"; then
             echo "::error::npm publish failed. On https://www.npmjs.com/package/nightpay/access add a GitHub Actions trusted publisher: organization nightpay, repository nightpay, workflow filename npm-publish.yml, and allow direct npm publish. The package owner is dyannimulcho; this requires an interactive npm login."
             exit 1
