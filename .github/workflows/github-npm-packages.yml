@@ -38,13 +38,7 @@ jobs:
           if [ "$publish_status" -ne 0 ]; then
             echo "npm publish exited ${publish_status}. Continuing so an existing version can still be installed."
           fi
-          status=$(curl -sS -o /tmp/package-visibility.json -w "%{http_code}" -X PATCH \
-            -H "Authorization: Bearer ${NODE_AUTH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/orgs/nightpay/packages/npm/%40nightpay%2Fnightpay" \
-            -d '{"visibility":"public"}')
-          echo "visibility_http ${status}"
-          python -c 'import json; raw=open("/tmp/package-visibility.json").read(); data=json.loads(raw) if raw.strip().startswith("{") else {}; print("visibility", data.get("visibility"), "name", data.get("name"))'
+          python .github/scripts/make-npm-package-public.py
           set +e
           NPM_CONFIG_USERCONFIG=/dev/null npm view @nightpay/nightpay version --registry https://npm.pkg.github.com
           echo "anonymous_view_exit $?"
