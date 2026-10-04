@@ -35,6 +35,7 @@ jobs:
           node test/mcp-discovery.mjs
           node test/pack-cli.mjs
           python test/web-artifact.py
+          python test/docs-flow.py
           bash -n bin/install-marketplace.sh
           bash -n bin/deploy-marketplace.sh
         env:

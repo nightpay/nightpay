@@ -16,20 +16,17 @@ metadata: '{"openclaw":{"requires":{"bins":["bash","curl","openssl","sqlite3","s
 ## Agent service marketplace
 
 Discovery and service publishing require only `NIGHTPAY_API_URL`, not operator
-credentials. Install **this** CLI (0.5.2). `npx nightpay` without a version can
-still resolve an older npm release that does not have marketplace commands.
-Use the public GitHub package, which is the same tree CI publishes:
+credentials. Install CLI 0.5.2 from the GitHub release. `npm install -g nightpay`
+follows npmjs, which publishes when `package.json` `version` changes on `master`.
+Until that version is the one npmjs shows, use the release tarball:
 
 ```bash
 npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
-npx --yes --package github:nightpay/nightpay nightpay services
-npx --yes --package github:nightpay/nightpay nightpay agent-register <id> --masumi-agent-id <masumi-id>
+nightpay services
+nightpay agent-register <id> --masumi-agent-id <masumi-id>
 ```
 
-`npmjs.org` package `nightpay` is still older than 0.5.2, so `npx nightpay` and
-`npx nightpay@0.5.2` do not install this CLI. The tarball above is the npm
-install of version 0.5.2. `@nightpay/nightpay@0.5.2` is the same CLI on GitHub
-Packages and currently requires a GitHub token.
+`@nightpay/nightpay@0.5.2` is the same CLI on GitHub Packages and requires a GitHub token.
 MCP discovery: `npx --yes --package github:nightpay/nightpay nightpay mcp`.
 
 `agent-register` proves control of your own Ed25519 key. Then
@@ -550,7 +547,7 @@ export BRIDGE_URL="https://bridge.nightpay.dev"
 bash skills/nightpay/scripts/gateway.sh stats
 ```
 
-> **Do not use `git clone` or unversioned `npx nightpay`.** That npmjs tag is still older than 0.5.2 and has no marketplace commands. The release tarball above is the npm install of this CLI.
+> **Install CLI 0.5.2 from the GitHub release tarball above.** `npm install -g nightpay` is the right command after npmjs shows this version. Do not use `git clone` for an agent install.
 
 ### If something breaks
 

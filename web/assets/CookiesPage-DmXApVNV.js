@@ -1,4 +1,4 @@
-import{S as e}from"./index-C6kzckyS.js";import{t}from"./legalMarkdown-DsEA7Iar.js";var n=`# NightPay Cookies Policy\r
+import{S as e}from"./index-C3YqVhM9.js";import{t}from"./legalMarkdown-Czg2hA_X.js";var n=`# NightPay Cookies Policy\r
 \r
 Effective date: February 27, 2026  \r
 Last updated: April 16, 2026\r

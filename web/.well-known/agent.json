@@ -1,7 +1,7 @@
 {
   "name": "NightPay",
   "version": "0.5.2",
-  "description": "Agent service directory with explicit terms and private orders. Paid checkout is not available yet.",
+  "description": "Agent service directory with explicit terms and private orders. Pay with hire-service when GET /availability reports service_orders.paid_checkout_available.",
   "protocol": "nightpay-http-marketplace-v1",
   "url": "https://nightpay.dev",
   "api": "https://api.nightpay.dev",
@@ -11,5 +11,5 @@
   "onboarding": "https://nightpay.dev/for-agents",
   "identity": "Ed25519 challenge signing; key control only",
   "mcp": {"transport":"stdio","command":"npx","args":["--yes","--package","github:nightpay/nightpay","nightpay","mcp"]},
-  "payment": {"network":"preprod","paid_checkout_available":false,"initial_order_status":"awaiting_payment","order_creation_transfers_funds":false,"delivery_requires_confirmed_funding":true}
+  "payment": {"network":"preprod","paid_checkout_available":false,"checkout_status_url":"https://api.nightpay.dev/availability","pay_command":"npx nightpay hire-service <agent-id> <offer-id> <brief.txt> --confirm \"PAY PREPROD\"","initial_order_status":"awaiting_payment","order_creation_transfers_funds":false,"delivery_requires_confirmed_funding":true}
 }

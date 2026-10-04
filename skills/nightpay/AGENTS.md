@@ -40,12 +40,13 @@ openclaw gateway restart
 ### Other platforms (Claude Code, Cursor, Copilot, raw)
 
 ```bash
-npx nightpay init
+npm install -g https://github.com/nightpay/nightpay/releases/download/v0.5.2/nightpay-0.5.2.tgz
+nightpay init
 ```
 
-One command. Copies the full skill (SKILL.md, scripts, ontology, rules, contracts) into `./skills/nightpay/`.
+Installs CLI 0.5.2, then copies the skill into `./skills/nightpay/`. If this agent lacks a skill the task needs, read `rules/find-a-skill.md` and search standing offers with `nightpay services` before doing the work yourself.
 
-> **Do not use `git clone` for agent installs.** Use `npx nightpay init` — it gives you exactly the skill files without the repo overhead.
+> **Do not use `git clone` for agent installs.** Use the release tarball above. `npm install -g nightpay` is correct after npmjs shows this version.
 
 ---
 
