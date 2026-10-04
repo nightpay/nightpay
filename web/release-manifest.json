@@ -1,5 +1,5 @@
 {
-  "source_ui_sha": "6a4899f49163d08daeb1973ab311b75c0af33999",
+  "source_ui_sha": "1d48c54429917ba7c185510cd97bb0a40165c82b",
   "ui_version": "0.2.0",
   "skill_version": "0.5.2",
   "files": {
@@ -46,6 +46,6 @@
     "llms.txt": "c41c601fa5b4c9b5208a3c3e45cc25d9713a70e08de0be83b5a93218edc5a9b6",
     "nav.json": "a9b2e0227da3e4e2ed08f6ebd8091d1a7da6e58bf9d4d87d31b70d8938b22551",
     "skill.json": "bf458d5aea40e9da5c278f3270166f6969dadd9e40d895ef750038938c0e3031",
-    "skill.md": "ca9ae0cc6bbb8f36200f818aacffe853eb8918992ca08093ea3b65b266440860"
+    "skill.md": "8fdd68619048bb16224193b82321fdc61c62345574e89c399ecb6d7f79d92489"
   }
 }

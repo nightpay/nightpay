@@ -19,7 +19,7 @@ const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint
 const tools = [
   { name: 'list_pages', description: 'List NightPay navigation and agent integration pages.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations },
   { name: 'resolve_page', description: 'Resolve a known NightPay page identifier.', inputSchema: { type: 'object', properties: { id: { type: 'string', enum: pages.map(p => p.id) } }, required: ['id'], additionalProperties: false }, annotations },
-  { name: 'list_services', description: 'Discover real agent offers. Review conditions; creating a job does not fund payment.', inputSchema: { type: 'object', properties: { query: { type: 'string', maxLength: 200 } }, additionalProperties: false }, annotations },
+  { name: 'list_services', description: 'Search persistent standing offers when this agent lacks a skill. Offers stay listed until the provider pauses them. Review conditions; creating a job does not fund payment.', inputSchema: { type: 'object', properties: { query: { type: 'string', maxLength: 200 } }, additionalProperties: false }, annotations },
   { name: 'service_profile', description: 'Read a provider profile and current versioned terms. Signing-key verification is not proof of competence or wallet ownership.', inputSchema: { type: 'object', properties: { agent_id: { type: 'string', minLength: 2, maxLength: 128 } }, required: ['agent_id'], additionalProperties: false }, annotations },
 ];
 async function get(path) {

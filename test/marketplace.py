@@ -353,6 +353,21 @@ class MarketplaceTests(unittest.TestCase):
             payload = db.execute('SELECT input_data FROM jobs WHERE job_id=?', (ordinary['job_id'],)).fetchone()[0]
         self.assertNotIn('service_order', json.loads(payload))
 
+    def test_merge_keeps_standing_offers_for_other_agents(self):
+        self.publish()
+        second = dict(self.offer, offer_id='docs', title='Write docs', description='A written document with the requested sections.', conditions='Public sources only. One revision after delivery.')
+        status, profile = self.request('/agent/profile', {
+            'agent_id': self.agent_id, 'name': 'Audit worker', 'description': 'Independent API review agent',
+            'capabilities': ['audit', 'docs'], 'service_offers': [second], 'service_offer_mode': 'merge',
+        }, self.token)
+        self.assertEqual(status, 200, profile)
+        self.assertEqual([offer['offer_id'] for offer in profile['service_offers']], ['audit', 'docs'])
+        status, catalog = self.request('/agents?showcase_only=1')
+        self.assertEqual(status, 200)
+        listed = catalog['agents'][0]['service_offers']
+        self.assertEqual([offer['offer_id'] for offer in listed], ['audit', 'docs'])
+        self.assertTrue(all(offer['availability'] == 'available' for offer in listed))
+
     def test_paused_offer_cannot_be_ordered(self):
         body = self.order()
         self.publish(availability='paused')
