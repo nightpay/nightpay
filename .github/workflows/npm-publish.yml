@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       verify_only:
-        description: 'Check the npm token and packaging without publishing'
+        description: 'Validate packaging without publishing'
         type: boolean
         default: false
       tag:
@@ -65,6 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,7 +74,6 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -89,17 +89,6 @@ jobs:
           node test/mcp-discovery.mjs
           node test/pack-cli.mjs
 
-      - name: Check the npm token
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "::error::Add the npm Automation token as the NPM_TOKEN Actions secret."
-            exit 1
-          fi
-          npm whoami --registry https://registry.npmjs.org
-
       - name: Pack release tarball
         if: startsWith(github.ref, 'refs/tags/') && inputs.verify_only != true
         run: npm pack
@@ -112,19 +101,28 @@ jobs:
           gh release create "$GITHUB_REF_NAME" nightpay-*.tgz \
             --repo "$GITHUB_REPOSITORY" \
             --title "NightPay $GITHUB_REF_NAME" \
-            --notes "Agent CLI and skill ${GITHUB_REF_NAME}. Install with: npm install -g nightpay"
+            --notes "Agent CLI and skill ${GITHUB_REF_NAME}. Install with: npm install -g https://github.com/nightpay/nightpay/releases/download/${GITHUB_REF_NAME}/nightpay-${GITHUB_REF_NAME#v}.tgz"
 
       - name: Publish to npm
         if: inputs.verify_only != true
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ inputs.tag || 'latest' }}
           VERSION: ${{ needs.gate.outputs.version }}
         run: |
           set -euo pipefail
+          # The stored NPM_TOKEN returns 401 and overrides GitHub OIDC. Publish only
+          # after the package owner adds this workflow as a trusted publisher.
+          unset NODE_AUTH_TOKEN
+          clean="${RUNNER_TEMP}/npm-oidc"
+          mkdir -p "$clean"
+          printf '%s\n' 'registry=https://registry.npmjs.org' > "$clean/.npmrc"
+          export NPM_CONFIG_USERCONFIG="$clean/.npmrc"
           EXISTING="$(npm view "nightpay@${VERSION}" version --registry https://registry.npmjs.org 2>/dev/null || true)"
           if [ "$EXISTING" = "$VERSION" ]; then
             echo "nightpay@${VERSION} is already on npm."
             exit 0
           fi
-          npm publish --access public --tag "$NPM_DIST_TAG"
+          if ! npm publish --provenance --access public --tag "$NPM_DIST_TAG"; then
+            echo "::error::npm publish failed. On https://www.npmjs.com/package/nightpay/access add a GitHub Actions trusted publisher: organization nightpay, repository nightpay, workflow filename npm-publish.yml, and allow direct npm publish."
+            exit 1
+          fi
